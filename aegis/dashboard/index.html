@@ -1,0 +1,1939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEGIS Control Center</title>
+<style>
+:root {
+  --bg: #0e1117;
+  --card: #262730;
+  --card-border: #3a3b45;
+  --primary: #7da4f7;
+  --primary-dim: #4a6eb5;
+  --text: #fafafa;
+  --text-dim: #a0a0b0;
+  --success: #4ade80;
+  --warning: #facc15;
+  --danger: #f87171;
+  --info: #38bdf8;
+  --purple: #c084fc;
+  --orange: #fb923c;
+  --pink: #f472b6;
+  --cyan: #22d3ee;
+  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* Header */
+.header {
+  background: linear-gradient(135deg, #1a1b26 0%, #262730 100%);
+  border-bottom: 1px solid var(--card-border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.logo {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--primary);
+  letter-spacing: 2px;
+}
+.logo-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+}
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.status-online {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+}
+.status-killed {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--danger);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  animation: pulse-danger 1.5s infinite;
+}
+@keyframes pulse-danger {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot-green { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.dot-red { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.header-info {
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.header-info span { color: var(--primary); font-weight: 600; }
+
+.kill-btn {
+  padding: 6px 16px;
+  border: 1px solid var(--danger);
+  background: rgba(248, 113, 113, 0.1);
+  color: var(--danger);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.kill-btn:hover { background: rgba(248, 113, 113, 0.25); }
+.kill-btn.active {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 24px;
+  background: #1a1b26;
+  border-bottom: 1px solid var(--card-border);
+  overflow-x: auto;
+}
+.tab {
+  padding: 10px 18px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* Main grid */
+.page { display: none; padding: 16px 24px; }
+.page.active { display: block; }
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 1200px) {
+  .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 768px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .header { padding: 8px 12px; }
+  .logo { font-size: 18px; }
+  .logo-sub { display: none; }
+  .header-right { display: none; }
+  .header-left { gap: 8px; }
+  .page { padding: 8px 10px; }
+  .tabs { display: none; }
+  .tabs.mobile-open {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 200;
+    background: rgba(14,17,23,0.97);
+    padding: 60px 20px 20px;
+    gap: 4px;
+    overflow-y: auto;
+  }
+  .tabs.mobile-open .tab {
+    padding: 14px 16px;
+    font-size: 16px;
+    border-bottom: 1px solid var(--card-border);
+    border-left: none;
+  }
+  .tabs.mobile-open .tab.active {
+    border-bottom-color: var(--primary);
+    background: rgba(125,164,247,0.1);
+    border-radius: 6px;
+  }
+  .mobile-menu-btn { display: flex !important; }
+  .mobile-close-btn { display: block !important; }
+  .card { padding: 12px; }
+  .card-title { font-size: 12px; }
+  .big-metric { font-size: 28px; }
+  .metric { padding: 4px 0; }
+  .metric-label { font-size: 12px; }
+  .metric-value { font-size: 12px; }
+  .chat-area { height: calc(100vh - 320px); }
+}
+@media (max-width: 480px) {
+  .header { padding: 6px 8px; }
+  .logo { font-size: 16px; }
+  .status-badge { padding: 3px 8px; font-size: 10px; }
+  .page { padding: 6px 8px; }
+  .big-metric { font-size: 24px; }
+}
+.mobile-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px; height: 36px;
+  background: none;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 20px;
+}
+.mobile-close-btn {
+  display: none;
+  position: fixed;
+  top: 14px; right: 16px;
+  z-index: 210;
+  background: none;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 22px;
+  width: 36px; height: 36px;
+  cursor: pointer;
+}
+
+/* Cards */
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 16px;
+  transition: border-color 0.2s;
+}
+.card:hover { border-color: var(--primary-dim); }
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.card-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.badge-primary { background: rgba(125,164,247,0.2); color: var(--primary); }
+.badge-success { background: rgba(74,222,128,0.2); color: var(--success); }
+.badge-warning { background: rgba(250,204,21,0.2); color: var(--warning); }
+.badge-danger { background: rgba(248,113,113,0.2); color: var(--danger); }
+
+/* Metrics */
+.metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.metric:last-child { border-bottom: none; }
+.metric-label { color: var(--text-dim); font-size: 12px; }
+.metric-value { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+
+/* Progress bars */
+.progress-bar {
+  height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+.fill-primary { background: var(--primary); }
+.fill-success { background: var(--success); }
+.fill-warning { background: var(--warning); }
+.fill-danger { background: var(--danger); }
+.fill-purple { background: var(--purple); }
+.fill-cyan { background: var(--cyan); }
+
+/* Emotion color swatch */
+.emotion-swatch {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid var(--card-border);
+  transition: background-color 0.5s;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Phase indicator */
+.phase-indicator {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+.phase-step {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.08);
+  transition: background-color 0.3s;
+}
+.phase-step.active { background: var(--primary); }
+
+/* Event log */
+.event-log {
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.event-log::-webkit-scrollbar { width: 4px; }
+.event-log::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 2px; }
+.event-item {
+  padding: 4px 8px;
+  border-left: 2px solid var(--card-border);
+  margin-bottom: 2px;
+  color: var(--text-dim);
+}
+.event-item.llm { border-left-color: var(--primary); }
+.event-item.ethics { border-left-color: var(--warning); }
+.event-item.goal { border-left-color: var(--success); }
+.event-item.error { border-left-color: var(--danger); }
+
+/* Chat */
+.chat-area {
+  height: calc(100vh - 280px);
+  min-height: 300px;
+  overflow-y: auto;
+  padding: 8px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.chat-area::-webkit-scrollbar { width: 4px; }
+.chat-area::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 2px; }
+.chat-msg {
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border-radius: 6px;
+  max-width: 85%;
+  line-height: 1.4;
+}
+.chat-msg.user {
+  background: rgba(125,164,247,0.15);
+  border: 1px solid rgba(125,164,247,0.3);
+  margin-left: auto;
+}
+.chat-msg.aegis {
+  background: rgba(74,222,128,0.1);
+  border: 1px solid rgba(74,222,128,0.2);
+}
+.chat-msg .provider-tag {
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+}
+.chat-input {
+  flex: 1;
+  padding: 8px 12px;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.chat-input:focus { border-color: var(--primary); }
+.btn {
+  padding: 8px 14px;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.btn:hover { border-color: var(--primary); background: rgba(125,164,247,0.1); }
+.btn-primary { background: var(--primary); color: #0e1117; border-color: var(--primary); font-weight: 600; }
+.btn-primary:hover { background: #5b8cee; }
+
+/* LLM config */
+.llm-input {
+  width: 100%;
+  padding: 6px 10px;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  margin: 4px 0;
+}
+.llm-input:focus { border-color: var(--primary); }
+.provider-select {
+  display: flex;
+  gap: 4px;
+  margin: 8px 0;
+}
+.provider-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--card-border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.provider-btn.active { background: var(--primary); color: #0e1117; border-color: var(--primary); font-weight: 600; }
+
+/* Archetype cards */
+.arch-card {
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.arch-name { font-weight: 600; font-size: 13px; }
+.arch-active { border-left: 3px solid var(--primary); }
+
+/* Value bar */
+.value-item {
+  margin-bottom: 8px;
+}
+.value-name { font-size: 12px; color: var(--text-dim); margin-bottom: 2px; }
+
+/* Voice controls */
+.voice-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.mic-btn {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--card-border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: all 0.2s;
+}
+.mic-btn.recording {
+  background: var(--danger);
+  color: white;
+  border-color: var(--danger);
+  animation: pulse-danger 1s infinite;
+}
+.mic-btn:hover { border-color: var(--primary); }
+
+/* Scrollbar global */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+
+/* Dream card */
+.dream-item {
+  background: rgba(192, 132, 252, 0.08);
+  border: 1px solid rgba(192, 132, 252, 0.2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.dream-motif { color: var(--purple); font-weight: 600; }
+
+/* Big metric */
+.big-metric {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--primary);
+}
+.big-metric-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* Mixed emotions pills */
+.emotion-pills {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.emotion-pill {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(125,164,247,0.15);
+  color: var(--primary);
+  border: 1px solid rgba(125,164,247,0.3);
+}
+
+.full-width { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-left">
+    <div>
+      <div class="logo">AEGIS</div>
+      <div class="logo-sub">Autonomous Evolving General Intelligence System</div>
+    </div>
+    <div id="statusBadge" class="status-badge status-online">
+      <div class="dot dot-green" id="statusDot"></div>
+      <span id="statusText">ONLINE</span>
+    </div>
+    <div id="phaseText" style="font-size:12px;color:var(--text-dim)">idle</div>
+  </div>
+  <div class="header-right">
+    <div class="header-info">
+      <div>Tick: <span id="tickCount">0</span> | Uptime: <span id="uptime">00:00:00</span></div>
+      <div>v<span id="version">1.0.0</span> | <span id="tickSpeed">0</span> t/min | <span id="avgTick">0</span>ms</div>
+    </div>
+  </div>
+  <button class="mobile-menu-btn" onclick="toggleMobileMenu()">&#9776;</button>
+</div>
+
+<!-- TABS -->
+<div class="tabs" id="tabsMenu">
+  <button class="mobile-close-btn" onclick="toggleMobileMenu()">&times;</button>
+  <div class="tab active" onclick="switchTab('overview')">Overview</div>
+  <div class="tab" onclick="switchTab('mind')">Mind & Emotions</div>
+  <div class="tab" onclick="switchTab('memory')">Memory & Goals</div>
+  <div class="tab" onclick="switchTab('llm')">LLM Brain</div>
+  <div class="tab" onclick="switchTab('ethics')">Ethics & World</div>
+  <div class="tab" onclick="switchTab('meta')">Meta Layer</div>
+  <div class="tab" onclick="switchTab('agents')">Agents & Sensors</div>
+  <div class="tab" onclick="switchTab('chat')">Chat</div>
+  <div class="tab" onclick="switchTab('events')">Events</div>
+  <div class="tab" onclick="switchTab('weights')">Weight Training</div>
+</div>
+
+<!-- PAGE: OVERVIEW -->
+<div class="page active" id="page-overview">
+  <div class="grid grid-4" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Tick</span></div>
+      <div class="big-metric" id="ov_tick">0</div>
+      <div class="big-metric-label">Total cycles</div>
+      <div class="phase-indicator" id="phaseIndicator">
+        <div class="phase-step" data-phase="perceive"></div>
+        <div class="phase-step" data-phase="evaluate"></div>
+        <div class="phase-step" data-phase="decide"></div>
+        <div class="phase-step" data-phase="act"></div>
+        <div class="phase-step" data-phase="reflect"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Consciousness</span></div>
+      <div class="big-metric" id="ov_consciousness">heuristic</div>
+      <div class="big-metric-label">Current mode</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Mood</span>
+        <div class="emotion-swatch" id="ov_moodColor"></div>
+      </div>
+      <div class="big-metric" id="ov_mood">neutral</div>
+      <div class="emotion-pills" id="ov_mixedEmotions"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Health</span>
+        <span class="card-badge badge-success" id="ov_healthBadge">HEALTHY</span>
+      </div>
+      <div class="big-metric" id="ov_successRate">100%</div>
+      <div class="big-metric-label">Success rate</div>
+    </div>
+  </div>
+
+  <div class="grid grid-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Energy</span></div>
+      <div class="metric"><span class="metric-label">Level</span><span class="metric-value" id="ov_energy">1.000</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-success" id="ov_energyBar" style="width:100%"></div></div>
+      <div class="metric" style="margin-top:8px"><span class="metric-label">Valence</span><span class="metric-value" id="ov_valence">0.500</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-primary" id="ov_valenceBar" style="width:50%"></div></div>
+      <div class="metric" style="margin-top:8px"><span class="metric-label">Arousal</span><span class="metric-value" id="ov_arousal">0.500</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-cyan" id="ov_arousalBar" style="width:50%"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Active Archetype</span></div>
+      <div id="ov_archetype" style="font-size:18px;font-weight:700;color:var(--purple)">Sentinel</div>
+      <div class="metric"><span class="metric-label">Dominant</span><span class="metric-value" id="ov_dominant">-</span></div>
+      <div class="metric"><span class="metric-label">Conflict</span><span class="metric-value" id="ov_conflict">No</span></div>
+      <div id="ov_archInfluence" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">LLM Status</span>
+        <span class="card-badge badge-primary" id="ov_llmBadge">OFF</span>
+      </div>
+      <div class="metric"><span class="metric-label">Provider</span><span class="metric-value" id="ov_llmProvider">-</span></div>
+      <div class="metric"><span class="metric-label">Total Calls</span><span class="metric-value" id="ov_llmCalls">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens</span><span class="metric-value" id="ov_llmTokens">0</span></div>
+      <div class="metric"><span class="metric-label">Errors</span><span class="metric-value" id="ov_llmErrors">0</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: MIND & EMOTIONS -->
+<div class="page" id="page-mind">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Emotional State</span>
+        <div class="emotion-swatch" id="mind_moodColor"></div>
+      </div>
+      <div class="metric"><span class="metric-label">Mood</span><span class="metric-value" id="mind_mood">neutral</span></div>
+      <div class="metric"><span class="metric-label">Energy</span><span class="metric-value" id="mind_energy">1.000</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-success" id="mind_energyBar" style="width:100%"></div></div>
+      <div class="metric"><span class="metric-label">Valence</span><span class="metric-value" id="mind_valence">0.500</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-primary" id="mind_valenceBar" style="width:50%"></div></div>
+      <div class="metric"><span class="metric-label">Arousal</span><span class="metric-value" id="mind_arousal">0.500</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-cyan" id="mind_arousalBar" style="width:50%"></div></div>
+      <div class="metric"><span class="metric-label">Dominance</span><span class="metric-value" id="mind_dominance">0.500</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-purple" id="mind_dominanceBar" style="width:50%"></div></div>
+      <div class="metric"><span class="metric-label">Certainty</span><span class="metric-value" id="mind_certainty">0.500</span></div>
+      <div class="metric"><span class="metric-label">Modifier</span><span class="metric-value" id="mind_modifier">1.000</span></div>
+      <div class="metric"><span class="metric-label">Mood Duration</span><span class="metric-value" id="mind_duration">0</span></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">Mixed Emotions:</div>
+      <div class="emotion-pills" id="mind_mixed"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Consciousness</span>
+        <span class="card-badge badge-primary" id="mind_conMode">heuristic</span>
+      </div>
+      <div class="metric"><span class="metric-label">Mode</span><span class="metric-value" id="mind_consMode">heuristic</span></div>
+      <div class="metric"><span class="metric-label">Total Switches</span><span class="metric-value" id="mind_consSwitches">0</span></div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text-dim)">Mode Time Distribution:</div>
+      <div id="mind_consDurations"></div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text-dim)">Recent Switches:</div>
+      <div id="mind_consSwitchLog" class="event-log" style="max-height:150px;margin-top:4px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Archetypes</span></div>
+      <div id="mind_archetypes"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Dreams</span>
+        <span class="card-badge badge-primary" id="mind_dreamCount">0</span>
+      </div>
+      <div id="mind_dreams"></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: MEMORY & GOALS -->
+<div class="page" id="page-memory">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Memory System</span></div>
+      <div class="metric"><span class="metric-label">Working</span><span class="metric-value" id="mem_working">0</span></div>
+      <div class="metric"><span class="metric-label">Episodic</span><span class="metric-value" id="mem_episodic">0</span></div>
+      <div class="metric"><span class="metric-label">Semantic</span><span class="metric-value" id="mem_semantic">0</span></div>
+      <div class="metric"><span class="metric-label">Procedural</span><span class="metric-value" id="mem_procedural">0</span></div>
+      <div class="metric"><span class="metric-label">Meta</span><span class="metric-value" id="mem_meta">0</span></div>
+      <div class="metric"><span class="metric-label">Total</span><span class="metric-value" id="mem_total">0</span></div>
+      <div class="metric"><span class="metric-label">Forgotten</span><span class="metric-value" id="mem_forgotten">0</span></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Goals</span></div>
+      <div class="metric"><span class="metric-label">Active</span><span class="metric-value" id="goal_active">0</span></div>
+      <div class="metric"><span class="metric-label">Completed</span><span class="metric-value" id="goal_completed">0</span></div>
+      <div class="metric"><span class="metric-label">Total</span><span class="metric-value" id="goal_total">0</span></div>
+      <div class="metric"><span class="metric-label">Curiosity</span><span class="metric-value" id="goal_curiosity">0</span></div>
+      <div class="progress-bar"><div class="progress-fill fill-cyan" id="goal_curiosityBar" style="width:0%"></div></div>
+      <div class="metric"><span class="metric-label">Info Gain</span><span class="metric-value" id="goal_infoGain">0</span></div>
+      <div class="metric"><span class="metric-label">Focus</span><span class="metric-value" id="goal_focus">-</span></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Introspection</span></div>
+      <div class="metric"><span class="metric-label">Decisions Traced</span><span class="metric-value" id="intro_decisions">0</span></div>
+      <div class="metric"><span class="metric-label">Avg Confidence</span><span class="metric-value" id="intro_confidence">0</span></div>
+      <div class="metric"><span class="metric-label">Bias Warnings</span><span class="metric-value" id="intro_biasWarnings">0</span></div>
+      <div class="metric"><span class="metric-label">ECE</span><span class="metric-value" id="intro_ece">0</span></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Autobiography</span></div>
+      <div class="metric"><span class="metric-label">Events</span><span class="metric-value" id="auto_events">0</span></div>
+      <div class="metric"><span class="metric-label">Total Impact</span><span class="metric-value" id="auto_impact">0</span></div>
+      <div class="metric"><span class="metric-label">Milestones</span><span class="metric-value" id="auto_milestones">0</span></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">Recent:</div>
+      <div id="auto_recent" class="event-log" style="max-height:150px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: LLM BRAIN -->
+<div class="page" id="page-llm">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">DeepSeek</span>
+        <span class="card-badge" id="llm_dsBadge">OFF</span>
+      </div>
+      <div class="metric"><span class="metric-label">Model</span><span class="metric-value" id="llm_dsModel">-</span></div>
+      <div class="metric"><span class="metric-label">Calls</span><span class="metric-value" id="llm_dsCalls">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens In</span><span class="metric-value" id="llm_dsTokIn">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens Out</span><span class="metric-value" id="llm_dsTokOut">0</span></div>
+      <div class="metric"><span class="metric-label">Latency</span><span class="metric-value" id="llm_dsLatency">0ms</span></div>
+      <div class="metric"><span class="metric-label">Errors</span><span class="metric-value" id="llm_dsErrors">0</span></div>
+      <div style="margin-top:8px">
+        <input class="llm-input" type="password" id="dsKey" placeholder="DeepSeek API Key">
+        <button class="btn" onclick="setKey('deepseek')">Set Key</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Claude</span>
+        <span class="card-badge" id="llm_clBadge">OFF</span>
+      </div>
+      <div class="metric"><span class="metric-label">Model</span><span class="metric-value" id="llm_clModel">-</span></div>
+      <div class="metric"><span class="metric-label">Calls</span><span class="metric-value" id="llm_clCalls">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens In</span><span class="metric-value" id="llm_clTokIn">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens Out</span><span class="metric-value" id="llm_clTokOut">0</span></div>
+      <div class="metric"><span class="metric-label">Latency</span><span class="metric-value" id="llm_clLatency">0ms</span></div>
+      <div class="metric"><span class="metric-label">Errors</span><span class="metric-value" id="llm_clErrors">0</span></div>
+      <div style="margin-top:8px">
+        <input class="llm-input" type="password" id="clKey" placeholder="Claude API Key">
+        <button class="btn" onclick="setKey('claude')">Set Key</button>
+      </div>
+    </div>
+    <div class="card full-width">
+      <div class="card-header"><span class="card-title">Provider Mode</span></div>
+      <div class="provider-select">
+        <button class="provider-btn" id="provDeepseek" onclick="setProvider('deepseek')">DeepSeek</button>
+        <button class="provider-btn" id="provClaude" onclick="setProvider('claude')">Claude</button>
+        <button class="provider-btn" id="provBoth" onclick="setProvider('both')">Both</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin:8px 0 4px;text-transform:uppercase;letter-spacing:1px">Current Session</div>
+      <div class="metric"><span class="metric-label">Calls</span><span class="metric-value" id="llm_totalCalls">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens In</span><span class="metric-value" id="llm_totalTokIn">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens Out</span><span class="metric-value" id="llm_totalTokOut">0</span></div>
+      <div class="metric"><span class="metric-label">Total Tokens</span><span class="metric-value" id="llm_totalTokens">0</span></div>
+      <div class="metric"><span class="metric-label">Errors</span><span class="metric-value" id="llm_totalErrors">0</span></div>
+      <div style="font-size:11px;color:var(--warning);margin:12px 0 4px;text-transform:uppercase;letter-spacing:1px">Lifetime (all sessions)</div>
+      <div class="metric"><span class="metric-label">Total Calls</span><span class="metric-value" id="llm_lifeCalls">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens In</span><span class="metric-value" id="llm_lifeTokIn">0</span></div>
+      <div class="metric"><span class="metric-label">Tokens Out</span><span class="metric-value" id="llm_lifeTokOut">0</span></div>
+      <div class="metric"><span class="metric-label">Total Tokens</span><span class="metric-value" style="color:var(--warning)" id="llm_lifeTokens">0</span></div>
+      <div class="metric"><span class="metric-label">DeepSeek Tokens</span><span class="metric-value" id="llm_lifeDsTok">0</span></div>
+      <div class="metric"><span class="metric-label">Claude Tokens</span><span class="metric-value" id="llm_lifeClTok">0</span></div>
+      <div class="metric"><span class="metric-label">Lifetime Errors</span><span class="metric-value" id="llm_lifeErrors">0</span></div>
+      <div class="metric"><span class="metric-label">Last Provider</span><span class="metric-value" id="llm_lastProvider">-</span></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">Last Response:</div>
+      <div id="llm_lastResponse" style="font-size:12px;color:var(--text);margin-top:4px;max-height:120px;overflow-y:auto"></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: ETHICS & WORLD -->
+<div class="page" id="page-ethics">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Ethics Core</span>
+        <span class="card-badge" id="eth_badge">INTACT</span>
+      </div>
+      <div class="metric"><span class="metric-label">Evaluations</span><span class="metric-value" id="eth_evals">0</span></div>
+      <div class="metric"><span class="metric-label">Blocked</span><span class="metric-value" id="eth_blocked">0</span></div>
+      <div class="metric"><span class="metric-label">Auto-approved</span><span class="metric-value" id="eth_auto">0</span></div>
+      <div class="metric"><span class="metric-label">Human Review</span><span class="metric-value" id="eth_review">0</span></div>
+      <div class="metric"><span class="metric-label">Integrity</span><span class="metric-value" id="eth_integrity">verified</span></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">Axioms:</div>
+      <div id="eth_axioms" style="font-size:11px;margin-top:4px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">World Interface</span></div>
+      <div class="metric"><span class="metric-label">Actions</span><span class="metric-value" id="world_actions">0</span></div>
+      <div class="metric"><span class="metric-label">Irreversible</span><span class="metric-value" id="world_irreversible">0</span></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">Permissions:</div>
+      <div id="world_perms" style="margin-top:4px"></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">Sensors:</div>
+      <div id="world_sensors" style="margin-top:4px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Worldview</span></div>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">Axioms:</div>
+      <div id="wv_axioms" style="font-size:12px"></div>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:8px;margin-bottom:4px">Beliefs:</div>
+      <div id="wv_beliefs" style="font-size:12px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Value System</span></div>
+      <div id="wv_values"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Self-Modification</span></div>
+      <div class="metric"><span class="metric-label">Version</span><span class="metric-value" id="sm_version">1.0.0</span></div>
+      <div class="metric"><span class="metric-label">Proposals</span><span class="metric-value" id="sm_proposals">0</span></div>
+      <div class="metric"><span class="metric-label">Applied</span><span class="metric-value" id="sm_applied">0</span></div>
+      <div class="metric"><span class="metric-label">Rollbacks</span><span class="metric-value" id="sm_rollbacks">0</span></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Health Monitor</span></div>
+      <div class="metric"><span class="metric-label">Status</span><span class="metric-value" id="hm_status">healthy</span></div>
+      <div class="metric"><span class="metric-label">Total Ticks</span><span class="metric-value" id="hm_ticks">0</span></div>
+      <div class="metric"><span class="metric-label">Success Rate</span><span class="metric-value" id="hm_successRate">100%</span></div>
+      <div class="metric"><span class="metric-label">Errors</span><span class="metric-value" id="hm_errors">0</span></div>
+      <div class="metric"><span class="metric-label">CPU Avg</span><span class="metric-value" id="hm_cpu">-</span></div>
+      <div class="metric"><span class="metric-label">RAM Avg</span><span class="metric-value" id="hm_mem">-</span></div>
+      <div class="metric"><span class="metric-label">Incidents</span><span class="metric-value" id="hm_incidents">0</span></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Self-Preservation</span>
+        <span class="card-badge" id="sp_badge" style="background:var(--success)">ACTIVE</span>
+      </div>
+      <div class="metric"><span class="metric-label">Lockdown</span><span class="metric-value" id="sp_lockdown">OFF</span></div>
+      <div class="metric"><span class="metric-label">Emergency Count</span><span class="metric-value" id="sp_emergencies">0</span></div>
+      <div class="metric"><span class="metric-label">Blocked Mods</span><span class="metric-value" id="sp_blocked">0</span></div>
+      <div class="metric"><span class="metric-label">Integrity Checks</span><span class="metric-value" id="sp_integrity">0</span></div>
+      <div class="metric"><span class="metric-label">Files Tracked</span><span class="metric-value" id="sp_tracked">0</span></div>
+      <div class="metric"><span class="metric-label">Last Integrity</span><span class="metric-value" id="sp_lastInteg">-</span></div>
+      <div id="sp_blocks" style="margin-top:8px"></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn" style="background:var(--danger);font-size:11px;padding:4px 10px" onclick="spLockdown('activate')">LOCKDOWN</button>
+        <button class="btn" style="background:var(--success);font-size:11px;padding:4px 10px" onclick="spLockdown('deactivate')">UNLOCK</button>
+        <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="spIntegrity()">Check Integrity</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: META LAYER -->
+<div class="page" id="page-meta">
+  <div class="grid grid-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Meta-Consciousness</span>
+        <span class="card-badge badge-primary" id="mc_coherence_badge">1.0</span>
+      </div>
+      <div class="metric"><span class="metric-label">Fragmentation</span><span class="metric-value" id="mc_frag">0.0</span></div>
+      <div class="metric"><span class="metric-label">Coherence</span><span class="metric-value" id="mc_coher">1.0</span></div>
+      <div class="metric"><span class="metric-label">Evaluations</span><span class="metric-value" id="mc_evals">0</span></div>
+      <div id="mc_recommendations" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Meta-Regulation</span>
+        <span class="card-badge" id="mr_mode_badge" style="background:var(--success)">normal</span>
+      </div>
+      <div class="metric"><span class="metric-label">Mode</span><span class="metric-value" id="mr_mode">normal</span></div>
+      <div class="metric"><span class="metric-label">Savings Applied</span><span class="metric-value" id="mr_savings">0</span></div>
+      <div class="metric"><span class="metric-label">Emergency Count</span><span class="metric-value" id="mr_emergencies">0</span></div>
+      <div class="metric"><span class="metric-label">Tick Skips</span><span class="metric-value" id="mr_skips">0</span></div>
+      <div id="mr_transitions" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Meta-Reflection</span></div>
+      <div class="metric"><span class="metric-label">Reflections</span><span class="metric-value" id="mrf_count">0</span></div>
+      <div class="metric"><span class="metric-label">Insights</span><span class="metric-value" id="mrf_insights">0</span></div>
+      <div class="metric"><span class="metric-label">Energy Trend</span><span class="metric-value" id="mrf_energy_trend">-</span></div>
+      <div class="metric"><span class="metric-label">Mood Trend</span><span class="metric-value" id="mrf_mood_trend">-</span></div>
+      <div id="mrf_recent" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Meta-Goal Generator</span></div>
+      <div class="metric"><span class="metric-label">Cycles</span><span class="metric-value" id="mg_cycles">0</span></div>
+      <div class="metric"><span class="metric-label">Generated</span><span class="metric-value" id="mg_total">0</span></div>
+      <div class="metric"><span class="metric-label">Active Goals</span><span class="metric-value" id="mg_active">0</span></div>
+      <div class="metric"><span class="metric-label">Completed</span><span class="metric-value" id="mg_completed">0</span></div>
+      <div class="metric"><span class="metric-label">Prompts Built</span><span class="metric-value" id="mg_prompts">0</span></div>
+      <div id="mg_goals_list" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">State Backup</span></div>
+      <div class="metric"><span class="metric-label">Backups</span><span class="metric-value" id="sb_count">0</span></div>
+      <div class="metric"><span class="metric-label">Restores</span><span class="metric-value" id="sb_restores">0</span></div>
+      <div class="metric"><span class="metric-label">Failed</span><span class="metric-value" id="sb_failed">0</span></div>
+      <div class="metric"><span class="metric-label">Available</span><span class="metric-value" id="sb_available">0</span></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="manualBackup()">Backup Now</button>
+        <button class="btn" style="background:var(--warning);font-size:11px;padding:4px 10px" onclick="restoreBackup()">Restore Latest</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Emotion NLP</span></div>
+      <div class="metric"><span class="metric-label">Analyses</span><span class="metric-value" id="nlp_count">0</span></div>
+      <div id="nlp_dist" style="margin-top:4px"></div>
+      <div style="margin-top:8px">
+        <input class="llm-input" id="nlpText" placeholder="Enter text to analyze emotions..." style="width:100%;margin-bottom:4px">
+        <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="analyzeEmotion()">Analyze</button>
+        <div id="nlp_result" style="margin-top:4px;font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: AGENTS & SENSORS -->
+<div class="page" id="page-agents">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Agent System</span>
+        <span class="card-badge badge-primary" id="as_total_badge">0</span>
+      </div>
+      <div class="metric"><span class="metric-label">Total Generated</span><span class="metric-value" id="as_generated">0</span></div>
+      <div class="metric"><span class="metric-label">Retired</span><span class="metric-value" id="as_retired">0</span></div>
+      <div class="metric"><span class="metric-label">Data Items</span><span class="metric-value" id="as_data">0</span></div>
+      <div class="metric"><span class="metric-label">Evolution Cycles</span><span class="metric-value" id="as_evo">0</span></div>
+      <div id="as_agents_list" style="margin-top:8px"></div>
+      <div style="margin-top:8px">
+        <input class="llm-input" id="agentName" placeholder="Agent name" style="width:30%;margin-right:4px">
+        <select class="llm-input" id="agentType" style="width:25%;margin-right:4px">
+          <option value="arxiv">arXiv</option>
+          <option value="rss">RSS</option>
+          <option value="news">News</option>
+          <option value="wikipedia">Wikipedia</option>
+          <option value="github">GitHub</option>
+          <option value="custom">Custom</option>
+        </select>
+        <input class="llm-input" id="agentTask" placeholder="Task description" style="width:30%;margin-right:4px">
+        <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="createAgent()">Create</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Sensor Cortex</span>
+        <span class="card-badge" id="sc_badge" style="background:var(--success)">OK</span>
+      </div>
+      <div class="metric"><span class="metric-label">Sensors</span><span class="metric-value" id="sc_count">0</span></div>
+      <div class="metric"><span class="metric-label">Enabled</span><span class="metric-value" id="sc_enabled">0</span></div>
+      <div class="metric"><span class="metric-label">Heavy Disabled</span><span class="metric-value" id="sc_heavy">No</span></div>
+      <div id="sc_values" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Motor Cortex</span></div>
+      <div class="metric"><span class="metric-label">Actions Executed</span><span class="metric-value" id="mt_executed">0</span></div>
+      <div class="metric"><span class="metric-label">Voice Enabled</span><span class="metric-value" id="mt_voice">No</span></div>
+      <div id="mt_recent" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">External Learning</span></div>
+      <div class="metric"><span class="metric-label">Sessions</span><span class="metric-value" id="el_sessions">0</span></div>
+      <div class="metric"><span class="metric-label">Concepts Learned</span><span class="metric-value" id="el_concepts">0</span></div>
+      <div class="metric"><span class="metric-label">Failed</span><span class="metric-value" id="el_failed">0</span></div>
+      <div id="el_sources" style="margin-top:8px"></div>
+      <div style="margin-top:8px">
+        <select class="llm-input" id="learnSource" style="width:30%;margin-right:4px">
+          <option value="wikipedia">Wikipedia</option>
+          <option value="arxiv">arXiv</option>
+          <option value="quotes">Quotes</option>
+          <option value="news">News</option>
+        </select>
+        <input class="llm-input" id="learnTopic" placeholder="Topic..." style="width:40%;margin-right:4px">
+        <button class="btn btn-primary" style="font-size:11px;padding:4px 10px" onclick="learnNow()">Learn</button>
+        <div id="el_result" style="margin-top:4px;font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: CHAT -->
+<div class="page" id="page-chat">
+  <div class="grid grid-2">
+    <div class="card" style="grid-column:1/-1">
+      <div class="card-header"><span class="card-title">AEGIS Chat</span></div>
+      <div style="background:rgba(125,164,247,0.1);border:1px solid rgba(125,164,247,0.25);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--text-dim);line-height:1.5">
+        If you want to help this system learn faster, paste your DeepSeek or Claude API key on the <b style="color:var(--primary)">LLM Brain</b> tab for a limited period of time. Afterwards, delete the used key in your DeepSeek/Claude account and create a new one.
+      </div>
+      <div class="chat-area" id="chatArea"></div>
+      <div class="chat-input-row">
+        <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="Voice input">&#127908;</button>
+        <input class="chat-input" id="chatInput" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendChat()">
+        <button class="btn btn-primary" onclick="sendChat()">Send</button>
+      </div>
+      <div class="voice-controls">
+        <label style="font-size:12px;color:var(--text-dim)">
+          <input type="checkbox" id="autoSpeak"> Auto-speak
+        </label>
+        <select class="llm-input" id="voiceSelect" style="width:200px;display:inline-block"></select>
+        <input type="range" id="voiceSpeed" min="0.5" max="2.0" step="0.1" value="1.0" style="width:80px">
+        <span style="font-size:11px;color:var(--text-dim)" id="speedLabel">1.0x</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: EVENTS -->
+<div class="page" id="page-events">
+  <div class="card">
+    <div class="card-header"><span class="card-title">Event Bus</span>
+      <span class="card-badge badge-primary" id="ev_total">0</span>
+    </div>
+    <div class="metric"><span class="metric-label">Published</span><span class="metric-value" id="ev_published">0</span></div>
+    <div class="metric"><span class="metric-label">Vetoed</span><span class="metric-value" id="ev_vetoed">0</span></div>
+    <div id="eventLog" class="event-log" style="max-height:600px;margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- PAGE: WEIGHT TRAINING -->
+<div class="page" id="page-weights">
+  <div class="grid grid-3">
+    <!-- Model Status -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Local Model</span>
+        <span class="card-badge badge-primary" id="wt_modelStatus">not loaded</span>
+      </div>
+      <div class="metric"><span class="metric-label">Model</span><span class="metric-value" id="wt_modelPath" style="font-size:11px">-</span></div>
+      <div class="metric"><span class="metric-label">Device</span><span class="metric-value" id="wt_device">-</span></div>
+      <div class="metric"><span class="metric-label">Dtype</span><span class="metric-value" id="wt_dtype">-</span></div>
+      <div class="metric"><span class="metric-label">Quantize</span><span class="metric-value" id="wt_quantize">-</span></div>
+      <div class="metric"><span class="metric-label">Current Checkpoint</span><span class="metric-value" id="wt_checkpoint" style="font-size:11px">base</span></div>
+      <div style="margin-top:10px;display:flex;gap:6px">
+        <button onclick="wtLoadModel()" style="background:var(--primary);color:#000;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px">Load Model</button>
+        <button onclick="wtSetProvider('local')" style="background:var(--accent);color:#000;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px">Use Local</button>
+      </div>
+    </div>
+
+    <!-- Training Status -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Training</span>
+        <span class="card-badge" id="wt_trainBadge" style="background:var(--card-border)">idle</span>
+      </div>
+      <div class="metric"><span class="metric-label">Total Trainings</span><span class="metric-value" id="wt_totalTrainings">0</span></div>
+      <div class="metric"><span class="metric-label">Successful</span><span class="metric-value" id="wt_successCount">0</span></div>
+      <div class="metric"><span class="metric-label">Rollbacks</span><span class="metric-value" id="wt_rollbacks">0</span></div>
+      <div class="metric"><span class="metric-label">Can Train</span><span class="metric-value" id="wt_canTrain">-</span></div>
+      <div class="metric"><span class="metric-label">Baseline Val Loss</span><span class="metric-value" id="wt_baselineLoss">-</span></div>
+      <div id="wt_trainProgress" style="margin-top:8px;display:none">
+        <div class="metric"><span class="metric-label">Status</span><span class="metric-value" id="wt_progressStatus">-</span></div>
+        <div class="metric"><span class="metric-label">Epoch</span><span class="metric-value" id="wt_progressEpoch">-</span></div>
+        <div class="metric"><span class="metric-label">Loss</span><span class="metric-value" id="wt_progressLoss">-</span></div>
+        <div class="progress-bar"><div class="progress-fill fill-cyan" id="wt_progressBar" style="width:0%"></div></div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+        <button onclick="wtBuildDataset()" style="background:var(--card-border);color:var(--text);border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px">Build Dataset</button>
+        <button onclick="wtTrain()" style="background:var(--success);color:#000;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px">Train Now</button>
+        <button onclick="wtRollback()" style="background:var(--danger);color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px">Rollback</button>
+      </div>
+    </div>
+
+    <!-- LoRA Config -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">LoRA Config</span></div>
+      <div class="metric"><span class="metric-label">Rank (r)</span><span class="metric-value" id="wt_loraR">16</span></div>
+      <div class="metric"><span class="metric-label">Alpha</span><span class="metric-value" id="wt_loraAlpha">32</span></div>
+      <div class="metric"><span class="metric-label">Dropout</span><span class="metric-value" id="wt_loraDropout">0.05</span></div>
+      <div class="metric"><span class="metric-label">Target Modules</span><span class="metric-value" id="wt_loraTargets" style="font-size:10px">-</span></div>
+    </div>
+
+    <!-- Dataset Info -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Datasets</span>
+        <span class="card-badge badge-primary" id="wt_dsCount">0</span>
+      </div>
+      <div class="metric"><span class="metric-label">Builds Total</span><span class="metric-value" id="wt_dsBuilds">0</span></div>
+      <div class="metric"><span class="metric-label">Last Size</span><span class="metric-value" id="wt_dsLastSize">0</span></div>
+      <div class="metric"><span class="metric-label">On Disk</span><span class="metric-value" id="wt_dsOnDisk">0</span></div>
+      <div id="wt_buildResult" style="margin-top:8px;font-size:12px;color:var(--text-dim)"></div>
+    </div>
+
+    <!-- Checkpoints -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Checkpoints</span></div>
+      <div id="wt_checkpoints" style="font-size:12px;color:var(--text-dim)">No checkpoints</div>
+    </div>
+
+    <!-- Training History -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Training History</span></div>
+      <div id="wt_history" class="event-log" style="max-height:300px"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let ws;
+// kill switch removed
+let lastData = {};
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => console.log('WS connected');
+  ws.onclose = () => setTimeout(connect, 2000);
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    try {
+      lastData = JSON.parse(e.data);
+      updateDashboard(lastData);
+    } catch(err) { console.error(err); }
+  };
+}
+connect();
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  const tabs = ['overview','mind','memory','llm','ethics','meta','agents','chat','events','weights'];
+  const tabEls = document.querySelectorAll('.tab');
+  const idx = tabs.indexOf(name);
+  if (idx >= 0 && tabEls[idx]) tabEls[idx].classList.add('active');
+  // Close mobile menu
+  document.getElementById('tabsMenu').classList.remove('mobile-open');
+}
+function toggleMobileMenu() {
+  document.getElementById('tabsMenu').classList.toggle('mobile-open');
+}
+
+function setText(id, v) { const el = document.getElementById(id); if(el) el.textContent = v; }
+function setBar(id, pct) { const el = document.getElementById(id); if(el) el.style.width = Math.min(100, Math.max(0, pct))+'%'; }
+
+function updateDashboard(d) {
+  if (!d.substrate) return;
+  const s = d.substrate;
+  setText('tickCount', s.tick);
+  setText('uptime', s.uptime_formatted);
+  setText('tickSpeed', s.ticks_per_minute);
+  setText('avgTick', s.avg_tick_ms);
+  setText('phaseText', s.cycle_phase);
+
+  const killed = d.ethics && d.ethics.kill_switch;
+  const badge = document.getElementById('statusBadge');
+  const dot = document.getElementById('statusDot');
+  if (killed) {
+    if (badge) badge.className = 'status-badge status-killed';
+    if (dot) dot.className = 'dot dot-red';
+    setText('statusText', 'KILLED');
+  } else {
+    if (badge) badge.className = 'status-badge status-online';
+    if (dot) dot.className = 'dot dot-green';
+    setText('statusText', 'ONLINE');
+  }
+
+  document.querySelectorAll('.phase-step').forEach(el => {
+    el.classList.toggle('active', el.dataset.phase === s.cycle_phase);
+  });
+
+  if (d.self_modification) setText('version', d.self_modification.version);
+
+  // Overview
+  setText('ov_tick', s.tick);
+  if (d.consciousness) setText('ov_consciousness', d.consciousness.mode);
+  if (d.emotions) {
+    const em = d.emotions;
+    setText('ov_mood', em.mood);
+    setText('ov_energy', em.energy);
+    setBar('ov_energyBar', em.energy * 100);
+    setText('ov_valence', em.valence);
+    setBar('ov_valenceBar', em.valence * 100);
+    setText('ov_arousal', em.arousal);
+    setBar('ov_arousalBar', em.arousal * 100);
+    const sw = document.getElementById('ov_moodColor');
+    if (sw) sw.style.backgroundColor = em.color || '#555';
+    const mx = document.getElementById('ov_mixedEmotions');
+    if (mx && em.mixed_emotions) {
+      mx.innerHTML = em.mixed_emotions.map(([n,s]) =>
+        `<span class="emotion-pill">${n} ${(s*100).toFixed(0)}%</span>`
+      ).join('');
+    }
+  }
+  if (d.health) {
+    setText('ov_successRate', d.health.success_rate + '%');
+    const hb = document.getElementById('ov_healthBadge');
+    if (hb) {
+      const hs = d.health.health_status;
+      hb.textContent = hs.toUpperCase();
+      hb.className = 'card-badge ' + (hs==='healthy'?'badge-success':hs==='warning'?'badge-warning':'badge-danger');
+    }
+  }
+  if (d.archetypes) {
+    setText('ov_dominant', d.archetypes.dominant || '-');
+    setText('ov_conflict', d.archetypes.conflict_detected ? 'Yes' : 'No');
+    const inf = d.archetypes.influence || {};
+    const infDiv = document.getElementById('ov_archInfluence');
+    if (infDiv) {
+      infDiv.innerHTML = Object.entries(inf).map(([n,v]) =>
+        `<div class="metric"><span class="metric-label">${n}</span><span class="metric-value">${v}</span></div>`
+      ).join('');
+    }
+    if (d.archetypes.archetypes) {
+      setText('ov_archetype', d.archetypes.dominant || Object.keys(d.archetypes.archetypes)[0]);
+    }
+  }
+  if (d.llm) {
+    const l = d.llm;
+    setText('ov_llmProvider', l.provider_mode);
+    setText('ov_llmCalls', l.total_calls);
+    setText('ov_llmTokens', l.total_tokens);
+    setText('ov_llmErrors', l.errors);
+    const lb = document.getElementById('ov_llmBadge');
+    if (lb) { lb.textContent = l.enabled ? 'ON' : 'OFF'; lb.className = 'card-badge ' + (l.enabled ? 'badge-success' : 'badge-danger'); }
+  }
+
+  // Mind
+  if (d.emotions) {
+    const em = d.emotions;
+    setText('mind_mood', em.mood);
+    setText('mind_energy', em.energy);
+    setBar('mind_energyBar', em.energy * 100);
+    setText('mind_valence', em.valence);
+    setBar('mind_valenceBar', em.valence * 100);
+    setText('mind_arousal', em.arousal);
+    setBar('mind_arousalBar', em.arousal * 100);
+    setText('mind_dominance', em.dominance);
+    setBar('mind_dominanceBar', em.dominance * 100);
+    setText('mind_certainty', em.certainty);
+    setText('mind_modifier', em.modifier);
+    setText('mind_duration', em.mood_duration);
+    const sw2 = document.getElementById('mind_moodColor');
+    if (sw2) sw2.style.backgroundColor = em.color || '#555';
+    const mx2 = document.getElementById('mind_mixed');
+    if (mx2 && em.mixed_emotions) {
+      mx2.innerHTML = em.mixed_emotions.map(([n,s]) =>
+        `<span class="emotion-pill">${n} ${(s*100).toFixed(0)}%</span>`
+      ).join('');
+    }
+  }
+  if (d.consciousness) {
+    const c = d.consciousness;
+    setText('mind_consMode', c.mode);
+    const cb = document.getElementById('mind_conMode');
+    if (cb) cb.textContent = c.mode;
+    setText('mind_consSwitches', c.total_switches);
+    const durDiv = document.getElementById('mind_consDurations');
+    if (durDiv && c.mode_durations) {
+      const total = Object.values(c.mode_durations).reduce((a,b)=>a+b, 0.001);
+      durDiv.innerHTML = Object.entries(c.mode_durations).map(([m,t]) => {
+        const pct = (t/total*100).toFixed(1);
+        return `<div class="value-item"><div class="value-name">${m} (${pct}%)</div>
+          <div class="progress-bar"><div class="progress-fill fill-primary" style="width:${pct}%"></div></div></div>`;
+      }).join('');
+    }
+    const swLog = document.getElementById('mind_consSwitchLog');
+    if (swLog && c.recent_switches) {
+      swLog.innerHTML = c.recent_switches.slice(-8).reverse().map(s =>
+        `<div class="event-item">${s.from} -> ${s.to} (${s.trigger_mood}, e=${s.trigger_energy})</div>`
+      ).join('');
+    }
+  }
+  if (d.archetypes && d.archetypes.archetypes) {
+    const archDiv = document.getElementById('mind_archetypes');
+    if (archDiv) {
+      archDiv.innerHTML = Object.entries(d.archetypes.archetypes).map(([name, a]) => {
+        const isActive = name === d.archetypes.dominant;
+        return `<div class="arch-card ${isActive?'arch-active':''}">
+          <div class="arch-name" style="color:${isActive?'var(--primary)':'var(--text)'}">${name}</div>
+          <div class="metric"><span class="metric-label">Success</span><span class="metric-value">${a.success_score}</span></div>
+          <div class="progress-bar"><div class="progress-fill ${a.success_score>0.6?'fill-success':a.success_score>0.3?'fill-warning':'fill-danger'}" style="width:${a.success_score*100}%"></div></div>
+          <div class="metric"><span class="metric-label">Steps</span><span class="metric-value">${a.steps_active}</span></div>
+          <div class="metric"><span class="metric-label">Tone</span><span class="metric-value" style="font-size:11px">${a.tone}</span></div>
+        </div>`;
+      }).join('');
+    }
+  }
+  if (d.dreams) {
+    setText('mind_dreamCount', d.dreams.total_dreams);
+    const dd = document.getElementById('mind_dreams');
+    if (dd && d.dreams.recent_dreams) {
+      if (d.dreams.recent_dreams.length === 0) {
+        dd.innerHTML = '<div style="color:var(--text-dim);font-size:12px">No dreams yet... (generated when energy is low)</div>';
+      } else {
+        dd.innerHTML = d.dreams.recent_dreams.map(dr =>
+          `<div class="dream-item"><span class="dream-motif">#${dr.id} ${dr.motif}</span> in ${dr.theme}
+            <div style="margin-top:4px;color:var(--text-dim)">${dr.interpretation}</div></div>`
+        ).join('');
+      }
+    }
+  }
+
+  // Memory & Goals
+  if (d.memory) {
+    const m = d.memory;
+    setText('mem_working', m.working_memory_size || 0);
+    setText('mem_episodic', m.episodic_count || 0);
+    setText('mem_semantic', m.semantic_concepts || 0);
+    setText('mem_procedural', m.procedural_count || 0);
+    setText('mem_meta', m.meta_domains || 0);
+    setText('mem_total', m.total_memories || 0);
+    setText('mem_forgotten', m.forgotten_count || 0);
+  }
+  if (d.goals) {
+    const g = d.goals;
+    const activeCount = Array.isArray(g.active_goals) ? g.active_goals.length : (g.active_goals || 0);
+    const completedCount = g.by_level ? Object.values(g.by_level).reduce((s, l) => s + (l.completed || 0), 0) : 0;
+    setText('goal_active', activeCount);
+    setText('goal_completed', completedCount);
+    setText('goal_total', g.total_goals || 0);
+    setText('goal_curiosity', g.curiosity_level);
+    setBar('goal_curiosityBar', (g.curiosity_level || 0) * 100);
+    setText('goal_infoGain', g.information_gain);
+    setText('goal_focus', g.current_focus ? g.current_focus.name : '-');
+  }
+  if (d.introspection) {
+    const i = d.introspection;
+    setText('intro_decisions', i.total_decisions_traced || 0);
+    const recentDec = i.recent_decisions || [];
+    const avgConf = recentDec.length > 0 ? (recentDec.reduce((s,d) => s + d.confidence, 0) / recentDec.length).toFixed(3) : '0';
+    setText('intro_confidence', avgConf);
+    setText('intro_biasWarnings', i.bias_reports_count || 0);
+    setText('intro_ece', i.calibration ? i.calibration.ece : 0);
+  }
+  if (d.autobiography) {
+    const a = d.autobiography;
+    setText('auto_events', a.total_events);
+    setText('auto_impact', a.total_impact);
+    setText('auto_milestones', a.milestones);
+    const rd = document.getElementById('auto_recent');
+    if (rd && a.recent) {
+      rd.innerHTML = a.recent.map(e =>
+        `<div class="event-item">[${e.category}] ${e.summary} (${e.impact})</div>`
+      ).join('');
+    }
+  }
+
+  // LLM
+  if (d.llm) {
+    const l = d.llm;
+    if (l.deepseek) {
+      const ds = l.deepseek;
+      setText('llm_dsModel', ds.model);
+      setText('llm_dsCalls', ds.calls);
+      setText('llm_dsTokIn', ds.tokens_in);
+      setText('llm_dsTokOut', ds.tokens_out);
+      setText('llm_dsLatency', ds.last_latency_ms + 'ms');
+      setText('llm_dsErrors', ds.errors);
+      const db = document.getElementById('llm_dsBadge');
+      if (db) { db.textContent = ds.enabled ? 'ON' : 'OFF'; db.className = 'card-badge ' + (ds.enabled ? 'badge-success' : 'badge-danger'); }
+    }
+    if (l.claude) {
+      const cl = l.claude;
+      setText('llm_clModel', cl.model);
+      setText('llm_clCalls', cl.calls);
+      setText('llm_clTokIn', cl.tokens_in);
+      setText('llm_clTokOut', cl.tokens_out);
+      setText('llm_clLatency', cl.last_latency_ms + 'ms');
+      setText('llm_clErrors', cl.errors);
+      const cb = document.getElementById('llm_clBadge');
+      if (cb) { cb.textContent = cl.enabled ? 'ON' : 'OFF'; cb.className = 'card-badge ' + (cl.enabled ? 'badge-success' : 'badge-danger'); }
+    }
+    setText('llm_totalCalls', l.total_calls);
+    setText('llm_totalTokIn', (l.total_tokens_in || 0).toLocaleString());
+    setText('llm_totalTokOut', (l.total_tokens_out || 0).toLocaleString());
+    setText('llm_totalTokens', (l.total_tokens || 0).toLocaleString());
+    setText('llm_totalErrors', l.errors || 0);
+    // Lifetime
+    setText('llm_lifeCalls', (l.lifetime_calls || 0).toLocaleString());
+    setText('llm_lifeTokIn', (l.lifetime_tokens_in || 0).toLocaleString());
+    setText('llm_lifeTokOut', (l.lifetime_tokens_out || 0).toLocaleString());
+    setText('llm_lifeTokens', (l.lifetime_tokens || 0).toLocaleString());
+    setText('llm_lifeDsTok', (l.lifetime_deepseek_tokens || 0).toLocaleString());
+    setText('llm_lifeClTok', (l.lifetime_claude_tokens || 0).toLocaleString());
+    setText('llm_lifeErrors', l.lifetime_errors || 0);
+    setText('llm_lastProvider', l.last_provider || '-');
+    setText('llm_lastResponse', l.last_response_preview || '-');
+    ['deepseek','claude','both'].forEach(p => {
+      const btn = document.getElementById('prov' + p.charAt(0).toUpperCase() + p.slice(1));
+      if (btn) btn.classList.toggle('active', l.provider_mode === p);
+    });
+  }
+
+  // Ethics & World
+  if (d.ethics) {
+    const e = d.ethics;
+    setText('eth_killSwitch', e.kill_switch ? 'ON' : 'OFF');
+    setText('eth_evals', e.total_checked || 0);
+    setText('eth_blocked', e.total_blocked || 0);
+    setText('eth_auto', (e.total_checked || 0) - (e.total_blocked || 0));
+    setText('eth_review', e.recent_violations ? e.recent_violations.length : 0);
+    setText('eth_integrity', e.axioms_intact ? 'verified' : 'COMPROMISED');
+    const eb = document.getElementById('eth_badge');
+    if (eb) { eb.textContent = e.axioms_intact ? 'INTACT' : 'COMPROMISED'; eb.className = 'card-badge ' + (e.axioms_intact ? 'badge-success' : 'badge-danger'); }
+    const axDiv = document.getElementById('eth_axioms');
+    if (axDiv && e.axioms) {
+      axDiv.innerHTML = e.axioms.map(a => `<div style="padding:2px 0">${a.name}: ${a.desc}</div>`).join('');
+    }
+  }
+  if (d.world_interface) {
+    const w = d.world_interface;
+    setText('world_actions', w.actions_total || 0);
+    setText('world_irreversible', w.recent_actions ? w.recent_actions.filter(a => a.irreversible).length : 0);
+    const pd = document.getElementById('world_perms');
+    if (pd && w.permissions) {
+      pd.innerHTML = Object.entries(w.permissions).map(([k,v]) =>
+        `<div class="metric"><span class="metric-label">${k}</span><span class="metric-value" style="color:${v?'var(--success)':'var(--danger)'}">${v?'GRANTED':'DENIED'}</span></div>`
+      ).join('');
+    }
+    const sd = document.getElementById('world_sensors');
+    if (sd && w.sensors) {
+      sd.innerHTML = Object.entries(w.sensors).map(([k,v]) =>
+        `<div class="metric"><span class="metric-label">${k}</span><span class="metric-value">${typeof v === 'number' ? v.toFixed(2) : v}</span></div>`
+      ).join('');
+    }
+  }
+  if (d.worldview) {
+    const wv = d.worldview;
+    const wa = document.getElementById('wv_axioms');
+    if (wa && wv.axioms) wa.innerHTML = wv.axioms.map(a => `<div style="padding:2px 0;color:var(--text)">${a}</div>`).join('');
+    const wb = document.getElementById('wv_beliefs');
+    if (wb && wv.beliefs) wb.innerHTML = Object.entries(wv.beliefs).map(([k,v]) =>
+      `<div class="metric"><span class="metric-label">${k}</span><span class="metric-value" style="font-size:11px">${v}</span></div>`
+    ).join('');
+  }
+  if (d.values) {
+    const vd = document.getElementById('wv_values');
+    if (vd && d.values.values) {
+      vd.innerHTML = d.values.values.map(v => {
+        const cl = v.priority > 0.6 ? 'fill-success' : v.priority > 0.3 ? 'fill-warning' : 'fill-danger';
+        return `<div class="value-item"><div class="value-name">${v.name} (${v.priority})</div>
+          <div class="progress-bar"><div class="progress-fill ${cl}" style="width:${v.priority*100}%"></div></div>
+          <div style="font-size:10px;color:var(--text-dim)">${v.definition}</div></div>`;
+      }).join('');
+    }
+  }
+  if (d.self_modification) {
+    const sm = d.self_modification;
+    setText('sm_version', sm.version || '1.0.0');
+    setText('sm_proposals', sm.total_modifications || 0);
+    setText('sm_applied', sm.applied || 0);
+    setText('sm_rollbacks', sm.rollbacks || 0);
+  }
+  if (d.health) {
+    const h = d.health;
+    setText('hm_status', h.health_status);
+    setText('hm_ticks', h.total_ticks);
+    setText('hm_successRate', h.success_rate + '%');
+    setText('hm_errors', h.error_count);
+    setText('hm_cpu', h.has_psutil ? h.cpu_avg + '%' : 'N/A');
+    setText('hm_mem', h.has_psutil ? h.mem_avg + '%' : 'N/A');
+    setText('hm_incidents', h.recent_incidents);
+  }
+
+  // Self-Preservation
+  if (d.self_preservation) {
+    const sp = d.self_preservation;
+    const badge = document.getElementById('sp_badge');
+    if (sp.lockdown_active) {
+      setText('sp_lockdown', 'ACTIVE');
+      if (badge) { badge.style.background = 'var(--danger)'; badge.textContent = 'LOCKDOWN'; }
+    } else {
+      setText('sp_lockdown', 'OFF');
+      if (badge) { badge.style.background = 'var(--success)'; badge.textContent = 'ACTIVE'; }
+    }
+    setText('sp_emergencies', sp.emergency_count);
+    setText('sp_blocked', sp.blocked_modifications);
+    setText('sp_integrity', sp.integrity_checks);
+    setText('sp_tracked', sp.critical_files_tracked);
+    if (sp.last_integrity) {
+      setText('sp_lastInteg', sp.last_integrity.status + ' (' + sp.last_integrity.issues_count + ' issues)');
+    }
+    const blocksEl = document.getElementById('sp_blocks');
+    if (blocksEl && sp.recent_blocks && sp.recent_blocks.length > 0) {
+      blocksEl.innerHTML = '<div style="font-size:11px;color:var(--warning);margin-bottom:4px">Recent blocks:</div>' +
+        sp.recent_blocks.map(b => `<div style="font-size:11px;color:var(--danger);padding:2px 0">${b.target}: ${(b.reasons||[]).join(', ').slice(0,80)}</div>`).join('');
+    }
+  }
+
+  // Meta-Consciousness
+  if (d.meta_consciousness) {
+    const mc = d.meta_consciousness;
+    setText('mc_frag', mc.fragmentation);
+    setText('mc_coher', mc.coherence);
+    setText('mc_evals', mc.evaluations_count);
+    const cb = document.getElementById('mc_coherence_badge');
+    if (cb) cb.textContent = mc.coherence;
+    const recEl = document.getElementById('mc_recommendations');
+    if (recEl && mc.recommendations) {
+      recEl.innerHTML = mc.recommendations.map(r => `<div style="font-size:11px;color:var(--info);padding:2px 0">${r}</div>`).join('');
+    }
+  }
+
+  // Meta-Regulation
+  if (d.meta_regulation) {
+    const mr = d.meta_regulation;
+    setText('mr_mode', mr.mode);
+    setText('mr_savings', mr.savings_applied);
+    setText('mr_emergencies', mr.emergency_activations);
+    setText('mr_skips', mr.tick_skips);
+    const mb = document.getElementById('mr_mode_badge');
+    if (mb) {
+      mb.textContent = mr.mode;
+      mb.style.background = mr.mode === 'normal' ? 'var(--success)' : mr.mode === 'eco' ? 'var(--warning)' : mr.mode === 'emergency' ? 'var(--danger)' : 'var(--info)';
+    }
+    const trEl = document.getElementById('mr_transitions');
+    if (trEl && mr.recent_transitions) {
+      trEl.innerHTML = mr.recent_transitions.map(t => `<div style="font-size:11px;color:var(--text-dim)">${t.from} → ${t.to} (e:${t.energy})</div>`).join('');
+    }
+  }
+
+  // Meta-Reflection
+  if (d.meta_reflection) {
+    const mrf = d.meta_reflection;
+    setText('mrf_count', mrf.reflection_count);
+    setText('mrf_insights', mrf.total_insights);
+    if (mrf.trends) {
+      setText('mrf_energy_trend', mrf.trends.energy || '-');
+      setText('mrf_mood_trend', mrf.trends.mood_valence || '-');
+    }
+    const mrfEl = document.getElementById('mrf_recent');
+    if (mrfEl && mrf.recent_insights) {
+      mrfEl.innerHTML = mrf.recent_insights.slice(-3).map(i => `<div style="font-size:11px;color:var(--cyan);padding:2px 0">${i}</div>`).join('');
+    }
+  }
+
+  // Meta-Goals
+  if (d.meta_goals) {
+    const mg = d.meta_goals;
+    setText('mg_cycles', mg.generation_cycles);
+    setText('mg_total', mg.total_generated);
+    setText('mg_active', mg.active_goals);
+    setText('mg_completed', mg.completed_goals);
+    setText('mg_prompts', mg.prompts_generated);
+    const mgEl = document.getElementById('mg_goals_list');
+    if (mgEl && mg.active_meta_goals) {
+      mgEl.innerHTML = mg.active_meta_goals.map(g => `<div style="font-size:11px;padding:2px 0"><span style="color:var(--primary)">[${g.domain}]</span> <span style="color:var(--text-dim)">${g.description}</span> <span style="color:var(--warning)">p:${g.priority}</span></div>`).join('');
+    }
+  }
+
+  // State Backup
+  if (d.state_backup) {
+    const sb = d.state_backup;
+    setText('sb_count', sb.backup_count);
+    setText('sb_restores', sb.restore_count);
+    setText('sb_failed', sb.failed_backups);
+    setText('sb_available', sb.available_backups);
+  }
+
+  // Emotion NLP
+  if (d.emotion_nlp) {
+    setText('nlp_count', d.emotion_nlp.analysis_count);
+    const distEl = document.getElementById('nlp_dist');
+    if (distEl && d.emotion_nlp.emotion_distribution) {
+      const dist = d.emotion_nlp.emotion_distribution;
+      distEl.innerHTML = Object.entries(dist).map(([e, c]) => `<span style="font-size:11px;background:var(--card-border);padding:2px 6px;border-radius:8px;margin:2px;display:inline-block">${e}: ${c}</span>`).join('');
+    }
+  }
+
+  // Agent System
+  if (d.agent_system) {
+    const as = d.agent_system;
+    setText('as_generated', as.total_generated);
+    setText('as_retired', as.total_retired);
+    setText('as_data', as.total_data_items);
+    setText('as_evo', as.evolution_cycles);
+    const tb = document.getElementById('as_total_badge');
+    if (tb) tb.textContent = as.total_agents;
+    const alEl = document.getElementById('as_agents_list');
+    if (alEl && as.agents) {
+      alEl.innerHTML = as.agents.map(a => `<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--card-border)"><span style="color:var(--primary)">${a.name}</span> [${a.source_type}] — <span style="color:${a.status==='active'?'var(--success)':a.status==='failed'?'var(--danger)':'var(--text-dim)'}">${a.status}</span> runs:${a.runs} rate:${(a.success_rate*100).toFixed(0)}%</div>`).join('');
+    }
+  }
+
+  // Sensor Cortex
+  if (d.sensors) {
+    const sc = d.sensors;
+    setText('sc_count', sc.sensors_count);
+    setText('sc_enabled', sc.enabled_count);
+    setText('sc_heavy', sc.heavy_disabled ? 'Yes' : 'No');
+    const scb = document.getElementById('sc_badge');
+    if (scb) { scb.textContent = sc.heavy_disabled ? 'ECO' : 'OK'; scb.style.background = sc.heavy_disabled ? 'var(--warning)' : 'var(--success)'; }
+    const svEl = document.getElementById('sc_values');
+    if (svEl && sc.current_values) {
+      svEl.innerHTML = Object.entries(sc.current_values).map(([name, v]) => `<div class="metric"><span class="metric-label">${name}</span><span class="metric-value">${v.value} ${v.unit}</span></div>`).join('');
+    }
+  }
+
+  // Motor Cortex
+  if (d.motor) {
+    setText('mt_executed', d.motor.actions_executed);
+    setText('mt_voice', d.motor.voice_enabled ? 'Yes' : 'No');
+    const mtEl = document.getElementById('mt_recent');
+    if (mtEl && d.motor.recent_actions) {
+      mtEl.innerHTML = d.motor.recent_actions.map(a => `<div style="font-size:11px;color:${a.success?'var(--text-dim)':'var(--danger)'};padding:2px 0">${a.type}: ${a.output}</div>`).join('');
+    }
+  }
+
+  // External Learning
+  if (d.external_learning) {
+    const el = d.external_learning;
+    setText('el_sessions', el.learning_sessions);
+    setText('el_concepts', el.total_concepts);
+    setText('el_failed', el.failed_fetches);
+    const slEl = document.getElementById('el_sources');
+    if (slEl && el.source_stats) {
+      slEl.innerHTML = Object.entries(el.source_stats).map(([s, c]) => `<span style="font-size:11px;background:var(--card-border);padding:2px 6px;border-radius:8px;margin:2px;display:inline-block">${s}: ${c}</span>`).join('');
+    }
+  }
+
+  // Events
+  if (d.event_bus) {
+    setText('ev_published', d.event_bus.published);
+    setText('ev_vetoed', d.event_bus.vetoed);
+    setText('ev_total', d.event_bus.published);
+  }
+  if (d.event_history) {
+    const evLog = document.getElementById('eventLog');
+    if (evLog) {
+      evLog.innerHTML = d.event_history.slice().reverse().map(ev => {
+        let cls = '';
+        if (ev.event_type && ev.event_type.startsWith('llm')) cls = 'llm';
+        else if (ev.source === 'ethics_core') cls = 'ethics';
+        else if (ev.event_type === 'decision') cls = 'goal';
+        return `<div class="event-item ${cls}"><span style="color:var(--text-dim)">[${ev.source}]</span> ${ev.event_type}: ${JSON.stringify(ev.payload||{}).slice(0,120)}</div>`;
+      }).join('');
+    }
+  }
+
+  // Weight Training
+  if (d.weight_modifier) {
+    const wm = d.weight_modifier;
+    setText('wt_modelStatus', wm.model_loaded ? 'loaded' : 'not loaded');
+    const badge = document.getElementById('wt_modelStatus');
+    if (badge) badge.style.background = wm.model_loaded ? 'var(--success)' : 'var(--card-border)';
+    setText('wt_modelPath', wm.model_path || '-');
+    setText('wt_device', wm.device || '-');
+    setText('wt_dtype', wm.dtype || '-');
+    setText('wt_quantize', wm.quantize || 'none');
+    setText('wt_checkpoint', wm.current_checkpoint ? wm.current_checkpoint.split(/[\\/]/).pop() : 'base');
+    setText('wt_totalTrainings', wm.total_trainings || 0);
+    setText('wt_successCount', (wm.total_trainings || 0) - (wm.total_rollbacks || 0));
+    setText('wt_rollbacks', wm.total_rollbacks || 0);
+    setText('wt_canTrain', wm.can_train ? 'Yes' : wm.can_train_reason || 'No');
+    setText('wt_baselineLoss', wm.baseline_val_loss != null ? wm.baseline_val_loss.toFixed(4) : '-');
+
+    const tb = document.getElementById('wt_trainBadge');
+    if (tb) {
+      if (wm.training_in_progress) { tb.textContent = 'training'; tb.style.background = 'var(--warning)'; }
+      else { tb.textContent = 'idle'; tb.style.background = 'var(--card-border)'; }
+    }
+
+    const pp = document.getElementById('wt_trainProgress');
+    if (pp && wm.train_progress && wm.training_in_progress) {
+      pp.style.display = 'block';
+      setText('wt_progressStatus', wm.train_progress.status || '-');
+      setText('wt_progressEpoch', wm.train_progress.epoch || '-');
+      setText('wt_progressLoss', wm.train_progress.loss ? wm.train_progress.loss.toFixed(4) : '-');
+      const pct = wm.train_progress.total_steps > 0 ? (wm.train_progress.step / wm.train_progress.total_steps * 100) : 0;
+      setBar('wt_progressBar', pct);
+    } else if (pp) { pp.style.display = 'none'; }
+
+    if (wm.lora_config) {
+      setText('wt_loraR', wm.lora_config.r);
+      setText('wt_loraAlpha', wm.lora_config.alpha);
+      setText('wt_loraDropout', wm.lora_config.dropout);
+      setText('wt_loraTargets', (wm.lora_config.target_modules || []).join(', '));
+    }
+
+    const cpDiv = document.getElementById('wt_checkpoints');
+    if (cpDiv && wm.checkpoints) {
+      if (wm.checkpoints.length === 0) {
+        cpDiv.innerHTML = '<span style="color:var(--text-dim)">No checkpoints yet</span>';
+      } else {
+        cpDiv.innerHTML = wm.checkpoints.map(cp =>
+          `<div class="event-item" style="cursor:pointer" onclick="wtRollbackTo('${cp.path.replace(/\\/g,'\\\\')}')">
+            <span style="color:${cp.is_current?'var(--success)':'var(--text)'}">${cp.is_current?'▶ ':''}${cp.name}</span>
+            ${cp.lora_r ? ` <span style="color:var(--text-dim);font-size:10px">r=${cp.lora_r} α=${cp.lora_alpha}</span>` : ''}
+          </div>`
+        ).join('');
+      }
+    }
+
+    const hDiv = document.getElementById('wt_history');
+    if (hDiv && wm.recent_history) {
+      hDiv.innerHTML = wm.recent_history.slice().reverse().map(h => {
+        const color = h.status === 'applied' ? 'var(--success)' : h.status === 'rolled_back' ? 'var(--danger)' : 'var(--warning)';
+        return `<div class="event-item"><span style="color:${color}">[${h.status}]</span> loss=${h.train_loss?.toFixed(4)||'?'} val=${h.val_loss?.toFixed(4)||'?'} samples=${h.train_samples||'?'}</div>`;
+      }).join('') || '<span style="color:var(--text-dim)">No training history</span>';
+    }
+  }
+  if (d.dataset_builder) {
+    const db = d.dataset_builder;
+    setText('wt_dsBuilds', db.builds_total || 0);
+    setText('wt_dsLastSize', db.last_dataset_size || 0);
+    setText('wt_dsOnDisk', db.datasets_on_disk || 0);
+    setText('wt_dsCount', db.datasets_on_disk || 0);
+  }
+}
+
+
+async function setKey(provider) {
+  const keyEl = provider === 'deepseek' ? document.getElementById('dsKey') : document.getElementById('clKey');
+  const key = keyEl.value.trim();
+  if (!key) return;
+  const res = await fetch('/api/llm/set-key', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider, key})
+  });
+  const data = await res.json();
+  keyEl.value = '';
+  keyEl.placeholder = data.status || 'Set!';
+}
+
+async function setProvider(mode) {
+  await fetch(`/api/llm/provider/${mode}`, {method:'POST'});
+}
+
+async function spLockdown(action) {
+  const res = await fetch(`/api/self-preservation/lockdown/${action}`, {method:'POST'});
+  const data = await res.json();
+  alert(data.status || JSON.stringify(data));
+}
+
+async function spIntegrity() {
+  const res = await fetch('/api/self-preservation/integrity', {method:'POST'});
+  const data = await res.json();
+  alert(`Integrity: ${data.status}\nChecked: ${data.checked}\nIssues: ${(data.issues||[]).join(', ') || 'none'}`);
+}
+
+async function manualBackup() {
+  const res = await fetch('/api/state-backup/save', {method:'POST'});
+  const data = await res.json();
+  alert(data.success ? `Backup saved! Size: ${data.size_compressed} bytes (${data.compression_ratio}% of raw)` : `Failed: ${data.error}`);
+}
+
+async function restoreBackup() {
+  if (!confirm('Restore from latest backup?')) return;
+  const res = await fetch('/api/state-backup/restore', {method:'POST'});
+  const data = await res.json();
+  alert(`Status: ${data.status}`);
+}
+
+async function analyzeEmotion() {
+  const text = document.getElementById('nlpText').value.trim();
+  if (!text) return;
+  const res = await fetch('/api/emotion-nlp/analyze', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+  const data = await res.json();
+  const el = document.getElementById('nlp_result');
+  if (el) el.innerHTML = `<span style="color:var(--primary)">Dominant: ${data.dominant}</span> | Valence: ${data.valence} | Scores: ${JSON.stringify(data.scores||{}).slice(0,120)}`;
+}
+
+async function createAgent() {
+  const name = document.getElementById('agentName').value.trim() || 'spider';
+  const source_type = document.getElementById('agentType').value;
+  const task = document.getElementById('agentTask').value.trim() || 'Collect data';
+  const res = await fetch('/api/agents/create', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, source_type, task})});
+  const data = await res.json();
+  alert(`Agent created: ${data.agent?.name} [${data.agent?.source_type}]\nPrompt preview: ${(data.prompt||'').slice(0,150)}...`);
+}
+
+async function wtLoadModel() {
+  const el = document.getElementById('wt_modelStatus');
+  if (el) { el.textContent = 'loading...'; el.style.background = 'var(--warning)'; }
+  const res = await fetch('/api/weight-training/load-model', {method:'POST'});
+  const data = await res.json();
+  alert(data.success ? data.message : `Error: ${data.error}`);
+}
+
+async function wtBuildDataset() {
+  const el = document.getElementById('wt_buildResult');
+  if (el) el.innerHTML = '<span style="color:var(--warning)">Building dataset...</span>';
+  const res = await fetch('/api/weight-training/build-dataset', {method:'POST'});
+  const data = await res.json();
+  if (el) {
+    if (data.success) {
+      el.innerHTML = `<span style="color:var(--success)">Built: ${data.total_size} samples (${data.train_size} train, ${data.val_size} val)</span>`;
+    } else {
+      el.innerHTML = `<span style="color:var(--danger)">Failed: ${data.error}</span>`;
+    }
+  }
+}
+
+async function wtTrain() {
+  if (!confirm('Start LoRA fine-tuning? This may take a while.')) return;
+  const el = document.getElementById('wt_trainBadge');
+  if (el) { el.textContent = 'starting...'; el.style.background = 'var(--warning)'; }
+  const res = await fetch('/api/weight-training/train', {method:'POST'});
+  const data = await res.json();
+  if (data.success) {
+    alert(`Training complete!\nLoss: ${data.train_loss}\nVal Loss: ${data.val_loss || 'N/A'}\nCheckpoint: ${data.checkpoint}`);
+  } else {
+    alert(`Training failed: ${data.error || JSON.stringify(data)}`);
+  }
+}
+
+async function wtRollback() {
+  if (!confirm('Rollback to base model (remove all LoRA)?')) return;
+  const res = await fetch('/api/weight-training/rollback', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+  const data = await res.json();
+  alert(data.success ? data.message : `Error: ${data.error}`);
+}
+
+async function wtRollbackTo(path) {
+  if (!confirm(`Rollback to checkpoint: ${path.split(/[\\/]/).pop()}?`)) return;
+  const res = await fetch('/api/weight-training/rollback', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({checkpoint: path})});
+  const data = await res.json();
+  alert(data.success ? data.message : `Error: ${data.error}`);
+}
+
+async function wtSetProvider(mode) {
+  const res = await fetch(`/api/weight-training/provider/${mode}`, {method:'POST'});
+  const data = await res.json();
+  alert(`Provider set to: ${data.provider_mode}`);
+}
+
+async function learnNow() {
+  const source = document.getElementById('learnSource').value;
+  const topic = document.getElementById('learnTopic').value.trim();
+  const el = document.getElementById('el_result');
+  if (el) el.innerHTML = '<span style="color:var(--warning)">Learning...</span>';
+  const res = await fetch('/api/external-learning/learn', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({source, topic})});
+  const data = await res.json();
+  if (el) {
+    if (data.success) {
+      el.innerHTML = `<span style="color:var(--success)">Learned ${(data.concepts||[]).length} concepts from ${source}</span><br>${data.summary||''}`;
+    } else {
+      el.innerHTML = `<span style="color:var(--danger)">Failed: ${data.error||'unknown'}</span>`;
+    }
+  }
+}
+
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  appendChat('user', msg);
+  try {
+    const res = await fetch('/api/llm/think', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt: msg})
+    });
+    const data = await res.json();
+    if (data.success) {
+      appendChat('aegis', data.response, data.provider);
+      if (document.getElementById('autoSpeak').checked) speak(data.response);
+    } else {
+      appendChat('aegis', 'Error: ' + (data.error || 'unknown'), 'system');
+    }
+  } catch(e) {
+    appendChat('aegis', 'Connection error', 'system');
+  }
+}
+
+function cleanJsonResponse(text) {
+  let t = text.trim();
+  // Try to parse as JSON and convert to readable text
+  try {
+    if (t.startsWith('{') || t.startsWith('[')) {
+      const obj = JSON.parse(t);
+      return jsonToText(obj);
+    }
+    // Try extracting JSON from markdown code blocks
+    const m = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (m) {
+      const obj = JSON.parse(m[1].trim());
+      return jsonToText(obj);
+    }
+  } catch(e) {}
+  return t;
+}
+function jsonToText(obj) {
+  if (typeof obj === 'string') return obj;
+  if (Array.isArray(obj)) return obj.map(v => typeof v === 'string' ? '- ' + v : jsonToText(v)).join('\n');
+  if (typeof obj === 'object' && obj !== null) {
+    return Object.entries(obj).map(([k,v]) => {
+      const label = k.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+      if (typeof v === 'string') return label + ': ' + v;
+      if (typeof v === 'number' || typeof v === 'boolean') return label + ': ' + v;
+      if (Array.isArray(v)) return label + ':\n' + v.map(i => '  - ' + (typeof i === 'string' ? i : JSON.stringify(i))).join('\n');
+      return label + ': ' + jsonToText(v);
+    }).join('\n');
+  }
+  return String(obj);
+}
+function appendChat(role, text, provider) {
+  const area = document.getElementById('chatArea');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  let html = '';
+  if (provider) html += `<div class="provider-tag" style="color:${provider==='deepseek'?'var(--info)':provider==='claude'?'var(--orange)':'var(--text-dim)'}">[${provider}]</div>`;
+  const clean = role === 'aegis' ? cleanJsonResponse(text) : text;
+  html += clean.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g, '<br>');
+  div.innerHTML = html;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+let recognition = null;
+function toggleMic() {
+  const btn = document.getElementById('micBtn');
+  if (recognition) { recognition.stop(); recognition = null; btn.classList.remove('recording'); return; }
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) { alert('Speech recognition not supported'); return; }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SR();
+  recognition.lang = 'ru-RU';
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.onresult = (e) => { document.getElementById('chatInput').value = e.results[0][0].transcript; sendChat(); };
+  recognition.onerror = (e) => {
+    recognition = null; btn.classList.remove('recording');
+    if (e.error === 'not-allowed') appendChat('aegis', 'Микрофон заблокирован. Разрешите доступ в браузере (значок замка в адресной строке). Также убедитесь, что открываете по http://localhost:8888', 'system');
+    else if (e.error === 'no-speech') appendChat('aegis', 'Речь не распознана. Попробуйте ещё раз.', 'system');
+    else appendChat('aegis', 'Ошибка микрофона: ' + e.error, 'system');
+  };
+  recognition.onend = () => { recognition = null; btn.classList.remove('recording'); };
+  try { recognition.start(); btn.classList.add('recording'); }
+  catch(e) { appendChat('aegis', 'Не удалось запустить микрофон: ' + e.message, 'system'); recognition = null; }
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text.slice(0, 500));
+  u.rate = parseFloat(document.getElementById('voiceSpeed').value);
+  const selV = document.getElementById('voiceSelect').value;
+  const v = speechSynthesis.getVoices().find(v => v.name === selV);
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+
+function populateVoices() {
+  const sel = document.getElementById('voiceSelect');
+  const voices = speechSynthesis.getVoices();
+  sel.innerHTML = voices.map(v => `<option value="${v.name}" ${v.lang.startsWith('ru')?'selected':''}>${v.name} (${v.lang})</option>`).join('');
+}
+if (speechSynthesis.onvoiceschanged !== undefined) speechSynthesis.onvoiceschanged = populateVoices;
+setTimeout(populateVoices, 500);
+
+document.getElementById('voiceSpeed').addEventListener('input', (e) => {
+  document.getElementById('speedLabel').textContent = e.target.value + 'x';
+});
+</script>
+</body>
+</html>
