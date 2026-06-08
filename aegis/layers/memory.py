@@ -6,8 +6,11 @@ computed from age, importance, and access count — no random threshold.
 import json
 import math
 import time
+import logging
 from pathlib import Path
 from aegis.config import MEMORY_DIR, MAX_WORKING_MEMORY, MEMORY_DECAY_RATE
+
+logger = logging.getLogger("aegis.memory")
 
 
 class MemorySystem:
@@ -30,7 +33,8 @@ class MemorySystem:
                 self.procedural = data.get("procedural", [])
                 self.meta = data.get("meta", {})
             except Exception:
-                pass
+                logger.warning("Failed to load memory state from %s — starting empty",
+                               self._persistence_path, exc_info=True)
 
     def save(self):
         data = {

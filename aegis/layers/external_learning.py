@@ -172,20 +172,24 @@ class ExternalLearning:
         }
 
     async def _fetch_quotes(self) -> dict:
-        """Fetch quotes using httpx."""
+        """Fetch quotes using httpx (ZenQuotes — quotable.io is frequently down)."""
         try:
-            url = "https://api.quotable.io/random"
+            url = "https://zenquotes.io/api/random"
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=DEFAULT_HEADERS) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
-                    return {
-                        "success": True,
-                        "source": "quotes",
-                        "topic": "wisdom",
-                        "summary": f"\"{data['content']}\" — {data['author']}",
-                        "concepts": [data["content"][:80]],
-                    }
+                    if isinstance(data, list) and data:
+                        content = data[0].get("q", "")
+                        author = data[0].get("a", "Unknown")
+                        if content:
+                            return {
+                                "success": True,
+                                "source": "quotes",
+                                "topic": "wisdom",
+                                "summary": f"\"{content}\" — {author}",
+                                "concepts": [content[:80]],
+                            }
         except Exception:
             pass
         # Fallback

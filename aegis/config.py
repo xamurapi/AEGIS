@@ -17,8 +17,17 @@ MAX_WORKING_MEMORY = 50
 MEMORY_DECAY_RATE = 0.02
 ETHICAL_THRESHOLD_AUTO = 0.7
 ETHICAL_THRESHOLD_REVIEW = 0.85
-API_HOST = "0.0.0.0"
-API_PORT = 8888
+# Bind to loopback by default — the control plane can activate/deactivate the
+# kill switch, grant permissions and trigger self-modification, so it must NOT
+# be network-exposed unless the operator explicitly opts in via AEGIS_API_HOST.
+API_HOST = os.environ.get("AEGIS_API_HOST", "127.0.0.1")
+API_PORT = int(os.environ.get("AEGIS_API_PORT", "8888"))
+# Shared-secret token for mutating (POST) endpoints. When set, clients must send
+# it in the `X-API-Token` header. Empty string = no token required (only safe
+# together with the loopback bind above).
+API_TOKEN = os.environ.get("AEGIS_API_TOKEN", "")
+# Allowed CORS origins (comma-separated). Empty = no cross-origin access.
+API_CORS_ORIGINS = [o for o in os.environ.get("AEGIS_API_CORS_ORIGINS", "").split(",") if o]
 
 # DeepSeek LLM
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -74,3 +83,16 @@ CODE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
 CODE_MOD_EVERY_N_TICKS = int(os.environ.get("CODE_MOD_EVERY_N_TICKS", "500"))  # attempt code mod every N ticks
 CODE_MOD_MIN_TICK = int(os.environ.get("CODE_MOD_MIN_TICK", "100"))  # don't modify code before this tick
 CODE_MOD_MAX_PER_SESSION = int(os.environ.get("CODE_MOD_MAX_PER_SESSION", "10"))  # max code mods per run
+# Only attempt whole-file LLM rewrites on files at or below this size (chars).
+# The model must return the entire file, so larger files can't be regenerated
+# reliably within the modification-size cap.
+CODE_MOD_MAX_FILE_CHARS = int(os.environ.get("CODE_MOD_MAX_FILE_CHARS", "4000"))
+
+# Broadcast the (large) full status over WebSocket at most every N ticks.
+WS_BROADCAST_EVERY_N_TICKS = int(os.environ.get("WS_BROADCAST_EVERY_N_TICKS", "1"))
+
+# --- LLM call budget (per process run) ---
+# Hard ceiling on LLM calls per run to bound token spend; 0 = unlimited.
+LLM_MAX_CALLS_PER_RUN = int(os.environ.get("LLM_MAX_CALLS_PER_RUN", "0"))
+# Minimum seconds between any two LLM calls (simple rate limit); 0 = none.
+LLM_MIN_INTERVAL_SECONDS = float(os.environ.get("LLM_MIN_INTERVAL_SECONDS", "0"))

@@ -1,5 +1,6 @@
 """MotorCortex — action execution system (console output, voice synthesis, device control)."""
 import time
+import threading
 from collections import deque
 
 
@@ -38,13 +39,16 @@ class MotorCortex:
 
         if action_type == "speak" and self.voice_enabled and self.voice_engine:
             text = payload.get("text", "")
-            try:
-                self.voice_engine.say(text)
-                self.voice_engine.runAndWait()
-                result["output"] = f"Spoke: {text[:50]}"
-            except Exception as e:
-                result["success"] = False
-                result["output"] = str(e)
+            # runAndWait() blocks until speech finishes; run it off the caller's
+            # thread so it never stalls the async tick loop.
+            def _speak(t=text):
+                try:
+                    self.voice_engine.say(t)
+                    self.voice_engine.runAndWait()
+                except Exception:
+                    pass
+            threading.Thread(target=_speak, daemon=True).start()
+            result["output"] = f"Speaking (async): {text[:50]}"
 
         elif action_type == "log":
             message = payload.get("message", "")

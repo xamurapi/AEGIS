@@ -48,7 +48,7 @@ class WeightModifier:
                 self._baseline_val_loss = data.get("baseline_val_loss")
                 self.train_history = data.get("train_history", [])[-20:]
             except Exception:
-                pass
+                logger.warning("Failed to load training stats from %s", self._stats_path, exc_info=True)
 
     def _save_stats(self):
         data = {
@@ -234,6 +234,7 @@ class WeightModifier:
 
     def _train_sync(self, dataset_dir: Path) -> dict:
         """Synchronous training logic (runs in executor)."""
+        import inspect
         import torch
         from transformers import TrainingArguments, Trainer, TrainerCallback
 
@@ -271,7 +272,12 @@ class WeightModifier:
                     progress_ref["step"] = state.global_step
                     progress_ref["total_steps"] = state.max_steps
 
-        # Training args
+        # Training args. The eval-strategy kwarg was renamed from
+        # `evaluation_strategy` to `eval_strategy` in transformers 4.46, so we
+        # pick whichever the installed version accepts.
+        eval_value = "epoch" if val_dataset else "no"
+        ta_params = inspect.signature(TrainingArguments.__init__).parameters
+        eval_kwarg = "eval_strategy" if "eval_strategy" in ta_params else "evaluation_strategy"
         training_args = TrainingArguments(
             output_dir=str(checkpoint_dir),
             num_train_epochs=TRAIN_EPOCHS,
@@ -281,12 +287,12 @@ class WeightModifier:
             warmup_ratio=0.1,
             logging_steps=5,
             save_strategy="epoch",
-            evaluation_strategy="epoch" if val_dataset else "no",
             save_total_limit=1,
             fp16=LOCAL_MODEL_DTYPE == "float16" and torch.cuda.is_available(),
             bf16=LOCAL_MODEL_DTYPE == "bfloat16" and torch.cuda.is_available(),
             report_to="none",
             remove_unused_columns=False,
+            **{eval_kwarg: eval_value},
         )
 
         trainer = Trainer(
