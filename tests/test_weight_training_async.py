@@ -23,6 +23,9 @@ def _make_substrate():
     s.agent_system.run_due_agents = _noop_agents
     s.external_learning.learn_from_source = _noop_learn
     s.llm.enabled = False
+    # Neutralize the capability-layer env step (it runs a sandbox subprocess) so
+    # the tick-timing assertion isolates training scheduling, not env work.
+    s.environment.step = lambda: {"reward": 0.0, "solved": False, "task": None}
     # Deterministically approve weight modification so the test exercises the
     # scheduling/threading behavior, not the ethics gate.
     s.ethics.evaluate_weight_modification = lambda info: {"status": "approved", "score": 1.0}

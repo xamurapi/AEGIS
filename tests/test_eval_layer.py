@@ -267,14 +267,15 @@ def test_new_coding_tasks_are_solvable():
 
 # ── live LLM coding synthesis (stubbed model) ────────────────────
 def _fresh_substrate_for_coding(task_id):
-    """A Substrate isolated from the on-disk skill store, with no preloaded
-    solution for the given coding task (avoids cross-test pollution)."""
+    """A Substrate isolated from the on-disk skill store, reset to clean seeds so
+    no persisted/leaked coding solution affects the test."""
+    from dataclasses import asdict
     from aegis.layers.substrate import Substrate
+    from aegis.eval.skill_library import _SEED_SKILLS
     s = Substrate()
     task = next(t for t in s.evaluator.coding_tasks if t.id == task_id)
     s.skill_library._store_path = None  # don't read/write the shared store
-    s.skill_library.skills = {n: sk for n, sk in s.skill_library.skills.items()
-                              if task.kind_key() not in sk.kinds}
+    s.skill_library.skills = {sk.name: Skill(**asdict(sk)) for sk in _SEED_SKILLS}
     return s, task
 
 
