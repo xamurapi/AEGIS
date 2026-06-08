@@ -273,15 +273,16 @@ class AgentSystem:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=DEFAULT_HEADERS) as client:
             for _ in range(3):
                 try:
-                    resp = await client.get("https://api.quotable.io/random")
+                    resp = await client.get("https://zenquotes.io/api/random")
                     if resp.status_code == 200:
                         data = resp.json()
-                        results.append({
-                            "type": "quote",
-                            "title": data.get("author", "Unknown"),
-                            "summary": data.get("content", ""),
-                            "source": "quotable",
-                        })
+                        if isinstance(data, list) and data and data[0].get("q"):
+                            results.append({
+                                "type": "quote",
+                                "title": data[0].get("a", "Unknown"),
+                                "summary": data[0].get("q", ""),
+                                "source": "zenquotes",
+                            })
                 except Exception:
                     pass
         if not results:

@@ -1,11 +1,13 @@
 import time
 import json
 import asyncio
+import logging
 from pathlib import Path
 from aegis.config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
     CLAUDE_API_KEY, CLAUDE_MODEL,
     LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_PROVIDER,
+    LLM_MAX_CALLS_PER_RUN, LLM_MIN_INTERVAL_SECONDS,
     DATA_DIR,
 )
 
@@ -26,6 +28,8 @@ def _get_anthropic():
         from anthropic import AsyncAnthropic as _AA
         AsyncAnthropic = _AA
     return AsyncAnthropic
+
+logger = logging.getLogger("aegis.llm")
 
 TOKEN_STATS_FILE = DATA_DIR / "token_stats.json"
 
@@ -108,6 +112,10 @@ class LLMEngine:
         self.last_provider = ""
         self.history: list[dict] = []
         self._call_counter = 0
+        # Budget / rate-limit bookkeeping (per process run)
+        self._calls_this_run = 0
+        self._last_call_ts = 0.0
+        self.budget_blocks = 0
 
         # Local model reference (set externally by substrate)
         self.weight_modifier = None
@@ -136,7 +144,7 @@ class LLMEngine:
                 self.lifetime_claude_tokens = data.get("lifetime_claude_tokens", 0)
                 self.lifetime_local_tokens = data.get("lifetime_local_tokens", 0)
             except Exception:
-                pass
+                logger.warning("Failed to load LLM lifetime stats from %s", TOKEN_STATS_FILE, exc_info=True)
 
     def _save_lifetime_stats(self):
         data = {
@@ -284,10 +292,27 @@ class LLMEngine:
         self.claude.last_latency_ms = round(elapsed * 1000)
         return {"content": content, "tokens_in": tin, "tokens_out": tout, "latency_ms": round(elapsed * 1000)}
 
+    def _budget_check(self) -> str | None:
+        """Return an error string if this call should be blocked, else None."""
+        if LLM_MAX_CALLS_PER_RUN and self._calls_this_run >= LLM_MAX_CALLS_PER_RUN:
+            return f"LLM call budget exhausted ({LLM_MAX_CALLS_PER_RUN} calls/run)"
+        if LLM_MIN_INTERVAL_SECONDS:
+            elapsed = time.time() - self._last_call_ts
+            if self._last_call_ts > 0 and elapsed < LLM_MIN_INTERVAL_SECONDS:
+                return f"LLM rate limit: {LLM_MIN_INTERVAL_SECONDS - elapsed:.1f}s until next call allowed"
+        return None
+
     async def think(self, prompt: str, context: dict = None) -> dict:
         provider = self._pick_provider()
         if provider == "none":
             return {"success": False, "error": "No LLM configured (no API keys)", "response": "", "provider": "none"}
+
+        block = self._budget_check()
+        if block:
+            self.budget_blocks += 1
+            return {"success": False, "error": block, "response": "", "provider": provider, "budget_blocked": True}
+        self._calls_this_run += 1
+        self._last_call_ts = time.time()
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if context:
@@ -427,6 +452,8 @@ Generate a new topic to investigate. Respond in JSON:
 
         Returns parsed JSON with the proposed change or None.
         """
+        # Send the COMPLETE source: we ask the model to return the whole file,
+        # so it must see the whole file (callers skip files too large for this).
         prompt = f"""You are AEGIS analyzing your own source code for self-improvement.
 
 File: {file_path}
@@ -434,7 +461,7 @@ Current system state: tick={system_state.get('tick', 0)}, energy={system_state.g
 
 Source code:
 ```python
-{source_code[:4000]}
+{source_code}
 ```
 
 Analyze this code and propose ONE specific, small improvement. It can be:
@@ -513,6 +540,9 @@ Only recommend adjustments if metrics clearly indicate a problem. If the system 
             "claude": self.claude.to_dict(),
             "local": self.local.to_dict(),
             "total_calls": self.total_calls,
+            "calls_this_run": self._calls_this_run,
+            "call_budget": LLM_MAX_CALLS_PER_RUN or "unlimited",
+            "budget_blocks": self.budget_blocks,
             "total_tokens_in": self.total_tokens_in,
             "total_tokens_out": self.total_tokens_out,
             "total_tokens": self.total_tokens_in + self.total_tokens_out,

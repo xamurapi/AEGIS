@@ -1,18 +1,25 @@
 """AEGIS API Server — REST + WebSocket for monitoring and control (EXT-001..EXT-003)."""
 import asyncio
 import json
-import time
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import aegis.config as cfg
 from aegis.layers.substrate import Substrate
 
-app = FastAPI(title="AEGIS Control Center", version="2.0.0")
-substrate = Substrate()
+logger = logging.getLogger("aegis.api")
+
+# Substrate is created in the lifespan handler (not at import time) so that the
+# module can be imported cheaply (e.g. by tests) without spinning up the whole
+# runtime, and so a single shared instance is owned by the running app.
+substrate: Substrate | None = None
+_run_task: asyncio.Task | None = None
 connected_ws: list[WebSocket] = []
 
 DASHBOARD_DIR = Path(__file__).parent.parent / "dashboard"
@@ -27,20 +34,53 @@ async def broadcast(data: dict):
         except Exception:
             dead.append(ws)
     for ws in dead:
-        connected_ws.remove(ws)
+        if ws in connected_ws:
+            connected_ws.remove(ws)
 
 
-substrate._ws_broadcast = broadcast
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-@app.on_event("startup")
-async def startup():
-    asyncio.create_task(substrate.run())
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global substrate, _run_task
+    substrate = Substrate()
+    substrate._ws_broadcast = broadcast
+    substrate._ws_has_clients = lambda: len(connected_ws) > 0
+    _run_task = asyncio.create_task(substrate.run())
+    try:
+        yield
+    finally:
+        if substrate is not None:
+            substrate.stop()
+        if _run_task is not None:
+            _run_task.cancel()
+            try:
+                await _run_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    substrate.stop()
+app = FastAPI(title="AEGIS Control Center", version="2.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    """Require X-API-Token on every state-changing request when a token is set."""
+    if cfg.API_TOKEN and request.method in _MUTATING_METHODS:
+        if request.headers.get("x-api-token") != cfg.API_TOKEN:
+            return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
+    return await call_next(request)
+
+
+if cfg.API_CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cfg.API_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -67,7 +107,8 @@ async def kill_switch(action: str):
 
 @app.post("/api/tick-interval/{seconds}")
 async def set_tick_interval(seconds: float):
-    import aegis.config as cfg
+    # The run loop reads cfg.TICK_INTERVAL dynamically (see Substrate.run), so
+    # mutating the module attribute here actually takes effect.
     seconds = max(0.5, min(30.0, seconds))
     cfg.TICK_INTERVAL = seconds
     return {"tick_interval": seconds}
@@ -237,9 +278,18 @@ async def llm_think(data: dict):
     return _autonomous_reply(prompt)
 
 
+def _semantic_summary(val: dict) -> str:
+    """Extract a human-readable summary from a semantic-memory entry.
+
+    MemorySystem.add_semantic nests the payload under ``relations`` so we must
+    look there first (top-level lookups always missed before this fix)."""
+    rel = val.get("relations", {}) if isinstance(val, dict) else {}
+    return (rel.get("summary") or rel.get("definition")
+            or val.get("summary") or val.get("definition") or "")
+
+
 def _autonomous_reply(prompt: str) -> dict:
     """Generate response from system's own knowledge when no LLM is available."""
-    import random
     p = prompt.lower().strip()
 
     # Knowledge questions — check FIRST (before identity, because "что ты знаешь" contains "что ты")
@@ -253,7 +303,7 @@ def _autonomous_reply(prompt: str) -> dict:
         results = []
         for key, val in substrate.memory.semantic.items():
             if topic and topic.lower() in key.lower():
-                summary = val.get("summary", val.get("definition", str(val)))
+                summary = _semantic_summary(val) or str(val.get("relations", val))
                 results.append(f"  {key}: {summary[:150]}")
             if len(results) >= 5:
                 break
@@ -336,7 +386,7 @@ def _autonomous_reply(prompt: str) -> dict:
     for key, val in substrate.memory.semantic.items():
         for w in words:
             if w.lower() in key.lower():
-                summary = val.get("summary", val.get("definition", ""))
+                summary = _semantic_summary(val)
                 if summary:
                     found.append(f"• {key}: {summary[:120]}")
                 break
@@ -603,6 +653,9 @@ async def chat(request: ChatRequest):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    # When a token is configured, privileged actions require it as a query param
+    # (?token=...) since browsers cannot set custom headers on WebSockets.
+    authorized = not cfg.API_TOKEN or ws.query_params.get("token") == cfg.API_TOKEN
     await ws.accept()
     connected_ws.append(ws)
     try:
@@ -611,13 +664,18 @@ async def websocket_endpoint(ws: WebSocket):
             data = await ws.receive_text()
             try:
                 cmd = json.loads(data)
-                if cmd.get("action") == "kill_switch_on":
+                action = cmd.get("action")
+                if action in ("kill_switch_on", "kill_switch_off") and not authorized:
+                    await ws.send_text(json.dumps({"error": "unauthorized"}))
+                    continue
+                if action == "kill_switch_on":
                     substrate.ethics.activate_kill_switch()
-                elif cmd.get("action") == "kill_switch_off":
+                elif action == "kill_switch_off":
                     substrate.ethics.deactivate_kill_switch()
-                elif cmd.get("action") == "get_status":
+                elif action == "get_status":
                     await ws.send_text(json.dumps(substrate.full_status(), default=str))
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
-        connected_ws.remove(ws)
+        if ws in connected_ws:
+            connected_ws.remove(ws)

@@ -1,0 +1,16 @@
+# Local model + LoRA fine-tuning — optional and large (multi-GB download).
+# Install only if you want the local model / weight-modification features:
+#   pip install -r requirements-ml.txt
+#
+# Versions are pinned to ranges known to work with the Trainer arguments used
+# in weight_modifier.py (the eval-strategy kwarg is selected dynamically, so
+# both pre- and post-4.46 transformers are supported).
+torch>=2.2.0,<3.0
+transformers>=4.40.0,<5.0
+peft>=0.10.0,<0.14.0
+bitsandbytes>=0.43.0
+datasets>=2.19.0,<3.0
+accelerate>=0.30.0
+
+# Text-to-speech — optional
+pyttsx3>=2.90

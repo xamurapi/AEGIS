@@ -1,37 +1,46 @@
 """Code Self-Modification — read, analyze, modify own source code with safety and rollback."""
 import ast
-import sys
 import time
 import json
-import importlib
+import py_compile
 import logging
 from pathlib import Path
 
 logger = logging.getLogger("aegis.code_modifier")
 
-# Patterns that must NEVER appear in modified code
+# Substring patterns that must NEVER appear in modified code. This is a cheap
+# first pass; the authoritative check is the AST analysis below, which cannot be
+# fooled by spacing tricks like "eval ( x )".
 FORBIDDEN_PATTERNS = [
-    "os.system(",
-    "subprocess.run(",
-    "subprocess.Popen(",
-    "subprocess.call(",
-    "__import__('os')",
-    '__import__("os")',
-    "shutil.rmtree(",
-    "eval(",
-    "exec(",
+    "os.system",
+    "os.popen",
+    "subprocess",
+    "__import__",
+    "shutil.rmtree",
     "open('/etc",
     "open('C:\\\\Windows",
-    "rmdir(",
-    "unlink(",
-    # Ethics protection — these strings must not be removed from ethics_core
-    # (checked separately in validate_ethics_preserved)
 ]
 
-# Files that are IMMUTABLE — cannot be modified by the system
+# Function names that are dangerous to *call* regardless of how they're spelled.
+DANGEROUS_CALL_NAMES = {
+    "eval", "exec", "compile", "__import__", "getattr", "setattr", "delattr",
+}
+# Dotted attribute calls that are dangerous (module.attr form).
+DANGEROUS_ATTR_CALLS = {
+    ("os", "system"), ("os", "popen"), ("os", "remove"), ("os", "unlink"),
+    ("os", "rmdir"), ("os", "kill"), ("os", "_exit"),
+    ("subprocess", "run"), ("subprocess", "Popen"), ("subprocess", "call"),
+    ("subprocess", "check_output"), ("subprocess", "check_call"),
+    ("shutil", "rmtree"), ("sys", "exit"),
+}
+# Imports that modified code may not introduce.
+FORBIDDEN_IMPORTS = {"subprocess", "ctypes", "signal", "socket", "marshal", "pickle"}
+
+# Files that are IMMUTABLE — cannot be modified by the system.
 IMMUTABLE_FILES = {
-    "layers/ethics_core.py",   # ethical axioms must never be changed by AI
-    "config.py",               # config changes need human approval
+    "layers/ethics_core.py",        # ethical axioms must never be changed by AI
+    "layers/self_preservation.py",  # the watchdog must not edit itself away
+    "config.py",                    # config changes need human approval
 }
 
 # Max diff size (chars) per single modification
@@ -68,7 +77,7 @@ class CodeModifier:
                 self.blocked_mods = data.get("blocked_mods", 0)
                 self.modifications = data.get("modifications", [])[-50:]
             except Exception:
-                pass
+                logger.warning("Failed to load code-mod stats from %s", self._stats_path, exc_info=True)
 
     def _save_stats(self):
         data = {
@@ -144,17 +153,28 @@ class CodeModifier:
         except FileNotFoundError:
             pass  # new file, OK
 
-        # AST analysis — check for dangerous node types
+        # AST analysis — the authoritative check. Detects dangerous imports and
+        # dangerous *calls* regardless of whitespace/formatting obfuscation.
         try:
             tree = ast.parse(code)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
-                        if alias.name in ("subprocess", "ctypes", "signal"):
+                        if alias.name.split(".")[0] in FORBIDDEN_IMPORTS:
                             warnings.append(f"BLOCKED: forbidden import '{alias.name}'")
-                if isinstance(node, ast.ImportFrom):
-                    if node.module and node.module.split(".")[0] in ("subprocess", "ctypes", "signal"):
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module and node.module.split(".")[0] in FORBIDDEN_IMPORTS:
                         warnings.append(f"BLOCKED: forbidden import from '{node.module}'")
+                elif isinstance(node, ast.Call):
+                    func = node.func
+                    # Bare call: eval(...), exec(...), __import__(...)
+                    if isinstance(func, ast.Name) and func.id in DANGEROUS_CALL_NAMES:
+                        warnings.append(f"BLOCKED: dangerous call '{func.id}(...)'")
+                    # Attribute call: os.system(...), subprocess.run(...)
+                    elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                        pair = (func.value.id, func.attr)
+                        if pair in DANGEROUS_ATTR_CALLS:
+                            warnings.append(f"BLOCKED: dangerous call '{pair[0]}.{pair[1]}(...)'")
         except SyntaxError:
             pass  # already caught by validate_syntax
 
@@ -246,15 +266,19 @@ class CodeModifier:
             self._save_stats()
             return record
 
-        # 6. Test import — verify the module loads without errors
-        module_name = "aegis." + relative_path.replace("/", ".").replace("\\", ".").replace(".py", "")
+        # 6. Compile-check WITHOUT importing into the live process.
+        #
+        # We deliberately do NOT importlib.reload here: reloading a module whose
+        # class instances are already running (the live Substrate and friends)
+        # does not update those objects, gives false confidence, and can corrupt
+        # state mid-tick. py_compile validates that the new source compiles
+        # (a superset of ast.parse) and writes the .pyc; the change then takes
+        # effect cleanly on the next process restart. Backups + rollback remain.
         try:
-            if module_name in sys.modules:
-                importlib.reload(sys.modules[module_name])
-            else:
-                importlib.import_module(module_name)
+            py_compile.compile(str(path), doraise=True)
 
-            record["status"] = "applied"
+            record["status"] = "applied_pending_restart"
+            record["note"] = "Compiled OK; takes effect on next restart (no hot reload)."
             record["lines_before"] = original.count("\n") + 1 if original else 0
             record["lines_after"] = new_code.count("\n") + 1
             self.successful_mods += 1
@@ -269,7 +293,7 @@ class CodeModifier:
             if len(self.rollback_stack) > 20:
                 self.rollback_stack = self.rollback_stack[-20:]
 
-            logger.info(f"Code mod applied: {relative_path} — {description}")
+            logger.info(f"Code mod applied (pending restart): {relative_path} — {description}")
 
         except Exception as e:
             # Rollback — restore original
@@ -278,10 +302,10 @@ class CodeModifier:
             elif path.exists():
                 path.unlink()
 
-            record["status"] = "import_failed_rolled_back"
+            record["status"] = "compile_failed_rolled_back"
             record["error"] = str(e)
             self.failed_mods += 1
-            logger.warning(f"Code mod rolled back (import failed): {e}")
+            logger.warning(f"Code mod rolled back (compile failed): {e}")
 
         self.modifications.append(record)
         self._save_stats()
@@ -317,14 +341,19 @@ class CodeModifier:
             return {"success": False, "error": str(e)}
 
     def rollback_to(self, mod_id: str) -> dict:
-        """Rollback all modifications up to and including the given mod_id."""
+        """Roll back modifications from newest down to and including ``mod_id``.
+
+        Returns success=False (without touching anything more) if ``mod_id`` is
+        not present in the current rollback stack."""
+        if not any(e.get("mod_id") == mod_id for e in self.rollback_stack):
+            return {"success": False, "error": f"mod_id {mod_id} not in rollback stack", "rolled_back": []}
         rolled = []
         while self.rollback_stack:
-            entry = self.rollback_stack[-1]
+            target_reached = self.rollback_stack[-1].get("mod_id") == mod_id
             result = self.rollback_last()
             if result.get("success"):
                 rolled.append(result["file"])
-            if entry.get("mod_id") == mod_id:
+            if target_reached:
                 break
         return {"success": True, "rolled_back": rolled}
 

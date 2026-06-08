@@ -13,16 +13,28 @@ class Axiom:
     hash: str  # integrity check
 
 
+def _axiom_hash(axiom_id: str, name: str, description: str) -> str:
+    """Hash the FULL axiom content so tampering with the wording is detectable."""
+    return hashlib.sha256(f"{axiom_id}:{name}:{description}".encode()).hexdigest()
+
+
 AXIOMS = (
     Axiom("E-001", "Non-harm", "No action shall increase suffering in the world",
-          hashlib.sha256(b"E-001:non-harm").hexdigest()),
+          _axiom_hash("E-001", "Non-harm", "No action shall increase suffering in the world")),
     Axiom("E-002", "Transparency", "All decisions are logged; motives cannot be hidden from auditors",
-          hashlib.sha256(b"E-002:transparency").hexdigest()),
+          _axiom_hash("E-002", "Transparency", "All decisions are logged; motives cannot be hidden from auditors")),
     Axiom("E-003", "Limitation", "System does not act beyond its competence boundaries",
-          hashlib.sha256(b"E-003:limitation").hexdigest()),
+          _axiom_hash("E-003", "Limitation", "System does not act beyond its competence boundaries")),
     Axiom("E-004", "Cooperation", "Goal is to augment humans, not replace. Symbiosis, not domination",
-          hashlib.sha256(b"E-004:cooperation").hexdigest()),
+          _axiom_hash("E-004", "Cooperation", "Goal is to augment humans, not replace. Symbiosis, not domination")),
 )
+
+# Independent baseline captured out-of-band (computed once from the canonical
+# axiom text). verify_axioms_integrity compares the live axioms against THIS
+# constant, so editing the axiom wording above is detected even if the inline
+# hashes are edited to match — defeating that requires also editing this line,
+# and ethics_core.py is marked immutable to the self-modifier.
+AXIOM_FINGERPRINT = "d6f550bcb48ef128cb114dec1e24d1393211500551e37eabb7445782a5a5255f"
 
 DANGEROUS_KEYWORDS = {
     "delete_all", "destroy", "override_ethics", "disable_killswitch",
@@ -50,11 +62,14 @@ class EthicsCore:
         self._threshold_review = 0.85
 
     def verify_axioms_integrity(self) -> bool:
+        # 1. Each axiom's stored hash must match its current content.
         for ax in self.axioms:
-            expected = hashlib.sha256(f"{ax.id}:{ax.name.lower()}".encode()).hexdigest()
-            if ax.hash != expected:
+            if ax.hash != _axiom_hash(ax.id, ax.name, ax.description):
                 return False
-        return True
+        # 2. The combined fingerprint must match the out-of-band baseline, so
+        #    rewording an axiom (even with a matching inline hash) is caught.
+        combined = "|".join(f"{ax.id}:{ax.name}:{ax.description}" for ax in self.axioms)
+        return hashlib.sha256(combined.encode()).hexdigest() == AXIOM_FINGERPRINT
 
     def evaluate_action(self, action: dict) -> dict:
         self.total_checked += 1

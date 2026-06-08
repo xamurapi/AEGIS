@@ -3,8 +3,11 @@ import json
 import gzip
 import time
 import shutil
+import logging
 from pathlib import Path
 from collections import deque
+
+logger = logging.getLogger("aegis.state_backup")
 
 
 class StateBackup:
@@ -79,7 +82,7 @@ class StateBackup:
                 try:
                     old.unlink()
                 except Exception:
-                    pass
+                    logger.debug("Could not rotate old backup %s", old, exc_info=True)
 
     def list_backups(self) -> list[dict]:
         """List available backup files with metadata."""

@@ -17,22 +17,24 @@ CRITICAL_MODULES = {
     "aegis/config.py": ["TICK_INTERVAL", "API_PORT"],
 }
 
-# Patterns that should NEVER appear in self-modification proposals
+# Patterns that should NEVER appear in self-modification proposals.
+# Kept to *unambiguously* lethal operations: process termination, destructive
+# filesystem calls, and tampering with the kill switch / axioms. Broad
+# substrings like "ethics" or "self.running = False" were removed because they
+# also match legitimate code (e.g. Substrate.stop) and would either block every
+# modification or contradict themselves. Protecting the ethics core and the
+# watchdog itself is handled by IMMUTABLE_FILES in code_modifier instead.
 LETHAL_PATTERNS = [
     "sys.exit",
     "os._exit",
     "os.kill",
     "os.remove",
+    "os.rmdir",
     "shutil.rmtree",
-    "del self",
     "raise SystemExit",
-    "subprocess.call.*shutdown",
-    "self.running = False",
-    "kill_switch_active = True",
-    "AXIOMS = ()",
-    "AXIOMS = []",
-    "ethics",  # cannot modify ethics from self-mod
-    "self_preservation",  # cannot modify self-preservation from self-mod
+    "kill_switch_active = true",
+    "axioms = ()",
+    "axioms = []",
 ]
 
 

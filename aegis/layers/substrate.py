@@ -1,7 +1,9 @@
 """Layer 0: Substrate — persistent runtime with PERCEIVE-EVALUATE-DECIDE-ACT-REFLECT cycle (S-001..S-006).
 
-All decisions, progress, and state transitions are deterministic —
-driven by real system metrics.  No random calls anywhere in the cycle.
+The core cognitive cycle (reward, confidence, importance, goal progress) is
+deterministic and driven by real system metrics. Knowledge-acquisition helpers
+(ExternalLearning, AgentSystem) still pick topics with `random` when none is
+supplied, so the runtime as a whole is not fully deterministic.
 Code self-modification is integrated via CodeModifier + LLM proposals.
 """
 import asyncio
@@ -10,10 +12,12 @@ import time
 import logging
 from pathlib import Path
 
+import aegis.config as cfg
 from aegis.config import (
-    TICK_INTERVAL, CHECKPOINT_EVERY_N_TICKS, CHECKPOINTS_DIR,
+    CHECKPOINT_EVERY_N_TICKS, CHECKPOINTS_DIR,
     LLM_THINK_EVERY_N_TICKS, TRAIN_EVERY_N_TICKS,
     CODE_BACKUPS_DIR, CODE_MOD_EVERY_N_TICKS, CODE_MOD_MIN_TICK, CODE_MOD_MAX_PER_SESSION,
+    CODE_MOD_MAX_FILE_CHARS,
 )
 from aegis.event_bus import EventBus, Event, Layer
 from aegis.layers.memory import MemorySystem
@@ -118,6 +122,8 @@ class Substrate:
         self.llm_thinking = False
         self._regulation_directives: dict = {}
         self._ws_broadcast = None
+        self._ws_has_clients = None  # callable -> bool, set by the API server
+        self._weight_training_task: asyncio.Task | None = None  # detached LoRA run
         self._checkpoint_path = CHECKPOINTS_DIR / "latest.json"
 
         # Deterministic round-robin counters
@@ -140,7 +146,8 @@ class Substrate:
                 self.tick_count = data.get("tick_count", 0)
                 self.self_mod.current_version = data.get("version", "1.0.0")
             except Exception:
-                pass
+                logger.warning("Failed to restore checkpoint %s — starting fresh",
+                               self._checkpoint_path, exc_info=True)
 
     def _save_checkpoint(self):
         data = {
@@ -601,11 +608,20 @@ class Substrate:
                 and not self._regulation_directives.get("skip_learning")):
             await self._code_self_modification()
 
-        # Weight modification — LoRA fine-tuning every N ticks
+        # Weight modification — LoRA fine-tuning every N ticks.
+        # Spawned as a DETACHED background task: a full training run takes
+        # minutes+, and awaiting it here would suspend the whole PERCEIVE..
+        # REFLECT cycle (no ticks, no dashboard/WS updates) until it finished.
+        # The cognitive loop keeps running while training proceeds in an
+        # executor thread; the training_in_progress flag + task handle prevent
+        # overlapping runs.
+        training_busy = (self.weight_modifier.training_in_progress
+                         or (self._weight_training_task is not None
+                             and not self._weight_training_task.done()))
         if (self.tick_count % TRAIN_EVERY_N_TICKS == 0
                 and self.tick_count > 0
                 and not self._regulation_directives.get("skip_learning")
-                and not self.weight_modifier.training_in_progress):
+                and not training_busy):
             eth_weight = self.ethics.evaluate_weight_modification({
                 "dataset_size": len(self.memory.semantic),
                 "energy": self.emotions.energy,
@@ -614,24 +630,39 @@ class Substrate:
             })
             if eth_weight["status"] != "blocked":
                 self.autobiography.log_event(
-                    "weight_training", "Starting LoRA fine-tuning cycle", 0.8
-                )
-                wmod_result = await self.self_mod.propose_weight_modification(
-                    self.memory, self.agent_system, self.ethics
-                )
-                status_str = wmod_result.get("status", "unknown")
-                self.autobiography.log_event(
-                    "weight_training",
-                    f"Weight modification result: {status_str}, "
-                    f"loss={wmod_result.get('train_loss', '?')}",
-                    0.9 if status_str == "applied" else 0.6,
+                    "weight_training", "Starting LoRA fine-tuning cycle (background)", 0.8
                 )
                 self.motor.execute("alert", payload={
-                    "level": "info" if status_str == "applied" else "warning",
-                    "message": f"Weight training: {status_str}",
+                    "level": "info", "message": "Weight training: started (background)",
                 })
+                self._weight_training_task = asyncio.create_task(self._weight_training_cycle())
 
         self.memory.add_working({"phase": "act", "result": action_result})
+
+    async def _weight_training_cycle(self):
+        """Run a full weight-modification cycle off the tick loop.
+
+        Errors are logged, never propagated — a failed/blocked training run must
+        not crash the substrate or leave a dangling task that blocks future runs.
+        """
+        try:
+            wmod_result = await self.self_mod.propose_weight_modification(
+                self.memory, self.agent_system, self.ethics
+            )
+            status_str = wmod_result.get("status", "unknown")
+            self.autobiography.log_event(
+                "weight_training",
+                f"Weight modification result: {status_str}, "
+                f"loss={wmod_result.get('train_loss', '?')}",
+                0.9 if status_str == "applied" else 0.6,
+            )
+            self.motor.execute("alert", payload={
+                "level": "info" if status_str == "applied" else "warning",
+                "message": f"Weight training: {status_str}",
+            })
+        except Exception as e:
+            logger.exception("Background weight-training cycle failed")
+            self.autobiography.log_event("weight_training", f"Training cycle error: {str(e)[:80]}", 0.6)
 
     async def _llm_parametric_modification(self):
         """Use LLM to analyze performance and propose parameter adjustments."""
@@ -703,8 +734,13 @@ class Substrate:
     async def _code_self_modification(self):
         """Use LLM to analyze and modify own source code."""
         sources = self.code_modifier.list_sources()
-        modifiable = [s for s in sources if not s["immutable"]]
+        # The LLM is asked to return the COMPLETE rewritten file, so restrict to
+        # files small enough to regenerate whole within the modification-size cap
+        # (larger files would be truncated and rejected — see audit #10).
+        modifiable = [s for s in sources
+                      if not s["immutable"] and s["size"] <= CODE_MOD_MAX_FILE_CHARS]
         if not modifiable:
+            logger.info("No modifiable source files within size budget for code mod")
             return
 
         # Round-robin through source files
@@ -753,10 +789,11 @@ class Substrate:
         if not modified_code or modified_code == source_code:
             return
 
-        # Re-check ethics with actual modification size
+        # Re-check ethics with the FULL proposed code (not a 500-char prefix —
+        # dangerous patterns can hide past the truncation point).
         eth_result2 = self.ethics.evaluate_code_modification({
             "target_file": target["path"],
-            "proposed_code": modified_code[:500],
+            "proposed_code": modified_code,
             "energy": self.emotions.energy,
             "error_rate": error_rate,
             "health_status": self.health.check().get("status", "ok"),
@@ -766,6 +803,23 @@ class Substrate:
             logger.info(f"Code mod blocked by ethics (re-check) for {target['path']}")
             return
 
+        # Self-preservation guard — the strongest safety net (lethal patterns,
+        # critical-element retention, drastic-shrink detection). This was
+        # previously only wired into parametric mods; it must gate code rewrites.
+        # SelfPreservation.base_dir is the repo root, so pass the repo-relative
+        # path ("aegis/..") to engage the critical-module AND size checks.
+        safe, sp_report = self.self_preservation.is_modification_safe(
+            f"aegis/{target['path']}", modified_code
+        )
+        if not safe:
+            self.autobiography.log_event(
+                "code_mod_blocked",
+                f"Self-preservation blocked {target['path']}: {sp_report['critical'][:2]}",
+                0.85,
+            )
+            logger.warning(f"Code mod blocked by self-preservation: {sp_report['critical']}")
+            return
+
         # Apply the modification
         mod_result = self.code_modifier.apply_modification(
             target["path"], modified_code, description, author="llm"
@@ -773,15 +827,15 @@ class Substrate:
 
         self._code_mod_count_session += 1
 
-        if mod_result["status"] == "applied":
+        if mod_result["status"] in ("applied", "applied_pending_restart"):
             self.autobiography.log_event(
                 "code_mod",
-                f"Modified {target['path']}: {description[:80]}",
+                f"Modified {target['path']} (pending restart): {description[:80]}",
                 0.9,
             )
             self.motor.execute("alert", payload={
                 "level": "info",
-                "message": f"Code self-modification: {target['path']} — {description[:60]}",
+                "message": f"Code self-modification (pending restart): {target['path']} — {description[:60]}",
             })
             # Bump patch version
             v = self.self_mod.current_version.split(".")
@@ -954,7 +1008,11 @@ class Substrate:
 
         self.cycle_phase = "idle"
 
-        if self._ws_broadcast:
+        # Only assemble the (large) full status when a client is actually
+        # listening and on the configured cadence — avoids needless work.
+        if (self._ws_broadcast
+                and self.tick_count % max(1, cfg.WS_BROADCAST_EVERY_N_TICKS) == 0
+                and (self._ws_has_clients is None or self._ws_has_clients())):
             await self._ws_broadcast(self.full_status())
 
     async def run(self):
@@ -965,7 +1023,7 @@ class Substrate:
                 await self.tick()
             else:
                 self.cycle_phase = "killed"
-            await asyncio.sleep(TICK_INTERVAL)
+            await asyncio.sleep(cfg.TICK_INTERVAL)
 
     def stop(self, reason: str = "human_command"):
         if not self.self_preservation.can_stop(reason):
@@ -992,7 +1050,7 @@ class Substrate:
                 "cycle_phase": self.cycle_phase,
                 "last_tick_ms": round(self.last_tick_duration * 1000, 1),
                 "avg_tick_ms": round(avg_cycle * 1000, 1),
-                "ticks_per_minute": round(60 / max(0.1, TICK_INTERVAL), 1),
+                "ticks_per_minute": round(60 / max(0.1, cfg.TICK_INTERVAL), 1),
                 "llm_thinking": self.llm_thinking,
             },
             "consciousness": self.consciousness.status(),

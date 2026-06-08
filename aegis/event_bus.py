@@ -1,10 +1,13 @@
 """AEGIS Event Bus — inter-layer typed message system (INT-001..004)."""
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable
+
+logger = logging.getLogger("aegis.event_bus")
 
 
 class Layer(str, Enum):
@@ -76,7 +79,7 @@ class EventBus:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:
-                pass
+                logger.exception("Event subscriber for %r failed", event.event_type)
 
         for cb in self._global_subscribers:
             try:
@@ -84,7 +87,7 @@ class EventBus:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:
-                pass
+                logger.exception("Global event subscriber failed for %r", event.event_type)
 
         return True
 
