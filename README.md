@@ -1,7 +1,7 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
 > A self-developing AI that rewrites its own source code, trains its own neural network weights, and evolves autonomously through a closed feedback loop.
-> **31 modules · 7-layer architecture · Triple LLM brain · Deterministic emotions · Zero randomness.**
+> **31 modules · 7-layer architecture · Triple LLM brain · Deterministic core cycle · Hardened & tested.**
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
 
@@ -15,7 +15,7 @@ AEGIS is not a chatbot wrapper. It is a stateful, continuously running cognitive
 PERCEIVE → EVALUATE → DECIDE → ACT → REFLECT
 ```
 
-Every decision is **100% deterministic** — no random number generators anywhere. Emotions, goals, dreams, and self-modification are all driven by real system metrics: `success_rate`, `energy`, `error_rate`, `goal_completion`.
+The **core cognitive cycle is deterministic** — reward, confidence, importance, emotions, goals, dreams, and self-modification are all driven by real system metrics (`success_rate`, `energy`, `error_rate`, `goal_completion`), not random number generators. The only non-deterministic part is knowledge-source/topic selection in the external-learning and spider-agent layers, where a topic is picked at random when none is supplied.
 
 ---
 
@@ -37,16 +37,18 @@ Every decision is **100% deterministic** — no random number generators anywher
 ## Key Features
 
 ### 🔄 Code Self-Modification
-Every 500 ticks, AEGIS rewrites its own `.py` source files:
-1. Ethics core evaluates the target file and system stability
+Every 500 ticks, AEGIS rewrites one of its own `.py` source files (only files small enough to regenerate whole — see `CODE_MOD_MAX_FILE_CHARS`):
+1. Ethics core evaluates the **full** proposed change and system stability
 2. LLM analyzes the current code and proposes a specific improvement
-3. `code_modifier.py` validates via AST parsing, blocks dangerous patterns (`eval`, `exec`, `subprocess`, `os.system`), creates a backup, writes new code, tests import
-4. On any failure — automatic rollback from backup stack
+3. `code_modifier.py` validates syntax, then runs **AST-based** detection of dangerous calls/imports (`eval`, `exec`, `compile`, `__import__`, `os.system`, `subprocess`, `shutil.rmtree`, …) that cannot be fooled by spacing tricks
+4. The `SelfPreservation` watchdog gates the change (lethal-pattern scan, critical-element retention, drastic-shrink detection)
+5. A backup is taken, the new code is written, and it is **compile-checked with `py_compile`** — no live `importlib.reload`, so self-written code is never executed into the running process; verified changes take effect on the next restart
+6. On any failure — automatic rollback from the backup stack
 
-`ethics_core.py` and `config.py` are **immutable** — the system cannot modify them.
+`ethics_core.py`, `self_preservation.py`, and `config.py` are **immutable** — the system cannot modify them.
 
 ### 🧠 Weight Self-Training (LoRA)
-Every 1000 ticks, AEGIS fine-tunes its local transformer (DeepSeek-R1-Distill-Qwen-1.5B) via LoRA (`r=16, alpha=32`, targets: `q/v/k/o_proj`). Degradation detection: if `val_loss > baseline + 0.5` → automatic rollback. Up to 5 checkpoints on disk.
+Every 1000 ticks, AEGIS fine-tunes its local transformer (DeepSeek-R1-Distill-Qwen-1.5B) via LoRA (`r=16, alpha=32`, targets: `q/v/k/o_proj`). Degradation detection: if `val_loss > baseline + 0.5` → automatic rollback. Up to 5 checkpoints on disk. Training runs as a **detached background task**, so the cognitive cycle and dashboard keep updating while the model trains.
 
 ### 💡 Deterministic Emotions (VAD Model)
 - `Valence = 0.7 * prev + 0.3 * success_rate`
@@ -62,7 +64,7 @@ Every 1000 ticks, AEGIS fine-tunes its local transformer (DeepSeek-R1-Distill-Qw
 |---|---|---|
 | `arxiv_scout` | arXiv API — AI/ML papers | 3 min |
 | `wiki_explorer` | Wikipedia | 2.5 min |
-| `quote_gatherer` | Quotable API | 3.3 min |
+| `quote_gatherer` | ZenQuotes API | 3.3 min |
 | `github_watcher` | GitHub Trending | 5 min |
 | `news_scanner` | Google News RSS | 4 min |
 
@@ -74,6 +76,15 @@ Failed agents are automatically retired and replaced via an evolution cycle.
 3. **Limitation** — does not act beyond its competence boundaries
 4. **Cooperation** — augments humans, does not replace them
 
+Axiom integrity is checked on every evaluation against an out-of-band fingerprint, so tampering with the wording is detected.
+
+### 🔐 Control-Plane Security
+The control plane can toggle the kill switch, grant permissions, and trigger self-modification — so it is **not** exposed by default:
+
+- Binds to **`127.0.0.1`** only (override with `AEGIS_API_HOST`).
+- Set **`AEGIS_API_TOKEN`** to require an `X-API-Token` header on every mutating request (POST/PUT/PATCH/DELETE) and on privileged WebSocket actions.
+- Cross-origin access is off unless `AEGIS_API_CORS_ORIGINS` is set.
+
 ---
 
 ## Project Structure
@@ -81,13 +92,17 @@ Failed agents are automatically retired and replaced via an evolution cycle.
 ```
 aegis/
 ├── main.py
-├── requirements.txt
+├── requirements.txt           # core runtime
+├── requirements-llm.txt        # hosted LLM providers (DeepSeek/Claude)
+├── requirements-ml.txt         # local model + LoRA (multi-GB, pinned)
+├── requirements-dev.txt        # pytest
+├── tests/                      # pytest suite (50 tests)
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
 │   ├── event_bus.py
 │   ├── llm.py                 # Triple LLM: DeepSeek + Claude + Local LoRA
 │   ├── api/
-│   │   └── server.py          # FastAPI + WebSocket
+│   │   └── server.py          # FastAPI + WebSocket (token-guarded)
 │   ├── dashboard/
 │   │   └── index.html         # Real-time SPA dashboard
 │   └── layers/
@@ -110,7 +125,7 @@ aegis/
 │       ├── external_learning.py
 │       ├── agent_system.py
 │       ├── ethics_core.py     # IMMUTABLE
-│       ├── self_preservation.py
+│       ├── self_preservation.py # IMMUTABLE
 │       ├── worldview.py
 │       ├── autobiography.py
 │       ├── health_monitor.py
@@ -136,17 +151,20 @@ aegis/
 git clone https://github.com/xamurapi/aegis.git
 cd aegis
 
-# Install core dependencies
+# Install core dependencies (FastAPI runtime + dashboard)
 pip install -r requirements.txt
 ```
 
 **Optional — for full functionality:**
 ```bash
-# Local model + LoRA fine-tuning (requires 8GB+ RAM)
-pip install torch transformers peft bitsandbytes accelerate
+# Hosted LLM providers (DeepSeek / Claude)
+pip install -r requirements-llm.txt
 
-# Text-to-speech
-pip install pyttsx3
+# Local model + LoRA fine-tuning (multi-GB; 8GB+ RAM). Includes pyttsx3 TTS.
+pip install -r requirements-ml.txt
+
+# Dev / tests
+pip install -r requirements-dev.txt
 ```
 
 ### Run
@@ -178,9 +196,29 @@ Status: ONLINE
 | `LOCAL_MODEL_DEVICE` | `auto` / `cuda` / `cpu` | `cpu` |
 | `LOCAL_MODEL_QUANTIZE` | `4bit` / `8bit` / empty | *(none)* |
 | `CODE_MOD_EVERY_N_TICKS` | Code self-modification interval | `500` |
+| `CODE_MOD_MAX_FILE_CHARS` | Max source file size eligible for rewrite | `4000` |
 | `TRAIN_EVERY_N_TICKS` | LoRA training interval | `1000` |
+| **Security & limits** | | |
+| `AEGIS_API_HOST` | API bind address | `127.0.0.1` |
+| `AEGIS_API_PORT` | API port | `8888` |
+| `AEGIS_API_TOKEN` | Require `X-API-Token` on mutating requests | *(none)* |
+| `AEGIS_API_CORS_ORIGINS` | Comma-separated allowed CORS origins | *(none)* |
+| `WS_BROADCAST_EVERY_N_TICKS` | Dashboard/WebSocket broadcast cadence | `1` |
+| `LLM_MAX_CALLS_PER_RUN` | Hard cap on LLM calls per run (`0` = unlimited) | `0` |
+| `LLM_MIN_INTERVAL_SECONDS` | Min seconds between LLM calls (`0` = none) | `0` |
 
 API keys can also be set at runtime via the dashboard (LLM Brain tab).
+
+---
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+The suite (50 tests) covers the safety-critical paths: ethics evaluation & axiom integrity, code-modifier validation/rollback, the self-preservation watchdog, parametric self-modification bounds, memory, LLM helpers/budget, and that scheduled LoRA training does not block the tick loop. No ML dependencies are required to run it.
 
 ---
 
