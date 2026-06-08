@@ -18,6 +18,8 @@ from aegis.config import (
     LLM_THINK_EVERY_N_TICKS, TRAIN_EVERY_N_TICKS,
     CODE_BACKUPS_DIR, CODE_MOD_EVERY_N_TICKS, CODE_MOD_MIN_TICK, CODE_MOD_MAX_PER_SESSION,
     CODE_MOD_MAX_FILE_CHARS,
+    EVAL_DIR, EVAL_EVERY_N_TICKS, ENV_STEP_EVERY_N_TICKS, SKILL_SYNTH_EVERY_N_TICKS,
+    SANDBOX_TIMEOUT,
 )
 from aegis.event_bus import EventBus, Event, Layer
 from aegis.layers.memory import MemorySystem
@@ -47,6 +49,11 @@ from aegis.layers.emotion_nlp import EmotionNLP
 from aegis.layers.weight_modifier import WeightModifier
 from aegis.layers.dataset_builder import DatasetBuilder
 from aegis.layers.code_modifier import CodeModifier
+from aegis.eval.benchmark import DEFAULT_BENCHMARK, tasks_for_kind
+from aegis.eval.skill_library import SkillLibrary, Skill
+from aegis.eval.solver import MultiAgentSolver
+from aegis.eval.evaluator import Evaluator
+from aegis.eval.environment import TaskEnvironment
 from aegis.llm import LLMEngine
 
 logger = logging.getLogger("aegis.substrate")
@@ -104,6 +111,21 @@ class Substrate:
         self.code_modifier = CodeModifier(aegis_pkg_dir, CODE_BACKUPS_DIR)
         self._code_mod_count_session = 0
         self._code_file_index = 0  # round-robin through source files for analysis
+
+        # Capability layer — verifiable benchmark, skills, sandbox, environment.
+        # This is the system's external ground-truth signal (see _compute_reward).
+        self.skill_library = SkillLibrary(store_path=EVAL_DIR / "skills.json")
+        self.solver = MultiAgentSolver(self.skill_library, timeout=SANDBOX_TIMEOUT)
+        self.evaluator = Evaluator(
+            self.solver, tasks=list(DEFAULT_BENCHMARK),
+            store_path=EVAL_DIR / "eval_history.json",
+        )
+        self.environment = TaskEnvironment(self.solver, tasks=list(DEFAULT_BENCHMARK))
+        self._last_benchmark_score = self.evaluator.last_score  # may be None on first boot
+        self._eval_task: asyncio.Task | None = None
+        self._skill_synth_task: asyncio.Task | None = None
+        self._skill_synth_idx = 0
+        self._skill_synth_count = 0
 
         # Wire dependencies
         self.self_mod.weight_modifier = self.weight_modifier
@@ -166,16 +188,29 @@ class Substrate:
         return self.llm.enabled and self.tick_count % LLM_THINK_EVERY_N_TICKS == 0
 
     def _compute_reward(self) -> float:
-        """Compute reward from real system metrics (no randomness)."""
+        """Reward driven by EXTERNAL, verifiable task performance.
+
+        Primary signal: the benchmark pass-rate (held-out fitness) blended with
+        the live environment's rolling reward. Both come from a deterministic
+        verifier, not self-report. Until the first benchmark has run we fall back
+        to the legacy synthetic estimate so the system still functions on boot.
+        """
+        env_reward = self.environment.rolling_reward()
+        bench = self._last_benchmark_score
+
+        if bench is not None or self.environment.total_steps > 0:
+            bench = bench if bench is not None else env_reward
+            # 70% held-out capability, 30% live environment outcomes.
+            reward = 0.7 * bench + 0.3 * env_reward
+            return max(0.0, min(1.0, reward))
+
+        # Fallback (pre-first-eval): legacy synthetic estimate.
         total_ticks = self.health.successful_ticks + self.health.failed_ticks
         error_rate = self.health.error_count / max(total_ticks, 1) if total_ticks > 0 else 0
-
-        # Components: success rate, energy preservation, knowledge growth, low errors
         success_component = self.emotions.success_rate * 0.3
         energy_component = self.emotions.energy * 0.2
         knowledge_component = min(1.0, len(self.memory.semantic) / 500) * 0.3
         error_component = (1.0 - error_rate) * 0.2
-
         return max(0.0, min(1.0, success_component + energy_component + knowledge_component + error_component))
 
     def _compute_confidence(self) -> float:
@@ -348,12 +383,17 @@ class Substrate:
         llm_eval = None
         if self._is_llm_tick() and not self._regulation_directives.get("skip_llm"):
             self.llm_thinking = True
+            # RAG: pull concepts RELEVANT to the current focus, not just recent ones.
+            focus_query = (focus.get("name", "") + " " + focus.get("description", "")) if focus else ""
+            relevant = self.memory.retrieve(focus_query, k=6) if focus_query.strip() else []
+            relevant_concepts = [r["concept"] for r in relevant] or list(self.memory.semantic.keys())[-10:]
             compact_state = {
                 "tick": self.tick_count,
                 "goals_active": len(active_goals),
                 "current_focus": focus,
                 "memory_total": mem_status["total_memories"],
                 "episodic_recent": [e["event"] for e in self.memory.episodic[-3:]],
+                "relevant_concepts": relevant_concepts,
                 "semantic_concepts": list(self.memory.semantic.keys())[-10:],
                 "version": self.self_mod.current_version,
                 "curiosity": round(self.goals.curiosity_level, 3),
@@ -637,7 +677,87 @@ class Substrate:
                 })
                 self._weight_training_task = asyncio.create_task(self._weight_training_cycle())
 
+        # ── Grounding: act in the task environment for REAL reward (point 5) ──
+        if self.tick_count % max(1, ENV_STEP_EVERY_N_TICKS) == 0:
+            step = await asyncio.get_event_loop().run_in_executor(None, self.environment.step)
+            if step.get("task"):
+                self.goals.advance_progress("expand_knowledge", 0.01 if step["solved"] else 0.0)
+                if step["solved"]:
+                    self.autobiography.log_event(
+                        "env_solved", f"{step['task']} via {step['winning_skill']}", 0.4)
+                else:
+                    self.autobiography.log_event(
+                        "env_failed", f"{step['task']} ({step['kind']}) — no skill solved it", 0.5)
+
+        # ── Periodic held-out benchmark (the fitness graph, point 2) ──
+        if (self.tick_count % max(1, EVAL_EVERY_N_TICKS) == 0
+                and (self._eval_task is None or self._eval_task.done())):
+            self._eval_task = asyncio.create_task(self._run_benchmark())
+
+        # ── Skill synthesis: try to close a failing kind (points 3 & 4) ──
+        if (self.tick_count % max(1, SKILL_SYNTH_EVERY_N_TICKS) == 0
+                and self.tick_count > 0
+                and self.llm.enabled
+                and not self._regulation_directives.get("skip_learning")
+                and (self._skill_synth_task is None or self._skill_synth_task.done())):
+            self._skill_synth_task = asyncio.create_task(self._skill_synthesis())
+
         self.memory.add_working({"phase": "act", "result": action_result})
+
+    async def _run_benchmark(self):
+        """Run the held-out benchmark off the tick loop and update the reward signal."""
+        try:
+            report = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.run)
+            self._last_benchmark_score = report["score"]
+            self.autobiography.log_event(
+                "benchmark", f"score={report['score']:.3f} ({report['passed']}/{report['total']})", 0.7)
+            await self.event_bus.publish(Event(
+                source=Layer.INTROSPECTION, target=None,
+                event_type="benchmark", payload={"score": report["score"]},
+            ))
+        except Exception:
+            logger.exception("Benchmark run failed")
+
+    async def _skill_synthesis(self):
+        """Propose a skill for a failing kind, sandbox-test it, keep only if it
+        raises that kind's pass-rate (real, measured self-improvement)."""
+        try:
+            failing = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.failing_kinds)
+            if not failing:
+                return
+            kind = failing[self._skill_synth_idx % len(failing)]
+            self._skill_synth_idx += 1
+
+            examples = [{"payload": t.payload, "expected": t.expected}
+                        for t in tasks_for_kind(kind)]
+            code = await self.llm.propose_skill(kind, examples)
+            if not code:
+                return
+
+            before = await asyncio.get_event_loop().run_in_executor(
+                None, self.evaluator.kind_pass_rate, kind)
+            self._skill_synth_count += 1
+            skill = Skill(name=f"{kind}_llm_{self._skill_synth_count}", kinds=[kind],
+                          code=code, origin="llm")
+            added, msg = self.skill_library.add(skill)
+            if not added:
+                self.autobiography.log_event("skill_rejected", f"{kind}: {msg[:60]}", 0.5)
+                return
+
+            after = await asyncio.get_event_loop().run_in_executor(
+                None, self.evaluator.kind_pass_rate, kind)
+            if after > before:
+                self.skill_library.save()
+                self.autobiography.log_event(
+                    "skill_learned", f"{kind}: pass {before:.2f} -> {after:.2f}", 0.9)
+                self.motor.execute("alert", payload={
+                    "level": "info", "message": f"Learned skill for '{kind}' ({before:.2f}->{after:.2f})"})
+            else:
+                self.skill_library.remove(skill.name)
+                self.autobiography.log_event(
+                    "skill_discarded", f"{kind}: no improvement ({before:.2f})", 0.5)
+        except Exception:
+            logger.exception("Skill synthesis failed")
 
     async def _weight_training_cycle(self):
         """Run a full weight-modification cycle off the tick loop.
@@ -1081,6 +1201,9 @@ class Substrate:
             "weight_modifier": self.weight_modifier.status(),
             "dataset_builder": self.dataset_builder.status(),
             "code_modifier": self.code_modifier.status(),
+            "evaluator": self.evaluator.status(),
+            "skills": self.skill_library.status(),
+            "environment": self.environment.status(),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),
             "llm": self.llm.status(),

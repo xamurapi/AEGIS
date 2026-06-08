@@ -524,6 +524,36 @@ Only recommend adjustments if metrics clearly indicate a problem. If the system 
             result["parsed"] = parsed
         return result
 
+    async def propose_skill(self, kind: str, examples: list[dict]) -> str | None:
+        """Ask the LLM to write a pure `solve(payload)` skill for a task kind.
+
+        Returns Python source (a single `def solve(payload): ...`) or None. The
+        caller sandbox-checks and benchmark-gates it before keeping it, so an
+        incorrect proposal is harmless — it simply won't raise the score.
+        """
+        ex = "\n".join(f"  payload={e['payload']!r} -> expected {e['expected']!r}"
+                       for e in examples[:4])
+        prompt = f"""Write a single pure Python function to solve tasks of kind '{kind}'.
+
+Signature: def solve(payload): ...   # payload is a dict, return the answer.
+Examples (must satisfy ALL):
+{ex}
+
+Rules:
+- Pure computation only. No imports except: math, statistics, itertools, functools, re, json, collections, string.
+- No eval/exec/open/__import__, no file/network/OS access, no print.
+- Return ONLY the function in a ```python code block."""
+        result = await self.think(prompt)
+        if not result.get("success"):
+            return None
+        text = result["response"]
+        if "```python" in text:
+            text = text.split("```python", 1)[1].split("```", 1)[0]
+        elif "```" in text:
+            text = text.split("```", 1)[1].split("```", 1)[0]
+        code = text.strip()
+        return code if "def solve" in code else None
+
     def set_provider(self, provider: str):
         if provider in ("deepseek", "claude", "both", "local"):
             self.provider_mode = provider

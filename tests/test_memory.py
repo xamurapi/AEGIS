@@ -52,3 +52,19 @@ def test_semantic_summary_helper_reads_nested():
     m = MemorySystem()
     m.add_semantic("topic", {"summary": "the summary"})
     assert _semantic_summary(m.semantic["topic"]) == "the summary"
+
+
+def test_rag_retrieve_ranks_relevant_concept_first():
+    m = MemorySystem()
+    m.add_semantic("reinforcement learning", {"summary": "agents learn from reward signals"})
+    m.add_semantic("photosynthesis", {"summary": "plants convert light to energy"})
+    m.add_semantic("neural networks", {"summary": "layers of weighted connections"})
+    results = m.retrieve("how do agents learn from reward", k=3)
+    assert results
+    assert results[0]["concept"] == "reinforcement learning"
+
+
+def test_rag_retrieve_empty_query_returns_nothing():
+    m = MemorySystem()
+    m.add_semantic("x", {"summary": "y"})
+    assert m.retrieve("", k=3) == []

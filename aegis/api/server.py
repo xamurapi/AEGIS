@@ -651,6 +651,30 @@ async def chat(request: ChatRequest):
     }
 
 
+# ── Capability layer (benchmark / skills / environment) ──────────
+
+@app.get("/api/eval")
+async def get_eval():
+    return {
+        "evaluator": substrate.evaluator.status(),
+        "environment": substrate.environment.status(),
+        "reward_signal": round(substrate._compute_reward(), 4),
+    }
+
+
+@app.get("/api/skills")
+async def get_skills():
+    return substrate.skill_library.status()
+
+
+@app.post("/api/eval/run")
+async def run_eval():
+    """Trigger a synchronous benchmark run and return the report."""
+    report = await asyncio.get_event_loop().run_in_executor(None, substrate.evaluator.run)
+    substrate._last_benchmark_score = report["score"]
+    return report
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     # When a token is configured, privileged actions require it as a query param
