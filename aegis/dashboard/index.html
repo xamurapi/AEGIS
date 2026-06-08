@@ -562,6 +562,7 @@ body {
   <div class="tab" onclick="switchTab('chat')">Chat</div>
   <div class="tab" onclick="switchTab('events')">Events</div>
   <div class="tab" onclick="switchTab('weights')">Weight Training</div>
+  <div class="tab" onclick="switchTab('capability')">Capability</div>
 </div>
 
 <!-- PAGE: OVERVIEW -->
@@ -1088,6 +1089,55 @@ body {
   </div>
 </div>
 
+<div class="page" id="page-capability">
+  <div class="grid grid-4" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Benchmark Score</span>
+        <span class="card-badge badge-primary" id="cap_runs">0 runs</span>
+      </div>
+      <div class="big-metric" id="cap_score">—</div>
+      <div class="big-metric-label">Verifiable pass-rate (fitness)</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Reward Signal</span></div>
+      <div class="big-metric" id="cap_reward">—</div>
+      <div class="big-metric-label">0.7·benchmark + 0.3·environment</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Skills Learned</span></div>
+      <div class="big-metric" id="cap_skills">0</div>
+      <div class="big-metric-label">in the skill library</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Environment</span></div>
+      <div class="big-metric" id="cap_envrate">—</div>
+      <div class="big-metric-label">live solve rate</div>
+    </div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Capability Over Time</span>
+        <span style="display:flex;gap:6px">
+          <button onclick="capRunEval()" style="background:var(--primary);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Run Benchmark</button>
+          <button onclick="capSynthesize()" style="background:var(--success);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Synthesize (LLM)</button>
+          <button onclick="capExportCsv()" style="background:var(--card-border);color:var(--text);border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Export CSV</button>
+        </span>
+      </div>
+      <svg id="cap_spark" viewBox="0 0 300 90" preserveAspectRatio="none" style="width:100%;height:120px;background:rgba(255,255,255,.02);border-radius:8px"></svg>
+      <div class="big-metric-label" id="cap_sparklabel" style="margin-top:6px">no runs yet</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Breakdown by Family</span></div>
+      <div class="metric"><span class="metric-label">Skills (payload → answer)</span><span class="metric-value" id="cap_fam_skills">0/0</span></div>
+      <div class="metric"><span class="metric-label">Coding (hidden tests)</span><span class="metric-value" id="cap_fam_coding">0/0</span></div>
+      <div class="metric"><span class="metric-label">Composite (pipelines)</span><span class="metric-value" id="cap_fam_composite">0/0</span></div>
+      <div class="metric"><span class="metric-label">Auto-compose (searched)</span><span class="metric-value" id="cap_fam_auto">0/0</span></div>
+      <div class="card-header" style="margin-top:12px"><span class="card-title">Skill Library</span></div>
+      <div id="cap_skilllist" class="event-log" style="max-height:220px"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 let ws;
 // kill switch removed
@@ -1112,7 +1162,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
-  const tabs = ['overview','mind','memory','llm','ethics','meta','agents','chat','events','weights'];
+  const tabs = ['overview','mind','memory','llm','ethics','meta','agents','chat','events','weights','capability'];
   const tabEls = document.querySelectorAll('.tab');
   const idx = tabs.indexOf(name);
   if (idx >= 0 && tabEls[idx]) tabEls[idx].classList.add('active');
@@ -1690,6 +1740,80 @@ function updateDashboard(d) {
     setText('wt_dsOnDisk', db.datasets_on_disk || 0);
     setText('wt_dsCount', db.datasets_on_disk || 0);
   }
+
+  renderCapability(d);
+}
+
+function renderCapability(d) {
+  const ev = d.evaluator, sk = d.skills, en = d.environment;
+  if (ev) {
+    setText('cap_score', ev.last_score == null ? '—' : (ev.last_score * 100).toFixed(1) + '%');
+    setText('cap_runs', (ev.total_runs || 0) + ' runs');
+    const rep = ev.last_report || {};
+    const fam = (o) => o ? `${o.passed}/${o.total}` : '0/0';
+    setText('cap_fam_skills', fam(rep.skills));
+    setText('cap_fam_coding', fam(rep.coding));
+    setText('cap_fam_composite', fam(rep.composite));
+    setText('cap_fam_auto', fam(rep.autocompose));
+    drawSparkline(ev.history_tail || []);
+  }
+  if (sk) {
+    setText('cap_skills', sk.total_skills || 0);
+    const list = document.getElementById('cap_skilllist');
+    if (list && sk.skills) {
+      list.innerHTML = sk.skills.map(s => {
+        const tag = s.origin === 'seed' ? 'var(--text-dim)' : 'var(--success)';
+        return `<div class="event-item"><span style="color:${tag}">[${s.origin}]</span> ${s.name}
+          <span style="color:var(--text-dim);font-size:10px">${(s.kinds||[]).join(',')} · ${(s.success_rate*100||0).toFixed(0)}% ·${s.attempts}x</span></div>`;
+      }).join('') || '<span style="color:var(--text-dim)">No skills</span>';
+    }
+  }
+  if (en) setText('cap_envrate', ((en.rolling_reward || 0) * 100).toFixed(0) + '%');
+  if (d.reward_signal != null) setText('cap_reward', (d.reward_signal * 100).toFixed(1) + '%');
+}
+
+function drawSparkline(hist) {
+  const svg = document.getElementById('cap_spark');
+  if (!svg) return;
+  const label = document.getElementById('cap_sparklabel');
+  if (!hist.length) { svg.innerHTML = ''; if (label) label.textContent = 'no runs yet'; return; }
+  const W = 300, H = 90, pad = 6;
+  const pts = hist.map((h, i) => {
+    const x = hist.length === 1 ? W / 2 : pad + i * (W - 2 * pad) / (hist.length - 1);
+    const y = H - pad - (h.score || 0) * (H - 2 * pad);
+    return [x, y];
+  });
+  const path = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  const dots = pts.map(p => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2" fill="var(--primary)"/>`).join('');
+  svg.innerHTML = `<line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="rgba(255,255,255,.1)"/>
+    <path d="${path}" fill="none" stroke="var(--primary)" stroke-width="2"/>${dots}`;
+  const last = hist[hist.length - 1].score;
+  if (label) label.textContent = `${hist.length} runs · latest ${(last * 100).toFixed(1)}%`;
+}
+
+async function capRunEval() {
+  setText('cap_score', '…');
+  try {
+    const res = await fetch('/api/eval/run', {method: 'POST'});
+    const r = await res.json();
+    setText('cap_score', (r.score * 100).toFixed(1) + '%');
+  } catch (e) { setText('cap_score', 'error'); }
+}
+
+async function capSynthesize() {
+  const label = document.getElementById('cap_sparklabel');
+  if (label) label.textContent = 'synthesizing via LLM…';
+  try {
+    const res = await fetch('/api/eval/synthesize', {method: 'POST'});
+    const r = await res.json();
+    if (label) label.textContent = r.error
+      ? r.error
+      : `synthesis: ${(r.score_before*100||0).toFixed(1)}% → ${(r.score_after*100).toFixed(1)}% (${r.skills} skills)`;
+  } catch (e) { if (label) label.textContent = 'synthesis error'; }
+}
+
+function capExportCsv() {
+  window.open('/api/eval/history.csv', '_blank');
 }
 
 

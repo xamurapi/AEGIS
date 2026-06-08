@@ -88,6 +88,18 @@ CODE_MOD_MAX_PER_SESSION = int(os.environ.get("CODE_MOD_MAX_PER_SESSION", "10"))
 # reliably within the modification-size cap.
 CODE_MOD_MAX_FILE_CHARS = int(os.environ.get("CODE_MOD_MAX_FILE_CHARS", "4000"))
 
+# --- Capability layer: eval harness, skill library, sandbox, environment ---
+EVAL_DIR = DATA_DIR / "eval"
+EVAL_DIR.mkdir(parents=True, exist_ok=True)
+# Periodic held-out benchmark run (the fitness graph). Detached, non-blocking.
+EVAL_EVERY_N_TICKS = int(os.environ.get("EVAL_EVERY_N_TICKS", "50"))
+# Live environment step: agent attempts one real task and gets real reward.
+ENV_STEP_EVERY_N_TICKS = int(os.environ.get("ENV_STEP_EVERY_N_TICKS", "2"))
+# Skill synthesis: propose+sandbox-test a new skill for a failing task kind.
+SKILL_SYNTH_EVERY_N_TICKS = int(os.environ.get("SKILL_SYNTH_EVERY_N_TICKS", "200"))
+# Hard timeout (seconds) for a single sandboxed skill execution.
+SANDBOX_TIMEOUT = float(os.environ.get("SANDBOX_TIMEOUT", "3.0"))
+
 # Broadcast the (large) full status over WebSocket at most every N ticks.
 WS_BROADCAST_EVERY_N_TICKS = int(os.environ.get("WS_BROADCAST_EVERY_N_TICKS", "1"))
 

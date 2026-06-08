@@ -86,6 +86,50 @@ class MemorySystem:
             "updated": time.time(),
         }
 
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        out, word = set(), []
+        for ch in text.lower():
+            if ch.isalnum():
+                word.append(ch)
+            elif word:
+                tok = "".join(word)
+                if len(tok) > 2:
+                    out.add(tok)
+                word = []
+        if word:
+            tok = "".join(word)
+            if len(tok) > 2:
+                out.add(tok)
+        return out
+
+    def retrieve(self, query: str, k: int = 5) -> list[dict]:
+        """RAG retrieval over semantic memory (point 3).
+
+        Ranks concepts by token-overlap (Jaccard) between the query and each
+        concept's key + stored summary/definition. Dependency-free; meant to be
+        fed into the LLM context so decisions use relevant knowledge instead of
+        just the most-recent N concepts.
+        """
+        q = self._tokenize(query)
+        if not q:
+            return []
+        scored: list[tuple[float, str, str]] = []
+        for concept, val in self.semantic.items():
+            rel = val.get("relations", {}) if isinstance(val, dict) else {}
+            summary = rel.get("summary") or rel.get("definition") or ""
+            doc = self._tokenize(f"{concept} {summary}")
+            if not doc:
+                continue
+            overlap = len(q & doc)
+            if overlap == 0:
+                continue
+            score = overlap / len(q | doc)  # Jaccard
+            scored.append((score, concept, summary))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [{"concept": c, "summary": s[:200], "score": round(sc, 3)}
+                for sc, c, s in scored[:k]]
+
     def recall_episodic(self, query: str = "", limit: int = 10) -> list[dict]:
         results = []
         for ep in reversed(self.episodic):

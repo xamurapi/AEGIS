@@ -651,6 +651,53 @@ async def chat(request: ChatRequest):
     }
 
 
+# ── Capability layer (benchmark / skills / environment) ──────────
+
+@app.get("/api/eval")
+async def get_eval():
+    return {
+        "evaluator": substrate.evaluator.status(),
+        "environment": substrate.environment.status(),
+        "reward_signal": round(substrate._compute_reward(), 4),
+    }
+
+
+@app.get("/api/skills")
+async def get_skills():
+    return substrate.skill_library.status()
+
+
+@app.post("/api/eval/run")
+async def run_eval():
+    """Trigger a synchronous benchmark run and return the report."""
+    report = await asyncio.get_event_loop().run_in_executor(None, substrate.evaluator.run)
+    substrate._last_benchmark_score = report["score"]
+    return report
+
+
+@app.post("/api/eval/synthesize")
+async def synthesize():
+    """Run one LLM-driven learning cycle now (close a failing kind, solve a coding
+    task, or simplify a skill). Requires a configured LLM (set a key first)."""
+    if not substrate.llm.enabled:
+        return {"error": "No LLM configured — set an API key to enable live synthesis"}
+    before = substrate.evaluator.last_score
+    await substrate._learning_cycle()
+    report = await asyncio.get_event_loop().run_in_executor(None, substrate.evaluator.run)
+    substrate._last_benchmark_score = report["score"]
+    return {"status": "ran", "score_before": before, "score_after": report["score"],
+            "skills": substrate.skill_library.status()["total_skills"]}
+
+
+@app.get("/api/eval/history.csv")
+async def eval_history_csv():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        substrate.evaluator.history_csv(),
+        headers={"Content-Disposition": "attachment; filename=aegis_fitness_history.csv"},
+    )
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     # When a token is configured, privileged actions require it as a query param
