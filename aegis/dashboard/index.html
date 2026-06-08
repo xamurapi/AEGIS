@@ -1117,7 +1117,11 @@ body {
   <div class="grid grid-2">
     <div class="card">
       <div class="card-header"><span class="card-title">Capability Over Time</span>
-        <button onclick="capRunEval()" style="background:var(--primary);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Run Benchmark</button>
+        <span style="display:flex;gap:6px">
+          <button onclick="capRunEval()" style="background:var(--primary);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Run Benchmark</button>
+          <button onclick="capSynthesize()" style="background:var(--success);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Synthesize (LLM)</button>
+          <button onclick="capExportCsv()" style="background:var(--card-border);color:var(--text);border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Export CSV</button>
+        </span>
       </div>
       <svg id="cap_spark" viewBox="0 0 300 90" preserveAspectRatio="none" style="width:100%;height:120px;background:rgba(255,255,255,.02);border-radius:8px"></svg>
       <div class="big-metric-label" id="cap_sparklabel" style="margin-top:6px">no runs yet</div>
@@ -1127,6 +1131,7 @@ body {
       <div class="metric"><span class="metric-label">Skills (payload → answer)</span><span class="metric-value" id="cap_fam_skills">0/0</span></div>
       <div class="metric"><span class="metric-label">Coding (hidden tests)</span><span class="metric-value" id="cap_fam_coding">0/0</span></div>
       <div class="metric"><span class="metric-label">Composite (pipelines)</span><span class="metric-value" id="cap_fam_composite">0/0</span></div>
+      <div class="metric"><span class="metric-label">Auto-compose (searched)</span><span class="metric-value" id="cap_fam_auto">0/0</span></div>
       <div class="card-header" style="margin-top:12px"><span class="card-title">Skill Library</span></div>
       <div id="cap_skilllist" class="event-log" style="max-height:220px"></div>
     </div>
@@ -1749,6 +1754,7 @@ function renderCapability(d) {
     setText('cap_fam_skills', fam(rep.skills));
     setText('cap_fam_coding', fam(rep.coding));
     setText('cap_fam_composite', fam(rep.composite));
+    setText('cap_fam_auto', fam(rep.autocompose));
     drawSparkline(ev.history_tail || []);
   }
   if (sk) {
@@ -1792,6 +1798,22 @@ async function capRunEval() {
     const r = await res.json();
     setText('cap_score', (r.score * 100).toFixed(1) + '%');
   } catch (e) { setText('cap_score', 'error'); }
+}
+
+async function capSynthesize() {
+  const label = document.getElementById('cap_sparklabel');
+  if (label) label.textContent = 'synthesizing via LLM…';
+  try {
+    const res = await fetch('/api/eval/synthesize', {method: 'POST'});
+    const r = await res.json();
+    if (label) label.textContent = r.error
+      ? r.error
+      : `synthesis: ${(r.score_before*100||0).toFixed(1)}% → ${(r.score_after*100).toFixed(1)}% (${r.skills} skills)`;
+  } catch (e) { if (label) label.textContent = 'synthesis error'; }
+}
+
+function capExportCsv() {
+  window.open('/api/eval/history.csv', '_blank');
 }
 
 

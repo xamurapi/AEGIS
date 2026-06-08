@@ -200,12 +200,15 @@ def test_coding_unsafe_solution_rejected():
     assert not v["solved"]
 
 
-def test_evaluator_includes_coding_and_composite_in_total(stack):
+def test_evaluator_combines_all_families_in_total(stack):
     lib, solver, ev = stack
     report = ev.run(record=False)
     assert report["coding"]["total"] == len(CODING_BENCHMARK)
     assert report["composite"]["total"] >= 1
-    assert report["total"] == report["skills"]["total"] + report["coding"]["total"] + report["composite"]["total"]
+    assert report["autocompose"]["total"] >= 1
+    fams = ["skills", "coding", "composite", "autocompose"]
+    assert report["total"] == sum(report[f]["total"] for f in fams)
+    assert report["passed"] == sum(report[f]["passed"] for f in fams)
 
 
 def test_stored_coding_solution_counts_as_solved(stack):
@@ -248,6 +251,92 @@ def test_shorter_skill_preferred_when_correct(stack):
     assert len(short_code) < len(long_code)
     incumbent = min(lib.for_kind("is_prime"), key=lambda s: len(s.code))
     assert incumbent.name == "prime_short"
+
+
+# ── more coding tasks ────────────────────────────────────────────
+def test_new_coding_tasks_are_solvable():
+    assert verify_solution(
+        "def reverse_words(s):\n    return ' '.join(s.split()[::-1])\n",
+        _coding_task("reverse_words"))["solved"]
+    assert verify_solution(
+        "def is_anagram(a, b):\n    return sorted(a) == sorted(b)\n",
+        _coding_task("is_anagram"))["solved"]
+    assert verify_solution(
+        "def max_of(nums):\n    return max(nums)\n", _coding_task("max_of"))["solved"]
+
+
+# ── live LLM coding synthesis (stubbed model) ────────────────────
+def _fresh_substrate_for_coding(task_id):
+    """A Substrate isolated from the on-disk skill store, with no preloaded
+    solution for the given coding task (avoids cross-test pollution)."""
+    from aegis.layers.substrate import Substrate
+    s = Substrate()
+    task = next(t for t in s.evaluator.coding_tasks if t.id == task_id)
+    s.skill_library._store_path = None  # don't read/write the shared store
+    s.skill_library.skills = {n: sk for n, sk in s.skill_library.skills.items()
+                              if task.kind_key() not in sk.kinds}
+    return s, task
+
+
+def test_coding_synthesis_stores_passing_solution():
+    import asyncio
+    s, task = _fresh_substrate_for_coding("is_even")
+
+    async def fake_solution(func_name, spec, visible):
+        return "def is_even(n):\n    return n % 2 == 0\n"
+
+    s.llm.propose_coding_solution = fake_solution
+    assert not s.evaluator.coding_solved(task)
+    asyncio.run(s._coding_synthesis([task]))
+    assert s.evaluator.coding_solved(task)
+
+
+def test_coding_synthesis_rejects_wrong_solution():
+    import asyncio
+    s, task = _fresh_substrate_for_coding("is_even")
+
+    async def wrong(func_name, spec, visible):
+        return "def is_even(n):\n    return True\n"  # fails hidden tests
+
+    s.llm.propose_coding_solution = wrong
+    asyncio.run(s._coding_synthesis([task]))
+    assert not s.evaluator.coding_solved(task)
+
+
+# ── auto-composition of arbitrary depth ──────────────────────────
+from aegis.eval.autocompose import TRANSFORM_KINDS, AUTOCOMPOSE_BENCHMARK
+
+
+def test_auto_compose_discovers_pipeline(stack):
+    lib, solver, ev = stack  # upper + reverse are seeded
+    path = solver.auto_compose("abc", "CBA", TRANSFORM_KINDS, max_depth=3)
+    assert path is not None and len(path) == 2
+    assert set(path) == {"reverse", "upper"}
+
+
+def test_auto_compose_blocked_until_primitive_learned(stack):
+    lib, solver, ev = stack
+    assert solver.auto_compose("3,1,2", "3,2,1", TRANSFORM_KINDS, 3) is None  # sort_csv unsolved
+    lib.add(Skill("csv", ["sort_csv"], code=KNOWN_SOLUTIONS["sort_csv"]))
+    path = solver.auto_compose("3,1,2", "3,2,1", TRANSFORM_KINDS, 3)
+    assert path == ["sort_csv", "reverse"]
+
+
+def test_auto_compose_respects_depth_limit(stack):
+    lib, solver, ev = stack
+    # An unreachable target returns None rather than searching forever.
+    assert solver.auto_compose("abc", "zzz", TRANSFORM_KINDS, max_depth=2) is None
+
+
+# ── CSV export of fitness history ────────────────────────────────
+def test_history_csv_export(stack):
+    lib, solver, ev = stack
+    ev.run(); ev.run()
+    csv = ev.history_csv()
+    lines = csv.strip().split("\n")
+    assert lines[0] == "run,timestamp,score"
+    assert len(lines) == 3  # header + 2 runs
+    assert lines[1].startswith("1,")
 
 
 # ── environment (grounding) ──────────────────────────────────────

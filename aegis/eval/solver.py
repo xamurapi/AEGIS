@@ -7,6 +7,7 @@ is genuine division of labor plus verification — no single skill is trusted, a
 the selection is objective, not a vote of confidence.
 """
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from aegis.eval.benchmark import Task
@@ -74,3 +75,33 @@ class MultiAgentSolver:
         solved = task.verify(current)
         return SolveResult(task.id, "compose", solved, current if solved else None,
                            "+".join(task.pipeline), steps, round((time.time() - t0) * 1000, 1))
+
+    def auto_compose(self, start: str, target: str, kinds, max_depth: int = 3):
+        """BFS search for a pipeline of transform skills mapping start -> target.
+
+        Returns the list of kinds applied (the discovered pipeline) or None.
+        Shortest pipeline wins (BFS); cycles are pruned via a visited set."""
+        if start == target:
+            return []
+        seen = {start}
+        queue: deque = deque([(start, [])])
+        while queue:
+            current, path = queue.popleft()
+            if len(path) >= max_depth:
+                continue
+            for kind in kinds:
+                produced = None
+                for skill in self.library.for_kind(kind):
+                    out = run_skill(skill.code, skill.func, {"s": current}, timeout=self.timeout)
+                    if out.get("ok"):
+                        produced = out["result"]
+                        break
+                if not isinstance(produced, str):
+                    continue
+                new_path = path + [kind]
+                if produced == target:
+                    return new_path
+                if produced not in seen:
+                    seen.add(produced)
+                    queue.append((produced, new_path))
+        return None

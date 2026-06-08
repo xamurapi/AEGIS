@@ -45,6 +45,36 @@ CODING_BENCHMARK: list[CodingTask] = [
         visible_tests=(([3], "Fizz"), ([5], "Buzz")),
         hidden_tests=(([15], "FizzBuzz"), ([7], "7"), ([9], "Fizz"), ([20], "Buzz")),
     ),
+    CodingTask(
+        "reverse_words", "reverse_words",
+        "reverse_words(s): reverse the ORDER of space-separated words.",
+        visible_tests=((["a b c"], "c b a"), (["hello world"], "world hello")),
+        hidden_tests=((["one"], "one"), (["x y z w"], "w z y x"), (["the quick fox"], "fox quick the")),
+    ),
+    CodingTask(
+        "sum_list", "sum_list",
+        "sum_list(nums): sum of a list of integers (0 for empty).",
+        visible_tests=(([[1, 2, 3]], 6), ([[]], 0)),
+        hidden_tests=(([[5]], 5), ([[-1, 1]], 0), ([[10, 20, 30]], 60)),
+    ),
+    CodingTask(
+        "is_anagram", "is_anagram",
+        "is_anagram(a, b): True if a and b are anagrams of each other.",
+        visible_tests=((["listen", "silent"], True), (["a", "b"], False)),
+        hidden_tests=((["", ""], True), (["aab", "aba"], True), (["abc", "abd"], False)),
+    ),
+    CodingTask(
+        "digit_count", "digit_count",
+        "digit_count(n): number of decimal digits of non-negative integer n (0 has 1).",
+        visible_tests=(([100], 3), ([7], 1)),
+        hidden_tests=(([0], 1), ([9999], 4), ([12345], 5)),
+    ),
+    CodingTask(
+        "max_of", "max_of",
+        "max_of(nums): the maximum value in a non-empty list of integers.",
+        visible_tests=(([[3, 1, 2]], 3), ([[5]], 5)),
+        hidden_tests=(([[-5, -1, -9]], -1), ([[0, 0, 0]], 0), ([[8, 3, 8, 1]], 8)),
+    ),
 ]
 
 

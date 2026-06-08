@@ -80,6 +80,9 @@ _SEED_SKILLS = [
     Skill("digit_sum", ["sum_digits"], origin="seed", code=(
         "def solve(p):\n    return sum(int(c) for c in str(p['n']))\n"
     )),
+    Skill("uppercase", ["upper"], origin="seed", code=(
+        "def solve(p):\n    return p['s'].upper()\n"
+    )),
 ]
 
 

@@ -73,6 +73,9 @@ DEFAULT_BENCHMARK: list[Task] = [
     # sum_digits
     Task("sd_a", "sum_digits", "digit sum of 9875", {"n": 9875}, 29),
     Task("sd_b", "sum_digits", "digit sum of 100", {"n": 100}, 1),
+    # upper (a string->string primitive, also used by auto-composition)
+    Task("up_a", "upper", "uppercase 'abc'", {"s": "abc"}, "ABC"),
+    Task("up_b", "upper", "uppercase 'AeGiS'", {"s": "AeGiS"}, "AEGIS"),
     # is_prime  (initially unsolved — synthesis target)
     Task("prime_97", "is_prime", "is 97 prime?", {"n": 97}, True),
     Task("prime_100", "is_prime", "is 100 prime?", {"n": 100}, False),

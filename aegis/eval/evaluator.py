@@ -14,6 +14,7 @@ from pathlib import Path
 from aegis.eval.benchmark import Task, DEFAULT_BENCHMARK, all_kinds
 from aegis.eval.coding import CodingTask, CODING_BENCHMARK, verify_solution
 from aegis.eval.composite import CompositeTask, COMPOSITE_BENCHMARK
+from aegis.eval.autocompose import AutoComposeTask, AUTOCOMPOSE_BENCHMARK
 from aegis.eval.solver import MultiAgentSolver
 
 logger = logging.getLogger("aegis.evaluator")
@@ -23,11 +24,14 @@ class Evaluator:
     def __init__(self, solver: MultiAgentSolver, tasks: list[Task] | None = None,
                  coding_tasks: list[CodingTask] | None = None,
                  composite_tasks: list[CompositeTask] | None = None,
+                 autocompose_tasks: list[AutoComposeTask] | None = None,
                  store_path: Path | None = None):
         self.solver = solver
         self.tasks = tasks or list(DEFAULT_BENCHMARK)
         self.coding_tasks = coding_tasks if coding_tasks is not None else list(CODING_BENCHMARK)
         self.composite_tasks = composite_tasks if composite_tasks is not None else list(COMPOSITE_BENCHMARK)
+        self.autocompose_tasks = (autocompose_tasks if autocompose_tasks is not None
+                                  else list(AUTOCOMPOSE_BENCHMARK))
         self._store_path = store_path
         self.history: deque = deque(maxlen=200)
         self.last_score: float | None = None
@@ -85,16 +89,21 @@ class Evaluator:
                 per_kind[t.kind][0] += 1
         total = len(tasks)
 
-        coding_passed = composite_passed = 0
-        coding_total = composite_total = 0
+        coding_passed = composite_passed = auto_passed = 0
+        coding_total = composite_total = auto_total = 0
         if not subset:
             coding_total = len(self.coding_tasks)
             coding_passed = sum(1 for t in self.coding_tasks if self.coding_solved(t))
             composite_total = len(self.composite_tasks)
             composite_passed = sum(1 for t in self.composite_tasks if self.solver.solve_composite(t).solved)
+            auto_total = len(self.autocompose_tasks)
+            auto_passed = sum(
+                1 for t in self.autocompose_tasks
+                if self.solver.auto_compose(t.start, t.target, t.kinds, t.max_depth) is not None
+            )
 
-        grand_passed = passed + coding_passed + composite_passed
-        grand_total = total + coding_total + composite_total
+        grand_passed = passed + coding_passed + composite_passed + auto_passed
+        grand_total = total + coding_total + composite_total + auto_total
         score = grand_passed / grand_total if grand_total else 0.0
         report = {
             "timestamp": time.time(),
@@ -104,6 +113,7 @@ class Evaluator:
             "skills": {"passed": passed, "total": total},
             "coding": {"passed": coding_passed, "total": coding_total},
             "composite": {"passed": composite_passed, "total": composite_total},
+            "autocompose": {"passed": auto_passed, "total": auto_total},
             "per_kind": {k: {"passed": v[0], "total": v[1]} for k, v in per_kind.items()},
         }
         if record and not subset:
@@ -139,6 +149,13 @@ class Evaluator:
             if self.kind_pass_rate(k) < 1.0:
                 failing.append(k)
         return failing
+
+    def history_csv(self) -> str:
+        """Export the full fitness history as CSV text (run,timestamp,score)."""
+        lines = ["run,timestamp,score"]
+        for i, h in enumerate(self.history, 1):
+            lines.append(f"{i},{h.get('t', '')},{h.get('score', '')}")
+        return "\n".join(lines) + "\n"
 
     def status(self) -> dict:
         return {
