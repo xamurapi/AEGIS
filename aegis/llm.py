@@ -554,6 +554,33 @@ Rules:
         code = text.strip()
         return code if "def solve" in code else None
 
+    async def propose_coding_solution(self, func_name: str, spec: str,
+                                      visible_tests: list) -> str | None:
+        """Ask the LLM to implement a function from a spec + visible tests.
+
+        Only the visible tests are shown; the candidate is graded on hidden
+        tests by the verifier, so this measures real implementation ability."""
+        shown = "\n".join(f"  {func_name}{tuple(args)} == {exp!r}" for args, exp in visible_tests[:4])
+        prompt = f"""Implement this function in pure Python.
+
+def {func_name}(...):  # {spec}
+
+It must satisfy these examples (and generalize beyond them):
+{shown}
+
+Rules: pure computation only; no imports except math/statistics/itertools/functools/re/json/collections/string;
+no eval/exec/open/__import__, no I/O, no print. Return ONLY the function in a ```python block."""
+        result = await self.think(prompt)
+        if not result.get("success"):
+            return None
+        text = result["response"]
+        if "```python" in text:
+            text = text.split("```python", 1)[1].split("```", 1)[0]
+        elif "```" in text:
+            text = text.split("```", 1)[1].split("```", 1)[0]
+        code = text.strip()
+        return code if f"def {func_name}" in code else None
+
     def set_provider(self, provider: str):
         if provider in ("deepseek", "claude", "both", "local"):
             self.provider_mode = provider

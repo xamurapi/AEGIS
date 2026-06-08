@@ -48,3 +48,29 @@ class MultiAgentSolver:
             task.id, task.kind, False, None, None, candidates,
             round((time.time() - t0) * 1000, 1),
         )
+
+    def solve_composite(self, task) -> SolveResult:
+        """Solve a composite task by threading a string through its pipeline of
+        primitive skills (each kind takes {"s": str} and returns a string)."""
+        t0 = time.time()
+        current = task.payload.get("s")
+        steps = 0
+        for kind in task.pipeline:
+            skills = self.library.for_kind(kind)
+            if not skills:
+                return SolveResult(task.id, "compose", False, None, None, steps,
+                                   round((time.time() - t0) * 1000, 1))
+            produced = None
+            for skill in skills:
+                out = run_skill(skill.code, skill.func, {"s": current}, timeout=self.timeout)
+                if out.get("ok"):
+                    produced = out["result"]
+                    break
+            if produced is None:
+                return SolveResult(task.id, "compose", False, None, None, steps,
+                                   round((time.time() - t0) * 1000, 1))
+            current = produced
+            steps += 1
+        solved = task.verify(current)
+        return SolveResult(task.id, "compose", solved, current if solved else None,
+                           "+".join(task.pipeline), steps, round((time.time() - t0) * 1000, 1))

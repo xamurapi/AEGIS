@@ -108,3 +108,57 @@ def run_skill(code: str, func: str, payload, timeout: float = 3.0) -> dict:
         return json.loads(out[marker + len("__AEGIS__"):])
     except json.JSONDecodeError:
         return {"ok": False, "error": "unparseable result"}
+
+
+_TEST_RUNNER = """{code}
+
+if __name__ == "__main__":
+    import sys, json
+    _cases = json.loads(sys.stdin.read() or "[]")
+    _out = []
+    for _args in _cases:
+        try:
+            _out.append({{"ok": True, "result": {func}(*_args)}})
+        except Exception as _e:
+            _out.append({{"ok": False, "error": repr(_e)}})
+    sys.stdout.write("__AEGIS__" + json.dumps(_out))
+"""
+
+
+def run_tests(code: str, func: str, arg_lists: list, timeout: float = 3.0) -> dict:
+    """Run ``func(*args)`` for each arg list in one isolated subprocess.
+
+    Used by the coding benchmark to execute a candidate function against many
+    hidden test cases at once. Returns {"ok": bool, "results": [...]}.
+    """
+    safe, reasons = check_safe(code)
+    if not safe:
+        return {"ok": False, "error": f"unsafe code: {reasons}", "results": []}
+
+    script = _TEST_RUNNER.format(code=code, func=func)
+    tmp = Path(tempfile.gettempdir()) / f"aegis_test_{abs(hash(code)) % (10**9)}.py"
+    try:
+        tmp.write_text(script, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-I", str(tmp)],
+            input=json.dumps(arg_lists),
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"timeout after {timeout}s", "results": []}
+    except Exception as e:
+        return {"ok": False, "error": f"sandbox error: {e!r}", "results": []}
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+    out = proc.stdout
+    marker = out.rfind("__AEGIS__")
+    if marker == -1:
+        return {"ok": False, "error": f"no result (stderr: {proc.stderr[:200]})", "results": []}
+    try:
+        return {"ok": True, "results": json.loads(out[marker + len("__AEGIS__"):])}
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "unparseable result", "results": []}

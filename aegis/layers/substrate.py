@@ -50,6 +50,8 @@ from aegis.layers.weight_modifier import WeightModifier
 from aegis.layers.dataset_builder import DatasetBuilder
 from aegis.layers.code_modifier import CodeModifier
 from aegis.eval.benchmark import DEFAULT_BENCHMARK, tasks_for_kind, split_tasks
+from aegis.eval.coding import CODING_BENCHMARK
+from aegis.eval.composite import COMPOSITE_BENCHMARK
 from aegis.eval.skill_library import SkillLibrary, Skill
 from aegis.eval.solver import MultiAgentSolver
 from aegis.eval.evaluator import Evaluator
@@ -694,13 +696,14 @@ class Substrate:
                 and (self._eval_task is None or self._eval_task.done())):
             self._eval_task = asyncio.create_task(self._run_benchmark())
 
-        # ── Skill synthesis: try to close a failing kind (points 3 & 4) ──
+        # ── Skill synthesis: close a failing kind, learn a coding solution, or
+        #    simplify an already-solved kind (points 3, 4 + coding + versioning) ──
         if (self.tick_count % max(1, SKILL_SYNTH_EVERY_N_TICKS) == 0
                 and self.tick_count > 0
                 and self.llm.enabled
                 and not self._regulation_directives.get("skip_learning")
                 and (self._skill_synth_task is None or self._skill_synth_task.done())):
-            self._skill_synth_task = asyncio.create_task(self._skill_synthesis())
+            self._skill_synth_task = asyncio.create_task(self._learning_cycle())
 
         self.memory.add_working({"phase": "act", "result": action_result})
 
@@ -776,6 +779,84 @@ class Substrate:
                     "skill_discarded", f"{kind}: no generalizing improvement ({before:.2f})", 0.5)
         except Exception:
             logger.exception("Skill synthesis failed")
+
+    async def _learning_cycle(self):
+        """Pick the most useful learning action this round, in priority order:
+        1. close a failing payload->answer kind, 2. learn an unsolved coding
+        task, 3. simplify an already-solved kind (versioning)."""
+        try:
+            failing = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.failing_kinds)
+            if failing:
+                await self._skill_synthesis()
+                return
+            unsolved_coding = await asyncio.get_event_loop().run_in_executor(
+                None, self.evaluator.unsolved_coding)
+            if unsolved_coding:
+                await self._coding_synthesis(unsolved_coding)
+                return
+            await self._skill_optimization()
+        except Exception:
+            logger.exception("Learning cycle failed")
+
+    async def _coding_synthesis(self, unsolved):
+        """Learn an unsolved CODING task: implement from spec+visible tests, then
+        keep the solution only if it passes the HIDDEN tests (step 1)."""
+        from aegis.eval.coding import verify_solution
+        task = unsolved[self._skill_synth_idx % len(unsolved)]
+        self._skill_synth_idx += 1
+        code = await self.llm.propose_coding_solution(
+            task.func_name, task.spec, [list(vt) for vt in task.visible_tests])
+        if not code:
+            return
+        verdict = await asyncio.get_event_loop().run_in_executor(None, verify_solution, code, task)
+        if verdict["solved"]:
+            self._skill_synth_count += 1
+            skill = Skill(name=f"sol_{task.id}_{self._skill_synth_count}",
+                          kinds=[task.kind_key()], code=code, func=task.func_name, origin="llm")
+            added, _ = self.skill_library.add(skill)
+            if added:
+                self.autobiography.log_event(
+                    "coding_solved", f"{task.id}: passed {verdict['total']} hidden tests", 0.9)
+                self.motor.execute("alert", payload={
+                    "level": "info", "message": f"Solved coding task '{task.id}'"})
+        else:
+            self.autobiography.log_event(
+                "coding_failed", f"{task.id}: {verdict['passed']}/{verdict['total']} hidden tests", 0.5)
+
+    async def _skill_optimization(self):
+        """Versioning (step 2): for an already-solved kind, try to learn a SIMPLER
+        skill (shorter code) that still passes the held-out tests, and retire the
+        longer one. Correctness is preserved; the secondary metric is simplicity."""
+        kinds = [k for k in self.skill_library.status()["kinds_covered"] if not k.startswith("code:")]
+        if not kinds:
+            return
+        kind = kinds[self._skill_synth_idx % len(kinds)]
+        self._skill_synth_idx += 1
+        current = [s for s in self.skill_library.for_kind(kind)]
+        if not current:
+            return
+        incumbent = min(current, key=lambda s: len(s.code))
+        train, holdout = split_tasks(kind)
+        code = await self.llm.propose_skill(
+            kind, [{"payload": t.payload, "expected": t.expected} for t in train])
+        if not code or len(code) >= len(incumbent.code):
+            return  # not simpler
+        self._skill_synth_count += 1
+        cand = Skill(name=f"{kind}_opt_{self._skill_synth_count}", kinds=[kind], code=code, origin="llm")
+        added, _ = self.skill_library.add(cand)
+        if not added:
+            return
+        rate = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.pass_rate_on, holdout)
+        if rate >= 1.0:
+            # Retire all longer skills for this kind — the simpler one wins.
+            for s in current:
+                if len(s.code) > len(code):
+                    self.skill_library.remove(s.name)
+            self.skill_library.save()
+            self.autobiography.log_event(
+                "skill_optimized", f"{kind}: simpler skill {len(incumbent.code)}->{len(code)} chars", 0.7)
+        else:
+            self.skill_library.remove(cand.name)
 
     async def _weight_training_cycle(self):
         """Run a full weight-modification cycle off the tick loop.
@@ -1222,6 +1303,7 @@ class Substrate:
             "evaluator": self.evaluator.status(),
             "skills": self.skill_library.status(),
             "environment": self.environment.status(),
+            "reward_signal": round(self._compute_reward(), 4),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),
             "llm": self.llm.status(),

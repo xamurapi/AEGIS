@@ -12,6 +12,8 @@ from collections import deque
 from pathlib import Path
 
 from aegis.eval.benchmark import Task, DEFAULT_BENCHMARK, all_kinds
+from aegis.eval.coding import CodingTask, CODING_BENCHMARK, verify_solution
+from aegis.eval.composite import CompositeTask, COMPOSITE_BENCHMARK
 from aegis.eval.solver import MultiAgentSolver
 
 logger = logging.getLogger("aegis.evaluator")
@@ -19,9 +21,13 @@ logger = logging.getLogger("aegis.evaluator")
 
 class Evaluator:
     def __init__(self, solver: MultiAgentSolver, tasks: list[Task] | None = None,
+                 coding_tasks: list[CodingTask] | None = None,
+                 composite_tasks: list[CompositeTask] | None = None,
                  store_path: Path | None = None):
         self.solver = solver
         self.tasks = tasks or list(DEFAULT_BENCHMARK)
+        self.coding_tasks = coding_tasks if coding_tasks is not None else list(CODING_BENCHMARK)
+        self.composite_tasks = composite_tasks if composite_tasks is not None else list(COMPOSITE_BENCHMARK)
         self._store_path = store_path
         self.history: deque = deque(maxlen=200)
         self.last_score: float | None = None
@@ -53,8 +59,20 @@ class Evaluator:
         except Exception:
             logger.warning("Failed to save eval history", exc_info=True)
 
+    def coding_solved(self, task: CodingTask) -> bool:
+        """A coding task is solved if any stored solution passes ALL hidden tests."""
+        for skill in self.solver.library.for_kind(task.kind_key()):
+            if verify_solution(skill.code, task, timeout=self.solver.timeout)["solved"]:
+                self.solver.library.record(skill.name, True)
+                return True
+        return False
+
     def run(self, only_kinds: list[str] | None = None, record: bool = True) -> dict:
-        """Run the benchmark (optionally a subset of kinds). Returns a report."""
+        """Run the full benchmark (skills + coding + composite). Returns a report.
+
+        ``only_kinds`` restricts to skill-task kinds (used by the per-kind gate)
+        and skips coding/composite families."""
+        subset = only_kinds is not None
         tasks = [t for t in self.tasks if (only_kinds is None or t.kind in only_kinds)]
         per_kind: dict[str, list[int]] = {}
         passed = 0
@@ -66,21 +84,38 @@ class Evaluator:
                 passed += 1
                 per_kind[t.kind][0] += 1
         total = len(tasks)
-        score = passed / total if total else 0.0
+
+        coding_passed = composite_passed = 0
+        coding_total = composite_total = 0
+        if not subset:
+            coding_total = len(self.coding_tasks)
+            coding_passed = sum(1 for t in self.coding_tasks if self.coding_solved(t))
+            composite_total = len(self.composite_tasks)
+            composite_passed = sum(1 for t in self.composite_tasks if self.solver.solve_composite(t).solved)
+
+        grand_passed = passed + coding_passed + composite_passed
+        grand_total = total + coding_total + composite_total
+        score = grand_passed / grand_total if grand_total else 0.0
         report = {
             "timestamp": time.time(),
             "score": round(score, 4),
-            "passed": passed,
-            "total": total,
+            "passed": grand_passed,
+            "total": grand_total,
+            "skills": {"passed": passed, "total": total},
+            "coding": {"passed": coding_passed, "total": coding_total},
+            "composite": {"passed": composite_passed, "total": composite_total},
             "per_kind": {k: {"passed": v[0], "total": v[1]} for k, v in per_kind.items()},
         }
-        if record and only_kinds is None:
+        if record and not subset:
             self.last_score = report["score"]
             self.last_report = report
             self.total_runs += 1
             self.history.append({"t": report["timestamp"], "score": report["score"]})
             self._save()
         return report
+
+    def unsolved_coding(self) -> list[CodingTask]:
+        return [t for t in self.coding_tasks if not self.coding_solved(t)]
 
     def kind_pass_rate(self, kind: str) -> float:
         """Pass-rate for a single kind — used by the skill-acceptance gate."""

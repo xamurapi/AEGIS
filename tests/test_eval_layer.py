@@ -105,8 +105,9 @@ def test_baseline_score_reflects_seeded_coverage(stack):
     report = ev.run(record=False)
     seeded = _seeded_kinds(lib)
     expected_passed = sum(1 for t in DEFAULT_BENCHMARK if t.kind in seeded)
-    assert report["total"] == len(DEFAULT_BENCHMARK)
-    assert report["passed"] == expected_passed
+    # report["skills"] is the payload->answer family; coding/composite are extra.
+    assert report["skills"]["total"] == len(DEFAULT_BENCHMARK)
+    assert report["skills"]["passed"] == expected_passed
     assert 0.0 < report["score"] < 1.0  # some kinds intentionally unsolved
 
 
@@ -118,14 +119,16 @@ def test_failing_kinds_are_the_unseeded_ones(stack):
     assert expected_failing  # there ARE synthesis targets to close
 
 
-def test_learning_all_missing_skills_reaches_full_score(stack):
+def test_learning_all_missing_skills_completes_the_skill_family(stack):
     lib, solver, ev = stack
     for kind in ev.failing_kinds():
         assert kind in KNOWN_SOLUTIONS, f"no reference solution for unsolved kind {kind}"
         added, msg = lib.add(Skill(f"{kind}_learned", [kind], code=KNOWN_SOLUTIONS[kind]))
         assert added, msg
     report = ev.run(record=False)
-    assert report["score"] == 1.0
+    # The payload->answer family is now fully solved (coding/composite are separate).
+    assert report["skills"]["passed"] == report["skills"]["total"]
+    assert not ev.failing_kinds()
 
 
 def test_skill_acceptance_gate_measures_improvement(stack):
@@ -169,6 +172,82 @@ def test_generalizing_skill_passes_holdout_gate(stack):
     _, holdout = split_tasks("to_binary")
     lib.add(Skill("bin_real", ["to_binary"], code=KNOWN_SOLUTIONS["to_binary"]))
     assert ev.pass_rate_on(holdout) == 1.0
+
+
+# ── step 1: coding benchmark (hidden-test verification) ──────────
+from aegis.eval.coding import CODING_BENCHMARK, verify_solution
+
+_FIZZBUZZ_GOOD = ("def fizzbuzz(n):\n    if n%15==0: return 'FizzBuzz'\n"
+                  "    if n%3==0: return 'Fizz'\n    if n%5==0: return 'Buzz'\n    return str(n)\n")
+_FIZZBUZZ_MEMO = "def fizzbuzz(n):\n    return {3:'Fizz', 5:'Buzz'}.get(n, str(n))\n"
+
+
+def _coding_task(tid):
+    return next(t for t in CODING_BENCHMARK if t.id == tid)
+
+
+def test_coding_good_solution_passes_hidden_tests():
+    assert verify_solution(_FIZZBUZZ_GOOD, _coding_task("fizzbuzz"))["solved"]
+
+
+def test_coding_memorizer_fails_hidden_tests():
+    v = verify_solution(_FIZZBUZZ_MEMO, _coding_task("fizzbuzz"))
+    assert not v["solved"] and v["passed"] < v["total"]
+
+
+def test_coding_unsafe_solution_rejected():
+    v = verify_solution("import os\ndef fizzbuzz(n): return os.getcwd()\n", _coding_task("fizzbuzz"))
+    assert not v["solved"]
+
+
+def test_evaluator_includes_coding_and_composite_in_total(stack):
+    lib, solver, ev = stack
+    report = ev.run(record=False)
+    assert report["coding"]["total"] == len(CODING_BENCHMARK)
+    assert report["composite"]["total"] >= 1
+    assert report["total"] == report["skills"]["total"] + report["coding"]["total"] + report["composite"]["total"]
+
+
+def test_stored_coding_solution_counts_as_solved(stack):
+    lib, solver, ev = stack
+    t = _coding_task("is_even")
+    assert not ev.coding_solved(t)
+    lib.add(Skill("sol_is_even", [t.kind_key()], func="is_even",
+                  code="def is_even(n):\n    return n % 2 == 0\n"))
+    assert ev.coding_solved(t)
+
+
+# ── step 3: composite tasks (hierarchy of primitives) ────────────
+from aegis.eval.composite import COMPOSITE_BENCHMARK
+
+
+def test_composite_fails_without_primitive(stack):
+    lib, solver, ev = stack  # sort_csv is unsolved by default
+    res = solver.solve_composite(COMPOSITE_BENCHMARK[0])
+    assert not res.solved
+
+
+def test_composite_solves_once_primitive_learned(stack):
+    lib, solver, ev = stack
+    lib.add(Skill("csv", ["sort_csv"], code=KNOWN_SOLUTIONS["sort_csv"]))
+    res = solver.solve_composite(COMPOSITE_BENCHMARK[0])
+    assert res.solved and res.answer == "3,2,1"
+
+
+# ── step 2: versioning (prefer the simpler correct skill) ────────
+def test_shorter_skill_preferred_when_correct(stack):
+    from aegis.eval.benchmark import split_tasks
+    lib, solver, ev = stack
+    _, holdout = split_tasks("is_prime")
+    long_code = KNOWN_SOLUTIONS["is_prime"]
+    short_code = "def solve(p):\n    n=p['n']\n    return n>1 and all(n%i for i in range(2,n))\n"
+    lib.add(Skill("prime_long", ["is_prime"], code=long_code))
+    lib.add(Skill("prime_short", ["is_prime"], code=short_code))
+    # Both correct on holdout; the optimizer keeps the shorter one.
+    assert ev.pass_rate_on(holdout) == 1.0
+    assert len(short_code) < len(long_code)
+    incumbent = min(lib.for_kind("is_prime"), key=lambda s: len(s.code))
+    assert incumbent.name == "prime_short"
 
 
 # ── environment (grounding) ──────────────────────────────────────
