@@ -49,7 +49,7 @@ from aegis.layers.emotion_nlp import EmotionNLP
 from aegis.layers.weight_modifier import WeightModifier
 from aegis.layers.dataset_builder import DatasetBuilder
 from aegis.layers.code_modifier import CodeModifier
-from aegis.eval.benchmark import DEFAULT_BENCHMARK, tasks_for_kind
+from aegis.eval.benchmark import DEFAULT_BENCHMARK, tasks_for_kind, split_tasks
 from aegis.eval.skill_library import SkillLibrary, Skill
 from aegis.eval.solver import MultiAgentSolver
 from aegis.eval.evaluator import Evaluator
@@ -719,8 +719,13 @@ class Substrate:
             logger.exception("Benchmark run failed")
 
     async def _skill_synthesis(self):
-        """Propose a skill for a failing kind, sandbox-test it, keep only if it
-        raises that kind's pass-rate (real, measured self-improvement)."""
+        """Propose a skill for a failing kind from TRAIN examples and keep it only
+        if it raises the HELD-OUT pass-rate (real, generalizing self-improvement).
+
+        The proposer sees only the train split; the acceptance gate scores the
+        candidate on held-out tasks it never saw, so memorizing the shown cases
+        does not pass. A failed proposal gets one repair attempt with the failing
+        example fed back."""
         try:
             failing = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.failing_kinds)
             if not failing:
@@ -728,34 +733,47 @@ class Substrate:
             kind = failing[self._skill_synth_idx % len(failing)]
             self._skill_synth_idx += 1
 
-            examples = [{"payload": t.payload, "expected": t.expected}
-                        for t in tasks_for_kind(kind)]
-            code = await self.llm.propose_skill(kind, examples)
-            if not code:
-                return
+            train, holdout = split_tasks(kind)
+            train_examples = [{"payload": t.payload, "expected": t.expected} for t in train]
 
             before = await asyncio.get_event_loop().run_in_executor(
-                None, self.evaluator.kind_pass_rate, kind)
-            self._skill_synth_count += 1
-            skill = Skill(name=f"{kind}_llm_{self._skill_synth_count}", kinds=[kind],
-                          code=code, origin="llm")
-            added, msg = self.skill_library.add(skill)
-            if not added:
-                self.autobiography.log_event("skill_rejected", f"{kind}: {msg[:60]}", 0.5)
-                return
+                None, self.evaluator.pass_rate_on, holdout)
 
-            after = await asyncio.get_event_loop().run_in_executor(
-                None, self.evaluator.kind_pass_rate, kind)
-            if after > before:
-                self.skill_library.save()
+            code = await self.llm.propose_skill(kind, train_examples)
+            kept = False
+            for attempt in range(2):  # initial + one repair
+                if not code:
+                    break
+                self._skill_synth_count += 1
+                name = f"{kind}_llm_{self._skill_synth_count}"
+                skill = Skill(name=name, kinds=[kind], code=code, origin="llm")
+                added, msg = self.skill_library.add(skill)
+                if not added:
+                    self.autobiography.log_event("skill_rejected", f"{kind}: {msg[:60]}", 0.5)
+                    break
+
+                after = await asyncio.get_event_loop().run_in_executor(
+                    None, self.evaluator.pass_rate_on, holdout)
+                if after > before:
+                    self.skill_library.save()
+                    self.autobiography.log_event(
+                        "skill_learned", f"{kind}: holdout {before:.2f} -> {after:.2f}", 0.9)
+                    self.motor.execute("alert", payload={
+                        "level": "info",
+                        "message": f"Learned generalizing skill for '{kind}' ({before:.2f}->{after:.2f})"})
+                    kept = True
+                    break
+
+                # No generalization — discard and try one repair from a failing case.
+                self.skill_library.remove(name)
+                if attempt == 0 and train_examples:
+                    code = await self.llm.propose_skill(kind, train_examples)
+                else:
+                    code = None
+
+            if not kept:
                 self.autobiography.log_event(
-                    "skill_learned", f"{kind}: pass {before:.2f} -> {after:.2f}", 0.9)
-                self.motor.execute("alert", payload={
-                    "level": "info", "message": f"Learned skill for '{kind}' ({before:.2f}->{after:.2f})"})
-            else:
-                self.skill_library.remove(skill.name)
-                self.autobiography.log_event(
-                    "skill_discarded", f"{kind}: no improvement ({before:.2f})", 0.5)
+                    "skill_discarded", f"{kind}: no generalizing improvement ({before:.2f})", 0.5)
         except Exception:
             logger.exception("Skill synthesis failed")
 

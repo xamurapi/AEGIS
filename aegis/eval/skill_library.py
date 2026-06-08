@@ -59,6 +59,27 @@ _SEED_SKILLS = [
         "    for _ in range(n): a, b = b, a + b\n"
         "    return a\n"
     )),
+    Skill("palindrome_check", ["palindrome"], origin="seed", code=(
+        "def solve(p):\n    s = p['s']\n    return s == s[::-1]\n"
+    )),
+    Skill("euclid_gcd", ["gcd"], origin="seed", code=(
+        "def solve(p):\n"
+        "    a, b = p['a'], p['b']\n"
+        "    while b: a, b = b, a % b\n"
+        "    return a\n"
+    )),
+    Skill("factorial", ["factorial"], origin="seed", code=(
+        "def solve(p):\n"
+        "    n = p['n']; r = 1\n"
+        "    for i in range(2, n + 1): r *= i\n"
+        "    return r\n"
+    )),
+    Skill("word_counter", ["word_count"], origin="seed", code=(
+        "def solve(p):\n    return len(p['s'].split())\n"
+    )),
+    Skill("digit_sum", ["sum_digits"], origin="seed", code=(
+        "def solve(p):\n    return sum(int(c) for c in str(p['n']))\n"
+    )),
 ]
 
 

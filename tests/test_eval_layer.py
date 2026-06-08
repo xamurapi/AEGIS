@@ -2,7 +2,29 @@
 evaluator, environment, RAG retrieval, and the reward wiring."""
 import pytest
 
-from aegis.eval.benchmark import DEFAULT_BENCHMARK, Task, tasks_for_kind
+from aegis.eval.benchmark import DEFAULT_BENCHMARK, Task, tasks_for_kind, all_kinds
+
+
+def _seeded_kinds(lib):
+    return {k for s in lib.skills.values() for k in s.kinds}
+
+
+# Correct reference solutions for the intentionally-unsolved kinds (what the
+# synthesis loop would learn). Used to prove score reaches 1.0.
+KNOWN_SOLUTIONS = {
+    "is_prime": "def solve(p):\n    n=p['n']\n    return n>1 and all(n%i for i in range(2,int(n**0.5)+1))\n",
+    "sort_csv": "def solve(p):\n    return ','.join(str(x) for x in sorted(int(v) for v in p['s'].split(',')))\n",
+    "roman": (
+        "def solve(p):\n    n=p['n']\n"
+        "    vals=[(1000,'M'),(900,'CM'),(500,'D'),(400,'CD'),(100,'C'),(90,'XC'),"
+        "(50,'L'),(40,'XL'),(10,'X'),(9,'IX'),(5,'V'),(4,'IV'),(1,'I')]\n"
+        "    out=''\n    for v,s in vals:\n        while n>=v: out+=s; n-=v\n    return out\n"
+    ),
+    "to_binary": (
+        "def solve(p):\n    n=p['n']\n    if n==0: return '0'\n"
+        "    b=''\n    while n>0: b=str(n%2)+b; n//=2\n    return b\n"
+    ),
+}
 from aegis.eval.sandbox import check_safe, run_skill
 from aegis.eval.skill_library import SkillLibrary, Skill
 from aegis.eval.solver import MultiAgentSolver
@@ -81,23 +103,27 @@ def stack():
 def test_baseline_score_reflects_seeded_coverage(stack):
     lib, solver, ev = stack
     report = ev.run(record=False)
-    # 9 of 13 tasks solvable by the 4 seeded skills.
-    assert report["passed"] == 9 and report["total"] == 13
-    assert 0.6 < report["score"] < 0.75
+    seeded = _seeded_kinds(lib)
+    expected_passed = sum(1 for t in DEFAULT_BENCHMARK if t.kind in seeded)
+    assert report["total"] == len(DEFAULT_BENCHMARK)
+    assert report["passed"] == expected_passed
+    assert 0.0 < report["score"] < 1.0  # some kinds intentionally unsolved
 
 
-def test_failing_kinds_are_unsolved_ones(stack):
+def test_failing_kinds_are_the_unseeded_ones(stack):
     lib, solver, ev = stack
-    assert set(ev.failing_kinds()) == {"is_prime", "sort_csv"}
+    seeded = _seeded_kinds(lib)
+    expected_failing = {k for k in all_kinds() if k not in seeded}
+    assert set(ev.failing_kinds()) == expected_failing
+    assert expected_failing  # there ARE synthesis targets to close
 
 
-def test_adding_skill_raises_score_to_full(stack):
+def test_learning_all_missing_skills_reaches_full_score(stack):
     lib, solver, ev = stack
-    lib.add(Skill("prime", ["is_prime"], code=(
-        "def solve(p):\n    n=p['n']\n    if n<2: return False\n"
-        "    i=2\n    while i*i<=n:\n        if n%i==0: return False\n        i+=1\n    return True\n")))
-    lib.add(Skill("csv", ["sort_csv"], code=(
-        "def solve(p):\n    return ','.join(str(x) for x in sorted(int(v) for v in p['s'].split(',')))\n")))
+    for kind in ev.failing_kinds():
+        assert kind in KNOWN_SOLUTIONS, f"no reference solution for unsolved kind {kind}"
+        added, msg = lib.add(Skill(f"{kind}_learned", [kind], code=KNOWN_SOLUTIONS[kind]))
+        assert added, msg
     report = ev.run(record=False)
     assert report["score"] == 1.0
 
@@ -117,6 +143,32 @@ def test_solver_reports_candidates(stack):
     lib, solver, ev = stack
     res = solver.solve(tasks_for_kind("calc")[0])
     assert res.solved and res.candidates >= 1 and res.winning_skill
+
+
+# ── generalization: train/holdout gate (honest self-improvement) ──
+def test_split_tasks_holds_out_last_example():
+    from aegis.eval.benchmark import split_tasks
+    train, holdout = split_tasks("to_binary")
+    assert train and holdout
+    assert not set(t.id for t in train) & set(t.id for t in holdout)  # disjoint
+
+
+def test_memorizing_skill_fails_holdout_gate(stack):
+    # A skill that hardcodes the TRAIN answer passes train but not holdout.
+    from aegis.eval.benchmark import split_tasks
+    lib, solver, ev = stack
+    train, holdout = split_tasks("to_binary")  # train: 13->'1101', holdout: 255->'11111111'
+    lib.add(Skill("bin_memo", ["to_binary"], code="def solve(p):\n    return '1101'\n"))
+    assert ev.pass_rate_on(train) == 1.0     # looks solved on what it saw
+    assert ev.pass_rate_on(holdout) == 0.0   # but does not generalize
+
+
+def test_generalizing_skill_passes_holdout_gate(stack):
+    from aegis.eval.benchmark import split_tasks
+    lib, solver, ev = stack
+    _, holdout = split_tasks("to_binary")
+    lib.add(Skill("bin_real", ["to_binary"], code=KNOWN_SOLUTIONS["to_binary"]))
+    assert ev.pass_rate_on(holdout) == 1.0
 
 
 # ── environment (grounding) ──────────────────────────────────────

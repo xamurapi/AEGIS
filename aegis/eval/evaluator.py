@@ -87,6 +87,16 @@ class Evaluator:
         report = self.run(only_kinds=[kind], record=False)
         return report["score"]
 
+    def pass_rate_on(self, tasks: list[Task]) -> float:
+        """Pass-rate over an explicit task list (e.g. a held-out split).
+
+        Used by the synthesis gate to measure GENERALIZATION: the candidate
+        skill is scored on tasks it was not shown during proposal."""
+        if not tasks:
+            return 0.0
+        passed = sum(1 for t in tasks if self.solver.solve(t).solved)
+        return passed / len(tasks)
+
     def failing_kinds(self) -> list[str]:
         """Kinds not at 100% pass — synthesis targets."""
         failing = []
