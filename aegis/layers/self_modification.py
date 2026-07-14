@@ -162,21 +162,52 @@ class SelfModification:
             return {"applied": False, "reason": "sandbox_failed"}
 
         if sandbox_result["degradation"] > 0.05:
-            self._rollback(proposal)
+            # The proposal has NOT been applied to self.parameters yet (that
+            # happens below), so there is nothing to revert — just reject it.
+            # Restoring _stable_checkpoint here would wrongly undo the PREVIOUS
+            # accepted modification. Keep the audit trail without mutating state.
+            proposal["status"] = "rejected_degradation"
+            self.rollbacks.append({
+                "timestamp": time.time(),
+                "proposal_id": proposal["id"],
+                "reason": "degradation_exceeded_threshold",
+            })
+            self.modifications.append(proposal)
             return {"applied": False, "reason": "degradation_too_high"}
 
         if proposal["target"] in self.parameters:
             self._stable_checkpoint = copy.deepcopy(self.parameters)
             self.parameters[proposal["target"]] = proposal["new_value"]
             proposal["status"] = "applied"
-            v = self.current_version.split(".")
-            v[2] = str(int(v[2]) + 1)
-            self.current_version = ".".join(v)
+            self.current_version = self._bump_patch(self.current_version)
         else:
             proposal["status"] = "target_not_found"
 
         self.modifications.append(proposal)
         return {"applied": proposal["status"] == "applied", "version": self.current_version}
+
+    @staticmethod
+    def _version_parts(version: str) -> list[int]:
+        """Parse a version into [major, minor, patch] ints, tolerating
+        non-3-part / non-numeric forms ("1.0", "1.0.0-beta")."""
+        parts = (version or "0.0.0").split(".")
+        while len(parts) < 3:
+            parts.append("0")
+        out = []
+        for p in parts[:3]:
+            digits = "".join(c for c in p if c.isdigit())
+            out.append(int(digits) if digits else 0)
+        return out
+
+    @classmethod
+    def _bump_patch(cls, version: str) -> str:
+        major, minor, patch = cls._version_parts(version)
+        return f"{major}.{minor}.{patch + 1}"
+
+    @classmethod
+    def _bump_minor(cls, version: str) -> str:
+        major, minor, _ = cls._version_parts(version)
+        return f"{major}.{minor + 1}.0"
 
     def _rollback(self, proposal: dict):
         self.parameters = copy.deepcopy(self._stable_checkpoint)
@@ -219,7 +250,15 @@ class SelfModification:
         record["dataset_size"] = dataset_result["total_size"]
         record["dataset_dir"] = dataset_result["dataset_dir"]
 
-        # Step 2: Ethics check
+        # Step 2: Ethics check. Only an explicit "approved" verdict clears
+        # training — a "review_required" (or any non-approved) status must NOT
+        # be treated as approval and auto-proceed. Fail CLOSED if no ethics core
+        # is wired: self-modifying training must never run ungated.
+        if not ethics_core:
+            record["status"] = "ethics_unavailable"
+            record["error"] = "Ethics core not configured — training blocked"
+            self.weight_modifications.append(record)
+            return record
         ethics_approved = True
         if ethics_core:
             eth_result = ethics_core.evaluate_action({
@@ -229,8 +268,8 @@ class SelfModification:
                 "confidence": 0.7,
                 "description": f"LoRA fine-tuning on {dataset_result['total_size']} samples",
             })
-            if eth_result["status"] == "blocked":
-                record["status"] = "ethics_blocked"
+            if eth_result["status"] != "approved":
+                record["status"] = "ethics_blocked" if eth_result["status"] == "blocked" else "ethics_review_required"
                 record["ethics_score"] = eth_result["score"]
                 self.weight_modifications.append(record)
                 return record
@@ -252,11 +291,10 @@ class SelfModification:
             record["val_loss"] = train_result.get("val_loss")
             self.weight_mod_success += 1
 
-            # Bump version
-            v = self.current_version.split(".")
-            v[1] = str(int(v[1]) + 1)
-            v[2] = "0"
-            self.current_version = ".".join(v)
+            # Bump minor version, tolerating non-3-part / non-numeric versions
+            # restored from a checkpoint — a raw split()+int() here would crash
+            # AFTER an expensive successful training and lose the record.
+            self.current_version = self._bump_minor(self.current_version)
             record["version"] = self.current_version
 
             logger.info(f"Weight modification applied: loss={train_result.get('train_loss')}, "

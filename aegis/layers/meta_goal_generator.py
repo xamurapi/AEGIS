@@ -15,7 +15,9 @@ IMPROVEMENT_DOMAINS = {
         ],
     },
     "emotional_balance": {
-        "triggers": lambda ctx: ctx.get("mood_valence", 0) < -0.3,
+        # valence is on a [0,1] scale (0.5 neutral); < 0.35 is a persistently
+        # negative mood. A negative threshold here could never fire.
+        "triggers": lambda ctx: ctx.get("mood_valence", 0.5) < 0.35,
         "goals": [
             "Develop emotional recovery strategy for persistent negative mood",
             "Analyze emotional triggers and create coping patterns",

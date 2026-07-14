@@ -12,6 +12,7 @@ PURE functions ``solve(payload) -> answer``; only a small stdlib allowlist of
 compute modules may be imported.
 """
 import ast
+import os
 import sys
 import json
 import tempfile
@@ -31,6 +32,48 @@ FORBIDDEN_CALLS = {
 }
 
 
+def _write_temp_script(script: str) -> Path:
+    """Create a UNIQUE, private temp file and write the script to it.
+
+    Uses mkstemp (O_EXCL, mode 0600) rather than a predictable, shared path —
+    a fixed name derived from hash(code) is both a local symlink/TOCTOU hazard
+    and a concurrency race (two runs of the same code would clobber and unlink
+    each other's file)."""
+    fd, name = tempfile.mkstemp(prefix="aegis_skill_", suffix=".py")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(script)
+    except Exception:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    return Path(name)
+
+
+def _param_names(tree: ast.AST) -> set[str]:
+    """Collect names bound as function/lambda parameters anywhere in the tree.
+
+    A parameter named ``input`` (or ``vars``, ``open``, …) shadows the builtin
+    inside its function, so a reference to it is NOT the dangerous builtin — we
+    exempt those to avoid false-positives on ordinary code like
+    ``def solve(input): return sorted(input)``. Assignment targets are
+    deliberately NOT exempted, so the aliasing escape ``_i = __import__`` (whose
+    right-hand side is a genuine builtin reference) is still caught."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            a = node.args
+            for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs):
+                names.add(arg.arg)
+            if a.vararg:
+                names.add(a.vararg.arg)
+            if a.kwarg:
+                names.add(a.kwarg.arg)
+    return names
+
+
 def check_safe(code: str) -> tuple[bool, list[str]]:
     """Static safety gate for skill code. Returns (safe, reasons)."""
     reasons: list[str] = []
@@ -38,6 +81,8 @@ def check_safe(code: str) -> tuple[bool, list[str]]:
         tree = ast.parse(code)
     except SyntaxError as e:
         return False, [f"syntax error: {e.msg} (line {e.lineno})"]
+
+    params = _param_names(tree)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -48,9 +93,13 @@ def check_safe(code: str) -> tuple[bool, list[str]]:
             root = (node.module or "").split(".")[0]
             if root not in SAFE_IMPORTS:
                 reasons.append(f"forbidden import from '{node.module}'")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in FORBIDDEN_CALLS:
-                reasons.append(f"forbidden call '{node.func.id}(...)'")
+        elif isinstance(node, ast.Name):
+            # Flag every *reference* to a forbidden name, not just direct calls.
+            # This catches aliasing escapes like ``_i = __import__; _i('os')``
+            # and ``g = getattr`` that a call-site-only check would miss, while
+            # exempting parameters that merely shadow a builtin name.
+            if node.id in FORBIDDEN_CALLS and node.id not in params:
+                reasons.append(f"forbidden name '{node.id}'")
         elif isinstance(node, ast.Attribute):
             # Block dunder attribute escapes like obj.__globals__ / __builtins__.
             if node.attr.startswith("__") and node.attr.endswith("__"):
@@ -77,14 +126,18 @@ def run_skill(code: str, func: str, payload, timeout: float = 3.0) -> dict:
 
     Returns {"ok": bool, "result"/"error": ...}. Never raises.
     """
+    if not func.isidentifier():
+        # ``func`` is interpolated into the runner source; a non-identifier
+        # (e.g. "__import__('os').system('...')") would execute arbitrary code
+        # in the subprocess, bypassing check_safe (which only inspects ``code``).
+        return {"ok": False, "error": f"invalid function name: {func!r}"}
     safe, reasons = check_safe(code)
     if not safe:
         return {"ok": False, "error": f"unsafe code: {reasons}"}
 
     script = _RUNNER.format(code=code, func=func)
-    tmp = Path(tempfile.gettempdir()) / f"aegis_skill_{abs(hash(code)) % (10**9)}.py"
+    tmp = _write_temp_script(script)
     try:
-        tmp.write_text(script, encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-I", str(tmp)],
             input=json.dumps(payload),
@@ -131,14 +184,15 @@ def run_tests(code: str, func: str, arg_lists: list, timeout: float = 3.0) -> di
     Used by the coding benchmark to execute a candidate function against many
     hidden test cases at once. Returns {"ok": bool, "results": [...]}.
     """
+    if not func.isidentifier():
+        return {"ok": False, "error": f"invalid function name: {func!r}", "results": []}
     safe, reasons = check_safe(code)
     if not safe:
         return {"ok": False, "error": f"unsafe code: {reasons}", "results": []}
 
     script = _TEST_RUNNER.format(code=code, func=func)
-    tmp = Path(tempfile.gettempdir()) / f"aegis_test_{abs(hash(code)) % (10**9)}.py"
+    tmp = _write_temp_script(script)
     try:
-        tmp.write_text(script, encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-I", str(tmp)],
             input=json.dumps(arg_lists),

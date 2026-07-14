@@ -1,4 +1,5 @@
 """Self-Preservation — prevents system self-destruction, code integrity checks, emergency recovery."""
+import ast
 import time
 import hashlib
 import os
@@ -36,6 +37,48 @@ LETHAL_PATTERNS = [
     "axioms = ()",
     "axioms = []",
 ]
+
+# Dotted calls that are lethal regardless of spelling/whitespace. The substring
+# scan above is a cheap first pass but is fooled by "os . kill" or aliasing; the
+# AST scan below catches the call structurally.
+LETHAL_ATTR_CALLS = {
+    ("sys", "exit"), ("os", "_exit"), ("os", "kill"), ("os", "abort"),
+    ("os", "remove"), ("os", "unlink"), ("os", "rmdir"),
+    ("shutil", "rmtree"),
+}
+
+
+def _ast_lethal_findings(code: str) -> list[str]:
+    """Structural (AST) detection of lethal operations. Returns reason strings.
+
+    Complements the substring scan so that whitespace/formatting tricks
+    ("os . kill", "shutil.\\nrmtree(...)") cannot slip a lethal call through.
+    Returns [] if the code does not parse (syntax is validated elsewhere)."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    found: list[str] = []
+    for node in ast.walk(tree):
+        # raise SystemExit / raise SystemExit(...)
+        if isinstance(node, ast.Raise):
+            exc = node.exc
+            name = None
+            if isinstance(exc, ast.Name):
+                name = exc.id
+            elif isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name):
+                name = exc.func.id
+            if name in ("SystemExit", "KeyboardInterrupt"):
+                found.append(f"raise {name}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                pair = (func.value.id, func.attr)
+                if pair in LETHAL_ATTR_CALLS:
+                    found.append(f"{pair[0]}.{pair[1]}(...)")
+            elif isinstance(func, ast.Name) and func.id in ("exit", "quit"):
+                found.append(f"{func.id}(...)")
+    return found
 
 
 class SelfPreservation:
@@ -128,17 +171,24 @@ class SelfPreservation:
             report["trust_score"] = 0.0
             return False, report
 
-        # Check for lethal patterns
+        # Check for lethal patterns — substring pass (cheap) + AST pass (robust).
         code_lower = new_code.lower()
         for pattern in LETHAL_PATTERNS:
             if pattern.lower() in code_lower:
                 report["critical"].append(f"Lethal pattern detected: '{pattern}'")
                 report["safe"] = False
                 report["trust_score"] *= 0.1
+        for reason in _ast_lethal_findings(new_code):
+            report["critical"].append(f"Lethal call detected: '{reason}'")
+            report["safe"] = False
+            report["trust_score"] *= 0.1
 
-        # Check critical files — ensure required elements are present
+        # Check critical files — ensure required elements are present. Match on
+        # path *components* (normalized separators) so a short target like
+        # "config.py" doesn't spuriously match against unrelated paths.
+        norm_target = target_path.replace("\\", "/").lstrip("./")
         for rel_path, required_elements in CRITICAL_MODULES.items():
-            if target_path.endswith(rel_path) or rel_path.endswith(target_path):
+            if norm_target == rel_path or norm_target.endswith("/" + rel_path) or rel_path.endswith("/" + norm_target):
                 for element in required_elements:
                     if element not in new_code:
                         report["critical"].append(f"Critical element '{element}' would be removed from {rel_path}")

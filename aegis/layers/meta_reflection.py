@@ -47,10 +47,11 @@ class MetaReflection:
 
         # Trend analysis: mood
         if len(self.trends["mood_valence"]) >= 5:
+            # valence is on a [0,1] scale (0.5 neutral), not [-1,1].
             avg_mood = sum(self.trends["mood_valence"][-5:]) / 5
-            if avg_mood < -0.3:
+            if avg_mood < 0.35:
                 insights.append(f"Average mood is negative ({avg_mood:.2f}) — emotional regulation needed")
-            elif avg_mood > 0.5:
+            elif avg_mood > 0.65:
                 insights.append(f"Positive emotional trend ({avg_mood:.2f}) — system is thriving")
 
         # Error pattern

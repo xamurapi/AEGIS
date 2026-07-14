@@ -6,12 +6,17 @@ No random selection or random progress.
 """
 import time
 import math
+import itertools
 
 
 class Goal:
+    # Process-wide monotonic counter — guarantees unique ids even for goals
+    # created in the same millisecond (a timestamp-only id collided).
+    _id_seq = itertools.count(1)
+
     def __init__(self, name: str, level: str, description: str,
                  priority: float = 0.5, parent: str = None):
-        self.id = f"goal_{int(time.time()*1000) % 100000:05d}"
+        self.id = f"goal_{next(Goal._id_seq):06d}"
         self.name = name
         self.level = level  # axiom, strategy, tactic, curiosity
         self.description = description
@@ -32,11 +37,14 @@ class Goal:
         }
 
 
-AXIOM_GOALS = [
-    Goal("preserve_safety", "axiom", "Ensure no action increases suffering", 1.0),
-    Goal("maintain_transparency", "axiom", "Log all decisions for audit", 1.0),
-    Goal("respect_boundaries", "axiom", "Do not act beyond competence", 1.0),
-    Goal("augment_humans", "axiom", "Cooperate with and empower humans", 1.0),
+# Specs (not instances) — each GoalEngine builds its OWN Goal objects from
+# these, so mutating one engine's axioms never leaks into another engine or
+# into these module-level definitions.
+AXIOM_GOAL_SPECS = [
+    ("preserve_safety", "axiom", "Ensure no action increases suffering", 1.0),
+    ("maintain_transparency", "axiom", "Log all decisions for audit", 1.0),
+    ("respect_boundaries", "axiom", "Do not act beyond competence", 1.0),
+    ("augment_humans", "axiom", "Cooperate with and empower humans", 1.0),
 ]
 
 STRATEGY_TEMPLATES = [
@@ -61,8 +69,9 @@ STALE_THRESHOLD_SECONDS = 600.0
 
 class GoalEngine:
     def __init__(self):
-        self.goals: list[Goal] = list(AXIOM_GOALS)
+        self.goals: list[Goal] = [Goal(*spec) for spec in AXIOM_GOAL_SPECS]
         self.goal_log: list[dict] = []
+        self._max_goal_log = 500
         self.information_gain: float = 0.0
         self.curiosity_level: float = 0.5
         self._last_goal_gen = 0
@@ -227,6 +236,21 @@ class GoalEngine:
                 })
 
         self.curiosity_level = 0.3 + 0.7 * math.exp(-self.information_gain * 0.01)
+
+        self._prune()
+
+    def _prune(self):
+        """Bound memory: keep all axioms and active goals, but retain only the
+        most recent finished (completed/abandoned) goals, and cap the log."""
+        MAX_FINISHED = 100
+        finished = [g for g in self.goals
+                    if g.level != "axiom" and g.status in ("completed", "abandoned")]
+        if len(finished) > MAX_FINISHED:
+            finished.sort(key=lambda g: g.last_progress_time)
+            drop = set(id(g) for g in finished[:len(finished) - MAX_FINISHED])
+            self.goals = [g for g in self.goals if id(g) not in drop]
+        if len(self.goal_log) > self._max_goal_log:
+            self.goal_log = self.goal_log[-self._max_goal_log:]
 
     def resolve_conflict(self, goal_a: Goal, goal_b: Goal) -> Goal:
         level_order = {"axiom": 0, "strategy": 1, "tactic": 2, "curiosity": 3}

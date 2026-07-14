@@ -41,6 +41,10 @@ class EventBus:
         self._blocked: list[dict] = []
         self._veto_fn: Callable | None = None
         self._max_history = 500
+        # Running lifetime counters — the capped lists above must not be used
+        # as totals (they plateau at _max_history).
+        self._total_events = 0
+        self._total_blocked = 0
 
     def set_veto(self, fn: Callable):
         self._veto_fn = fn
@@ -66,9 +70,13 @@ class EventBus:
             allowed = self._veto_fn(event)
             if not allowed:
                 record["blocked"] = True
+                self._total_blocked += 1
                 self._blocked.append(record)
+                if len(self._blocked) > self._max_history:
+                    self._blocked = self._blocked[-self._max_history:]
                 return False
 
+        self._total_events += 1
         self._history.append(record)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history:]
@@ -99,7 +107,7 @@ class EventBus:
 
     def stats(self) -> dict:
         return {
-            "total_events": len(self._history),
-            "blocked_events": len(self._blocked),
+            "total_events": self._total_events,
+            "blocked_events": self._total_blocked,
             "subscriber_count": sum(len(v) for v in self._subscribers.values()),
         }

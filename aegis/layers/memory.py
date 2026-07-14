@@ -43,7 +43,16 @@ class MemorySystem:
             "procedural": self.procedural[-100:],
             "meta": self.meta,
         }
-        self._persistence_path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        # Atomic write: dump to a temp file in the same directory, then replace.
+        # A crash mid-write must not truncate the existing state and wipe all
+        # persisted memory on next load.
+        try:
+            payload = json.dumps(data, ensure_ascii=False, indent=1)
+            tmp = self._persistence_path.with_suffix(".json.tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(self._persistence_path)
+        except Exception:
+            logger.warning("Failed to save memory state to %s", self._persistence_path, exc_info=True)
 
     def add_working(self, item: dict):
         item["timestamp"] = time.time()

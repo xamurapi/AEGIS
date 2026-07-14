@@ -26,7 +26,9 @@ class StateBackup:
     def save_state(self, state: dict, backup_type: str = "scheduled") -> dict:
         """Save compressed state snapshot."""
         ts = time.time()
-        filename = f"aegis_{backup_type}_{int(ts)}.json.gz"
+        # Nanosecond stamp so two backups of the same type in the same second
+        # don't collide and overwrite each other.
+        filename = f"aegis_{backup_type}_{time.time_ns()}.json.gz"
         filepath = self.backup_dir / filename
 
         try:
@@ -75,10 +77,18 @@ class StateBackup:
         return self.save_state(state, backup_type="emergency")
 
     def _rotate_backups(self):
-        """Keep only the most recent max_backups files per type."""
-        files = sorted(self.backup_dir.glob("aegis_*.json.gz"))
-        if len(files) > self.max_backups:
-            for old in files[: len(files) - self.max_backups]:
+        """Keep only the most recent max_backups files PER TYPE.
+
+        Rotating across all types together let a burst of one type (e.g.
+        scheduled) evict the emergency snapshots that are meant to survive."""
+        by_type: dict[str, list[Path]] = {}
+        for f in self.backup_dir.glob("aegis_*.json.gz"):
+            parts = f.name.split("_")
+            btype = parts[1] if len(parts) > 2 else "unknown"
+            by_type.setdefault(btype, []).append(f)
+        for files in by_type.values():
+            files.sort()  # oldest first (nanosecond stamp sorts chronologically)
+            for old in files[: max(0, len(files) - self.max_backups)]:
                 try:
                     old.unlink()
                 except Exception:

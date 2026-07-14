@@ -20,7 +20,6 @@ EMOTION_MAP = {
     "shame":          {"valence": 0.2, "arousal": 0.4, "dominance": 0.1},
     "excitement":     {"valence": 0.8, "arousal": 0.9, "dominance": 0.7},
     "contentment":    {"valence": 0.7, "arousal": 0.3, "dominance": 0.6},
-    "anxiety":        {"valence": 0.3, "arousal": 0.7, "dominance": 0.3},
     "hope":           {"valence": 0.7, "arousal": 0.6, "dominance": 0.5},
     "disappointment": {"valence": 0.3, "arousal": 0.4, "dominance": 0.3},
     "relief":         {"valence": 0.6, "arousal": 0.2, "dominance": 0.5},
@@ -144,7 +143,11 @@ class EmotionalSystem:
         b = int(255 * (0.5 + 0.5 * self.dominance))
         brightness = 0.3 + 0.7 * self.arousal
         r, g, b = int(r * brightness), int(g * brightness), int(b * brightness)
-        return f"#{min(r,255):02x}{min(g,255):02x}{min(b,255):02x}"
+        # Clamp BOTH ends: if valence/dominance ever leave [0,1] (public update()
+        # callers aren't required to clamp reward), a negative channel would
+        # render as malformed hex like "#-f3c8ff".
+        clamp = lambda c: max(0, min(255, c))
+        return f"#{clamp(r):02x}{clamp(g):02x}{clamp(b):02x}"
 
     def recharge(self, amount: float = 0.3):
         self.energy = min(1.0, self.energy + amount)
