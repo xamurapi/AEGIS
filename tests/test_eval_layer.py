@@ -44,7 +44,13 @@ def test_task_verify_numeric_and_string():
 def test_bool_not_confused_with_int():
     t = Task("p", "is_prime", "", {}, True)
     assert t.verify(True)
-    assert not t.verify(1) or t.verify(True)  # bool stays bool, not coerced to 1.0
+    # A boolean expectation must NOT be satisfied by an int/float 1 (Python's
+    # 1.0 == True trap) — bool stays bool.
+    assert not t.verify(1)
+    assert not t.verify(1.0)
+    f = Task("q", "is_prime", "", {}, False)
+    assert f.verify(False)
+    assert not f.verify(0)
 
 
 # ── sandbox ──────────────────────────────────────────────────────

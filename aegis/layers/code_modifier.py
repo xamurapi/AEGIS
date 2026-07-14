@@ -33,8 +33,11 @@ DANGEROUS_ATTR_CALLS = {
     ("subprocess", "check_output"), ("subprocess", "check_call"),
     ("shutil", "rmtree"), ("sys", "exit"),
 }
-# Imports that modified code may not introduce.
-FORBIDDEN_IMPORTS = {"subprocess", "ctypes", "signal", "socket", "marshal", "pickle"}
+# Imports that modified code may not introduce. importlib/builtins are included
+# because they are generic escape hatches (importlib.import_module("subprocess"),
+# builtins.__import__) around the direct-import block.
+FORBIDDEN_IMPORTS = {"subprocess", "ctypes", "signal", "socket", "marshal",
+                     "pickle", "importlib", "builtins"}
 
 # Files that are IMMUTABLE — cannot be modified by the system.
 IMMUTABLE_FILES = {
@@ -93,14 +96,34 @@ class CodeModifier:
         except Exception:
             pass
 
+    # ── Path safety ──────────────────────────────────────────────────
+
+    def _resolve_path(self, relative_path: str) -> tuple[Path, str]:
+        """Resolve a caller-supplied path strictly inside ``base_dir``.
+
+        Returns ``(absolute_path, normalized_relative_path)``. Raises
+        ``ValueError`` for absolute paths, drive-relative paths, or any path
+        that escapes the package directory (e.g. via ``..``) — otherwise the
+        IMMUTABLE_FILES check could be bypassed with ``layers/../x`` tricks."""
+        candidate = Path(relative_path)
+        if candidate.is_absolute() or candidate.drive:
+            raise ValueError(f"Absolute paths are not allowed: {relative_path}")
+        base = self.base_dir.resolve()
+        resolved = (base / candidate).resolve()
+        try:
+            rel = resolved.relative_to(base)
+        except ValueError:
+            raise ValueError(f"Path escapes package directory: {relative_path}")
+        return resolved, str(rel).replace("\\", "/")
+
     # ── Read ─────────────────────────────────────────────────────────
 
     def read_source(self, relative_path: str) -> str:
         """Read a source file from the aegis package."""
-        path = self.base_dir / relative_path
+        path, _ = self._resolve_path(relative_path)
         if not path.exists():
             raise FileNotFoundError(f"Source not found: {path}")
-        if not str(path).endswith(".py"):
+        if path.suffix != ".py":
             raise ValueError("Only .py files can be read")
         return path.read_text(encoding="utf-8")
 
@@ -134,8 +157,12 @@ class CodeModifier:
         """Check code for forbidden patterns and dangerous constructs."""
         warnings = []
 
-        # Immutable file check
-        norm = relative_path.replace("\\", "/")
+        # Immutable file check — on the *resolved* path, so traversal tricks
+        # ("layers/../config.py", "./config.py") cannot bypass it.
+        try:
+            _, norm = self._resolve_path(relative_path)
+        except ValueError as e:
+            return False, [f"BLOCKED: {e}"]
         if norm in IMMUTABLE_FILES:
             return False, [f"BLOCKED: {norm} is immutable — cannot be modified by AI"]
 
@@ -152,11 +179,23 @@ class CodeModifier:
                 warnings.append(f"BLOCKED: modification too large ({diff_size} chars > {MAX_MODIFICATION_SIZE} max)")
         except FileNotFoundError:
             pass  # new file, OK
+        except ValueError as e:
+            # e.g. non-.py target — surface as a block, don't let it escape.
+            warnings.append(f"BLOCKED: {e}")
 
         # AST analysis — the authoritative check. Detects dangerous imports and
         # dangerous *calls* regardless of whitespace/formatting obfuscation.
         try:
             tree = ast.parse(code)
+            # First pass: map local aliases back to their real module, so
+            # "import os as o" doesn't let "o.kill(...)" slip past the
+            # (module, attr) blocklist.
+            alias_to_module: dict[str, str] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        root = alias.name.split(".")[0]
+                        alias_to_module[alias.asname or root] = root
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -170,9 +209,11 @@ class CodeModifier:
                     # Bare call: eval(...), exec(...), __import__(...)
                     if isinstance(func, ast.Name) and func.id in DANGEROUS_CALL_NAMES:
                         warnings.append(f"BLOCKED: dangerous call '{func.id}(...)'")
-                    # Attribute call: os.system(...), subprocess.run(...)
+                    # Attribute call: os.system(...), subprocess.run(...),
+                    # resolving any import alias to the real module first.
                     elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                        pair = (func.value.id, func.attr)
+                        module = alias_to_module.get(func.value.id, func.value.id)
+                        pair = (module, func.attr)
                         if pair in DANGEROUS_ATTR_CALLS:
                             warnings.append(f"BLOCKED: dangerous call '{pair[0]}.{pair[1]}(...)'")
         except SyntaxError:
@@ -200,7 +241,6 @@ class CodeModifier:
                            description: str, author: str = "aegis") -> dict:
         """Apply a code modification with backup, validation, and rollback on failure."""
         self.total_mods += 1
-        path = self.base_dir / relative_path
 
         record = {
             "id": f"cmod_{self.total_mods:04d}",
@@ -210,6 +250,19 @@ class CodeModifier:
             "author": author,
             "status": "pending",
         }
+
+        # 0. Path containment — reject anything outside the package directory.
+        try:
+            path, relative_path = self._resolve_path(relative_path)
+            record["file"] = relative_path
+        except ValueError as e:
+            record["status"] = "path_blocked"
+            record["error"] = str(e)
+            self.blocked_mods += 1
+            self.modifications.append(record)
+            self._save_stats()
+            logger.warning(f"Code mod blocked (path): {e}")
+            return record
 
         # 1. Syntax validation
         valid, msg = self.validate_syntax(new_code)
@@ -243,11 +296,16 @@ class CodeModifier:
             logger.warning("Code mod blocked: ethics preservation failed")
             return record
 
-        # 4. Backup original
-        original = ""
+        # 4. Backup original. ``None`` means the file did not exist (new file);
+        # an empty string means it existed but was empty — these must NOT be
+        # conflated, or rollback would delete a legitimately-empty file instead
+        # of restoring it.
+        original = None
         if path.exists():
             original = path.read_text(encoding="utf-8")
-            backup_name = f"{relative_path.replace('/', '_').replace('.py', '')}_{int(time.time())}.py"
+            # time_ns + counter: two mods to the same file in the same second
+            # must not overwrite each other's backup.
+            backup_name = f"{relative_path.replace('/', '_').replace('.py', '')}_{time.time_ns()}_{self.total_mods}.py"
             backup_path = self.backups_dir / backup_name
             backup_path.write_text(original, encoding="utf-8")
             record["backup"] = str(backup_path)
@@ -279,7 +337,7 @@ class CodeModifier:
 
             record["status"] = "applied_pending_restart"
             record["note"] = "Compiled OK; takes effect on next restart (no hot reload)."
-            record["lines_before"] = original.count("\n") + 1 if original else 0
+            record["lines_before"] = original.count("\n") + 1 if original else 0  # None/"" -> 0
             record["lines_after"] = new_code.count("\n") + 1
             self.successful_mods += 1
 
@@ -296,8 +354,8 @@ class CodeModifier:
             logger.info(f"Code mod applied (pending restart): {relative_path} — {description}")
 
         except Exception as e:
-            # Rollback — restore original
-            if original:
+            # Rollback — restore original (None means it was a new file → remove).
+            if original is not None:
                 path.write_text(original, encoding="utf-8")
             elif path.exists():
                 path.unlink()
@@ -322,7 +380,7 @@ class CodeModifier:
         path = self.base_dir / entry["file"]
 
         try:
-            if entry["original"]:
+            if entry["original"] is not None:
                 path.write_text(entry["original"], encoding="utf-8")
             elif path.exists():
                 path.unlink()
@@ -338,7 +396,10 @@ class CodeModifier:
             logger.info(f"Code mod rolled back: {entry['file']}")
             return {"success": True, "file": entry["file"], "mod_id": entry["mod_id"]}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            # Put the entry back so the original content is not lost and the
+            # rollback can be retried.
+            self.rollback_stack.append(entry)
+            return {"success": False, "error": str(e), "file": entry["file"]}
 
     def rollback_to(self, mod_id: str) -> dict:
         """Roll back modifications from newest down to and including ``mod_id``.
@@ -351,8 +412,12 @@ class CodeModifier:
         while self.rollback_stack:
             target_reached = self.rollback_stack[-1].get("mod_id") == mod_id
             result = self.rollback_last()
-            if result.get("success"):
-                rolled.append(result["file"])
+            if not result.get("success"):
+                # Stop and report the partial rollback — the failed entry is
+                # back on the stack, so nothing was lost.
+                return {"success": False, "error": result.get("error"),
+                        "failed_file": result.get("file"), "rolled_back": rolled}
+            rolled.append(result["file"])
             if target_reached:
                 break
         return {"success": True, "rolled_back": rolled}
@@ -393,7 +458,7 @@ class CodeModifier:
             "classes": classes,
             "functions": functions,
             "imports": imports,
-            "immutable": relative_path.replace("\\", "/") in IMMUTABLE_FILES,
+            "immutable": self._resolve_path(relative_path)[1] in IMMUTABLE_FILES,
         }
 
     # ── Status ───────────────────────────────────────────────────────

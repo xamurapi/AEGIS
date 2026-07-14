@@ -374,7 +374,8 @@ class LLMEngine:
             self.errors += 1
             self.lifetime_errors += 1
             self.last_error = f"[{provider}] {e}"
-            stats = self.deepseek if provider == "deepseek" else self.claude
+            stats = {"deepseek": self.deepseek, "claude": self.claude,
+                     "local": self.local}.get(provider, self.claude)
             stats.errors += 1
             stats.last_error = str(e)
             self._save_lifetime_stats()

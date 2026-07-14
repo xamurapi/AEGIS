@@ -31,14 +31,18 @@ class MetaConsciousness:
             conflicts.append("Reflective mode is energy-expensive but energy is critical")
             alignment_score *= 0.7
 
-        # Conflict: negative mood but growth goals
-        if mood in ("anxious", "frustrated", "sad") and goal_focus and "optim" in goal_focus.lower():
+        # Conflict: negative mood but growth goals. Use the actual emotion
+        # names the system emits (see emotions.EMOTION_MAP) — "frustrated"/"sad"
+        # never existed, so this check could never fire.
+        if mood in ("anxious", "fear", "sadness", "shame") and goal_focus and "optim" in goal_focus.lower():
             conflicts.append(f"Negative mood '{mood}' conflicts with optimization goal")
             alignment_score *= 0.8
 
-        # Check archetype alignment
+        # Check archetype alignment. Archetype objects expose success_score, not
+        # an "influence" attribute (that lives in ArchetypeGeopolitics), so the
+        # old getattr default of 0.5 always produced a zero spread.
         if archetypes and len(archetypes) > 1:
-            influences = [getattr(a, "influence", 0.5) for a in archetypes]
+            influences = [getattr(a, "success_score", 0.5) for a in archetypes]
             spread = max(influences) - min(influences)
             if spread > 0.5:
                 conflicts.append(f"High archetype influence spread ({spread:.2f}) — personality fragmentation")

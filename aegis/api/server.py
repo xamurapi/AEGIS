@@ -74,10 +74,14 @@ async def auth_middleware(request, call_next):
 
 
 if cfg.API_CORS_ORIGINS:
+    # Never combine a wildcard origin with credentialed requests — that would
+    # let any website make authenticated cross-origin calls to this control
+    # plane. If "*" is configured, credentials are disabled.
+    _wildcard = "*" in cfg.API_CORS_ORIGINS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.API_CORS_ORIGINS,
-        allow_credentials=True,
+        allow_credentials=not _wildcard,
         allow_methods=["*"],
         allow_headers=["*"],
     )

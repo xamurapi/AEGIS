@@ -11,9 +11,14 @@ from typing import Any
 
 
 def _norm(v: Any) -> Any:
-    """Normalize for comparison: ints/floats numerically, strings trimmed."""
+    """Normalize for comparison: ints/floats numerically, strings trimmed.
+
+    Booleans are tagged so they only ever compare equal to other booleans —
+    without this, Python's ``1.0 == True`` would let an integer/float ``1``
+    satisfy a task whose expected answer is boolean ``True``.
+    """
     if isinstance(v, bool):
-        return v
+        return ("__bool__", v)
     if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, str):

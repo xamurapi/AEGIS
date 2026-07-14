@@ -54,6 +54,7 @@ from aegis.eval.coding import CODING_BENCHMARK
 from aegis.eval.composite import COMPOSITE_BENCHMARK
 from aegis.eval.skill_library import SkillLibrary, Skill
 from aegis.eval.solver import MultiAgentSolver
+from aegis.eval.sandbox import run_skill
 from aegis.eval.evaluator import Evaluator
 from aegis.eval.environment import TaskEnvironment
 from aegis.llm import LLMEngine
@@ -406,8 +407,8 @@ class Substrate:
                 "active_archetype": self.active_archetype.name if self.active_archetype else None,
             }
             result = await self.llm.evaluate_state(compact_state)
-            if result.get("raw_response"):
-                _, llm_warnings = self.self_preservation.filter_llm_response(result["raw_response"])
+            if result.get("response"):
+                _, llm_warnings = self.self_preservation.filter_llm_response(result["response"])
                 if llm_warnings:
                     self.autobiography.log_event("llm_danger", str(llm_warnings[:2]), 0.9)
             if result["success"] and "parsed" in result:
@@ -843,20 +844,40 @@ class Substrate:
             return  # not simpler
         self._skill_synth_count += 1
         cand = Skill(name=f"{kind}_opt_{self._skill_synth_count}", kinds=[kind], code=code, origin="llm")
+
+        # Evaluate the candidate IN ISOLATION against ALL tasks the incumbent
+        # covers (train + holdout), running its own code directly rather than the
+        # library solver. Two reasons: (1) going through the solver while the
+        # incumbent is still present would always report a passing rate, so a
+        # broken candidate could retire the working skill; (2) verifying only the
+        # holdout (often a single task) then retiring every longer skill for the
+        # whole kind would let the candidate regress the train tasks it never
+        # had to pass.
+        check_tasks = list(train) + list(holdout)
+
+        def _candidate_passes() -> bool:
+            for t in check_tasks:
+                out = run_skill(code, cand.func, t.payload, timeout=self.evaluator.solver.timeout)
+                if not (bool(out.get("ok")) and t.verify(out.get("result"))):
+                    return False
+            return True
+
+        if not check_tasks:
+            return  # nothing to verify against — never retire on no evidence
+        passes = await asyncio.get_event_loop().run_in_executor(None, _candidate_passes)
+        if not passes:
+            return  # candidate is not correct — keep the incumbent, discard it
+
         added, _ = self.skill_library.add(cand)
         if not added:
             return
-        rate = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.pass_rate_on, holdout)
-        if rate >= 1.0:
-            # Retire all longer skills for this kind — the simpler one wins.
-            for s in current:
-                if len(s.code) > len(code):
-                    self.skill_library.remove(s.name)
-            self.skill_library.save()
-            self.autobiography.log_event(
-                "skill_optimized", f"{kind}: simpler skill {len(incumbent.code)}->{len(code)} chars", 0.7)
-        else:
-            self.skill_library.remove(cand.name)
+        # Retire all longer skills for this kind — the simpler, verified one wins.
+        for s in current:
+            if len(s.code) > len(code):
+                self.skill_library.remove(s.name)
+        self.skill_library.save()
+        self.autobiography.log_event(
+            "skill_optimized", f"{kind}: simpler skill {len(incumbent.code)}->{len(code)} chars", 0.7)
 
     async def _weight_training_cycle(self):
         """Run a full weight-modification cycle off the tick loop.
@@ -1200,14 +1221,19 @@ class Substrate:
         self._tick_new_episodic = 0
         self._tick_llm_insights = 0
 
-        # Self-preservation vital signs
-        vitals = self.self_preservation.check_vital_signs(self)
-        if vitals["status"] == "threatened":
-            self.autobiography.log_event(
-                "self_preservation",
-                f"Threats: {vitals['threats'][:2]}, Actions: {vitals['actions_taken'][:2]}",
-                0.9,
-            )
+        # Self-preservation vital signs. Must not be able to kill the loop, so
+        # it is guarded independently of the cognitive phases below.
+        try:
+            vitals = self.self_preservation.check_vital_signs(self)
+            if vitals["status"] == "threatened":
+                self.autobiography.log_event(
+                    "self_preservation",
+                    f"Threats: {vitals['threats'][:2]}, Actions: {vitals['actions_taken'][:2]}",
+                    0.9,
+                )
+        except Exception as e:
+            logger.exception("Vital-signs check failed")
+            self.autobiography.log_event("error", f"vital_signs: {str(e)[:80]}", 0.7)
 
         try:
             await self._perceive()
@@ -1219,6 +1245,11 @@ class Substrate:
         except Exception as e:
             self.health.record_tick((time.time() - tick_start) * 1000, success=False)
             self.autobiography.log_event("error", str(e)[:100], 0.8)
+        finally:
+            # _evaluate sets llm_thinking=True; if a later phase raises before
+            # _reflect clears it, the flag would stay stuck True until the next
+            # LLM tick, skewing status/introspection. The cycle is over here.
+            self.llm_thinking = False
 
         self.last_tick_duration = time.time() - tick_start
         self.cycle_times.append(self.last_tick_duration)
@@ -1228,20 +1259,32 @@ class Substrate:
         self.cycle_phase = "idle"
 
         # Only assemble the (large) full status when a client is actually
-        # listening and on the configured cadence — avoids needless work.
+        # listening and on the configured cadence — avoids needless work. A
+        # broadcast failure (client vanished mid-send, status assembly error)
+        # must not propagate out of tick() and stop the loop.
         if (self._ws_broadcast
                 and self.tick_count % max(1, cfg.WS_BROADCAST_EVERY_N_TICKS) == 0
                 and (self._ws_has_clients is None or self._ws_has_clients())):
-            await self._ws_broadcast(self.full_status())
+            try:
+                await self._ws_broadcast(self.full_status())
+            except Exception:
+                logger.exception("WebSocket broadcast failed")
 
     async def run(self):
         self.running = True
         self.start_time = time.time()
         while self.running:
-            if not self.ethics.kill_switch_active:
-                await self.tick()
-            else:
-                self.cycle_phase = "killed"
+            try:
+                if not self.ethics.kill_switch_active:
+                    await self.tick()
+                else:
+                    self.cycle_phase = "killed"
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Last-resort guard: a tick must never be able to terminate the
+                # cognitive loop. Errors are already recorded inside tick().
+                logger.exception("Unhandled error escaped tick(); loop continues")
             await asyncio.sleep(cfg.TICK_INTERVAL)
 
     def stop(self, reason: str = "human_command"):

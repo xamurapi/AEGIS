@@ -15,9 +15,13 @@ def test_substrate_not_created_at_import():
 
 def test_app_has_auth_middleware():
     import aegis.api.server as server
-    # The mutating-method auth guard must be installed.
-    assert any("auth_middleware" in repr(m) or "middleware" in repr(m).lower()
-               for m in server.app.user_middleware) or server.app.user_middleware is not None
+    # The mutating-method auth guard must be installed. The @app.middleware("http")
+    # decorator registers a BaseHTTPMiddleware whose dispatch is auth_middleware.
+    dispatches = [
+        getattr(m, "kwargs", {}).get("dispatch") for m in server.app.user_middleware
+    ]
+    names = [getattr(d, "__name__", "") for d in dispatches if d is not None]
+    assert "auth_middleware" in names, f"auth_middleware not installed; found {names}"
 
 
 def test_semantic_summary_handles_plain_and_nested():

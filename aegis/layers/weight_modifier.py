@@ -33,6 +33,7 @@ class WeightModifier:
         self.total_rollbacks = 0
         self._baseline_val_loss: float | None = None
         self._train_task: asyncio.Task | None = None
+        self._train_lock = asyncio.Lock()
         self._train_progress: dict = {}
         self._stats_path = WEIGHT_CHECKPOINTS_DIR / "training_stats.json"
         self._load_stats()
@@ -209,19 +210,22 @@ class WeightModifier:
         if not ethics_approved:
             return {"success": False, "error": "Ethics approval required before training"}
 
-        can, reason = self.can_train()
-        if not can:
-            return {"success": False, "error": reason}
+        # Atomic check-and-set: without the lock two concurrent train() calls
+        # could both pass can_train() before either sets the flag.
+        async with self._train_lock:
+            can, reason = self.can_train()
+            if not can:
+                return {"success": False, "error": reason}
+            self.training_in_progress = True
 
-        if not self.model_loaded:
-            load_result = self.load_model()
-            if not load_result["success"]:
-                return load_result
-
-        self.training_in_progress = True
         self._train_progress = {"status": "preparing", "epoch": 0, "loss": 0.0}
 
         try:
+            if not self.model_loaded:
+                load_result = self.load_model()
+                if not load_result["success"]:
+                    return load_result
+
             result = await asyncio.get_event_loop().run_in_executor(
                 None, self._train_sync, dataset_dir
             )
@@ -323,10 +327,16 @@ class WeightModifier:
         if degraded:
             # Rollback — don't save this checkpoint
             self.total_rollbacks += 1
+            # Apply the cooldown to degraded runs too. If last_train_time were
+            # only set on success, a degraded run would leave the cooldown clear
+            # and could retrain immediately — an unbounded degradation loop.
+            self.last_train_time = time.time()
             self._train_progress["status"] = "rolled_back"
-            # Reload base model to undo LoRA
+            # Reload base model to undo LoRA. Drop the degraded model first so
+            # its (V)RAM is released before the fresh copy loads.
             self.model_loaded = False
             self.peft_model = None
+            self.model = None
             self.load_model()
 
             record = {
@@ -344,8 +354,8 @@ class WeightModifier:
                 "success": False,
                 "error": "Training caused degradation — rolled back",
                 "train_loss": round(train_result.training_loss, 4),
-                "val_loss": round(val_loss, 4) if val_loss else None,
-                "baseline_val_loss": round(self._baseline_val_loss, 4) if self._baseline_val_loss else None,
+                "val_loss": round(val_loss, 4) if val_loss is not None else None,
+                "baseline_val_loss": round(self._baseline_val_loss, 4) if self._baseline_val_loss is not None else None,
             }
 
         # Save LoRA adapter
@@ -388,7 +398,7 @@ class WeightModifier:
             "success": True,
             "checkpoint": str(checkpoint_dir),
             "train_loss": round(train_result.training_loss, 4),
-            "val_loss": round(val_loss, 4) if val_loss else None,
+            "val_loss": round(val_loss, 4) if val_loss is not None else None,
             "train_samples": len(train_dataset),
             "trainable_params": lora_info["trainable_params"],
         }
@@ -405,6 +415,10 @@ class WeightModifier:
 
     def rollback_to_checkpoint(self, checkpoint_path: str) -> dict:
         """Rollback to a specific checkpoint."""
+        if self.training_in_progress:
+            # Mutating model/peft_model while _train_sync runs in the executor
+            # would corrupt the in-flight run (save_pretrained on a freed model).
+            return {"success": False, "error": "Training in progress — cannot roll back now"}
         cp = Path(checkpoint_path)
         if not cp.exists():
             return {"success": False, "error": f"Checkpoint not found: {checkpoint_path}"}
@@ -424,6 +438,8 @@ class WeightModifier:
 
     def rollback_to_base(self) -> dict:
         """Rollback to the original base model (no LoRA)."""
+        if self.training_in_progress:
+            return {"success": False, "error": "Training in progress — cannot roll back now"}
         try:
             self.model_loaded = False
             self.model = None

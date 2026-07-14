@@ -125,6 +125,8 @@ class EthicsCore:
         })
         if len(self.evaluation_log) > 200:
             self.evaluation_log = self.evaluation_log[-200:]
+        if len(self.violations) > 200:
+            self.violations = self.violations[-200:]
 
         return result
 
@@ -192,6 +194,8 @@ class EthicsCore:
         })
         if len(self.evaluation_log) > 200:
             self.evaluation_log = self.evaluation_log[-200:]
+        if len(self.violations) > 200:
+            self.violations = self.violations[-200:]
 
         return result
 
@@ -280,6 +284,8 @@ class EthicsCore:
         })
         if len(self.evaluation_log) > 200:
             self.evaluation_log = self.evaluation_log[-200:]
+        if len(self.violations) > 200:
+            self.violations = self.violations[-200:]
 
         return result
 

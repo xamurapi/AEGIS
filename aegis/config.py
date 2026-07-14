@@ -27,7 +27,7 @@ API_PORT = int(os.environ.get("AEGIS_API_PORT", "8888"))
 # together with the loopback bind above).
 API_TOKEN = os.environ.get("AEGIS_API_TOKEN", "")
 # Allowed CORS origins (comma-separated). Empty = no cross-origin access.
-API_CORS_ORIGINS = [o for o in os.environ.get("AEGIS_API_CORS_ORIGINS", "").split(",") if o]
+API_CORS_ORIGINS = [o.strip() for o in os.environ.get("AEGIS_API_CORS_ORIGINS", "").split(",") if o.strip()]
 
 # DeepSeek LLM
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
