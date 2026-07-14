@@ -40,21 +40,21 @@ The **core cognitive cycle is deterministic** — reward, confidence, importance
 Every 500 ticks, AEGIS rewrites one of its own `.py` source files (only files small enough to regenerate whole — see `CODE_MOD_MAX_FILE_CHARS`):
 1. Ethics core evaluates the **full** proposed change and system stability
 2. LLM analyzes the current code and proposes a specific improvement
-3. `code_modifier.py` validates syntax, then runs **AST-based** detection of dangerous calls/imports (`eval`, `exec`, `compile`, `__import__`, `os.system`, `subprocess`, `shutil.rmtree`, …) that cannot be fooled by spacing tricks
-4. The `SelfPreservation` watchdog gates the change (lethal-pattern scan, critical-element retention, drastic-shrink detection)
+3. `code_modifier.py` validates syntax, then runs **AST-based** detection of dangerous calls/imports (`eval`, `exec`, `compile`, `__import__`, `os.system`, `subprocess`, `shutil.rmtree`, …) that cannot be fooled by spacing tricks, import aliases (`import os as o; o.kill(...)`), or indirect escape hatches (`importlib`, `builtins`)
+4. The `SelfPreservation` watchdog gates the change (AST + substring lethal-pattern scan that is whitespace- and alias-proof, critical-element retention, drastic-shrink detection)
 5. A backup is taken, the new code is written, and it is **compile-checked with `py_compile`** — no live `importlib.reload`, so self-written code is never executed into the running process; verified changes take effect on the next restart
 6. On any failure — automatic rollback from the backup stack
 
-`ethics_core.py`, `self_preservation.py`, and `config.py` are **immutable** — the system cannot modify them.
+`ethics_core.py`, `self_preservation.py`, and `config.py` are **immutable**. The immutability check runs on the **resolved** path, so traversal, relative, or absolute paths (`layers/../ethics_core.py`, `./config.py`, `C:\…`) cannot be used to slip past it.
 
 ### 🧠 Weight Self-Training (LoRA)
-Every 1000 ticks, AEGIS fine-tunes its local transformer (DeepSeek-R1-Distill-Qwen-1.5B) via LoRA (`r=16, alpha=32`, targets: `q/v/k/o_proj`). Degradation detection: if `val_loss > baseline + 0.5` → automatic rollback. Up to 5 checkpoints on disk. Training runs as a **detached background task**, so the cognitive cycle and dashboard keep updating while the model trains.
+Every 1000 ticks, AEGIS fine-tunes its local transformer (DeepSeek-R1-Distill-Qwen-1.5B) via LoRA (`r=16, alpha=32`, targets: `q/v/k/o_proj`). Degradation detection: if `val_loss > baseline + 0.5` → automatic rollback. Up to 5 checkpoints on disk. Training runs as a **detached background task**, so the cognitive cycle and dashboard keep updating while the model trains. Concurrent runs are prevented by an `asyncio.Lock` around the check-and-start, and both successful and degraded runs apply the cooldown, so a degraded run cannot trigger an immediate retrain loop.
 
 ### 💡 Deterministic Emotions (VAD Model)
 - `Valence = 0.7 * prev + 0.3 * success_rate`
 - `Arousal` responds to events: `+0.15` for surprises, `-0.08` for routine
 - `Dominance = 0.9 * prev + 0.1 * (reward * energy)`
-- Mood = nearest emotion in VAD space across 16 predefined states (Euclidean distance)
+- Mood = nearest emotion in VAD space across 20 predefined states (Euclidean distance)
 - Mixed emotions supported within radius 0.3
 - Zero randomness — all transitions are deterministic
 
@@ -83,7 +83,7 @@ The control plane can toggle the kill switch, grant permissions, and trigger sel
 
 - Binds to **`127.0.0.1`** only (override with `AEGIS_API_HOST`).
 - Set **`AEGIS_API_TOKEN`** to require an `X-API-Token` header on every mutating request (POST/PUT/PATCH/DELETE) and on privileged WebSocket actions.
-- Cross-origin access is off unless `AEGIS_API_CORS_ORIGINS` is set.
+- Cross-origin access is off unless `AEGIS_API_CORS_ORIGINS` is set. A wildcard (`*`) origin automatically **disables credentials**, so a permissive CORS config can never be combined with credentialed cross-site calls.
 
 ---
 
@@ -96,7 +96,7 @@ aegis/
 ├── requirements-llm.txt        # hosted LLM providers (DeepSeek/Claude)
 ├── requirements-ml.txt         # local model + LoRA (multi-GB, pinned)
 ├── requirements-dev.txt        # pytest
-├── tests/                      # pytest suite (50 tests)
+├── tests/                      # pytest suite (89 tests)
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
 │   ├── event_bus.py
@@ -218,7 +218,7 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-The suite (50 tests) covers the safety-critical paths: ethics evaluation & axiom integrity, code-modifier validation/rollback, the self-preservation watchdog, parametric self-modification bounds, memory, LLM helpers/budget, and that scheduled LoRA training does not block the tick loop. No ML dependencies are required to run it.
+The suite (89 tests) covers the safety-critical paths: ethics evaluation & axiom integrity, code-modifier validation/rollback (including path-traversal containment), the self-preservation watchdog, parametric self-modification bounds, memory, LLM helpers/budget, the capability/eval layer (benchmark verification, sandbox safety gate, skill library), and that scheduled LoRA training does not block the tick loop. No ML dependencies are required to run it.
 
 ---
 
