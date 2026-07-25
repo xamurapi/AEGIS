@@ -569,7 +569,10 @@ async def get_weight_training():
 
 @app.post("/api/weight-training/load-model")
 async def load_local_model():
-    result = substrate.weight_modifier.load_model()
+    # Loading/quantizing a multi-GB model is heavy and blocking — offload it so
+    # the event loop (ticks + all HTTP) stays responsive (audit: same class as H2).
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, substrate.weight_modifier.load_model)
     if result["success"]:
         substrate.llm.weight_modifier = substrate.weight_modifier
         substrate.llm.local.enabled = True
@@ -579,9 +582,11 @@ async def load_local_model():
 
 @app.post("/api/weight-training/build-dataset")
 async def build_dataset():
-    result = substrate.dataset_builder.build_from_memory(
-        substrate.memory, substrate.agent_system
-    )
+    # build_from_memory does blocking file I/O + hashing over all samples —
+    # run it off the event loop.
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, substrate.dataset_builder.build_from_memory,
+        substrate.memory, substrate.agent_system)
     return result
 
 
@@ -632,7 +637,10 @@ async def code_modifier_status():
 
 
 @app.get("/api/code-modifier/sources")
-async def code_modifier_sources():
+async def code_modifier_sources(request: Request):
+    # Exposes file names/sizes/structure — gate on the token like /read (audit).
+    if not _token_ok(request.headers.get("x-api-token")):
+        return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
     return substrate.code_modifier.list_sources()
 
 
@@ -641,7 +649,10 @@ class CodeModAnalyzeRequest(BaseModel):
 
 
 @app.post("/api/code-modifier/analyze")
-async def code_modifier_analyze(request: CodeModAnalyzeRequest):
+async def code_modifier_analyze(request: CodeModAnalyzeRequest, http_request: Request):
+    # Reads and analyzes source (classes/functions/imports) — gate on the token.
+    if not _token_ok(http_request.headers.get("x-api-token")):
+        return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
     try:
         return substrate.code_modifier.analyze_file(request.file_path)
     except Exception as e:
@@ -756,13 +767,18 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     connected_ws.append(ws)
     try:
-        await ws.send_text(json.dumps(substrate.full_status(), default=str))
+        # full_status is internal state — only stream it to an authorized client
+        # (when a token is set). Unauthorized clients get an error and no data.
+        if authorized:
+            await ws.send_text(json.dumps(substrate.full_status(), default=str))
+        else:
+            await ws.send_text(json.dumps({"error": "unauthorized"}))
         while True:
             data = await ws.receive_text()
             try:
                 cmd = json.loads(data)
                 action = cmd.get("action")
-                if action in ("kill_switch_on", "kill_switch_off") and not authorized:
+                if not authorized:
                     await ws.send_text(json.dumps({"error": "unauthorized"}))
                     continue
                 if action == "kill_switch_on":

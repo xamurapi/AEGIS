@@ -157,3 +157,32 @@ def test_written_file_is_valid_gzip_json(sb):
     rec = sb.save_state({"hello": "world"})
     raw = (sb.backup_dir / rec["file"]).read_bytes()
     assert json.loads(gzip.decompress(raw).decode("utf-8")) == {"hello": "world"}
+
+
+# ── ordering: by nanosecond stamp, not filename (HIGH) ────────────────
+
+def _write_backup(sb, name, payload):
+    (sb.backup_dir / name).write_bytes(gzip.compress(json.dumps(payload).encode("utf-8")))
+
+
+def test_restore_latest_orders_by_stamp_not_filename(sb):
+    # 'emergency' < 'scheduled' lexicographically, so a naive reverse-by-name
+    # sort would always return the scheduled file first — even when the
+    # emergency snapshot is genuinely newer (higher nanosecond stamp).
+    _write_backup(sb, "aegis_scheduled_1000.json.gz", {"which": "old_scheduled"})
+    _write_backup(sb, "aegis_emergency_2000.json.gz", {"which": "new_emergency"})
+    assert sb.restore_latest()["which"] == "new_emergency"
+
+
+def test_restore_latest_stamp_wins_reverse_case(sb):
+    # And when the scheduled file is the newer one, it must win too.
+    _write_backup(sb, "aegis_emergency_1000.json.gz", {"which": "old_emergency"})
+    _write_backup(sb, "aegis_scheduled_2000.json.gz", {"which": "new_scheduled"})
+    assert sb.restore_latest()["which"] == "new_scheduled"
+
+
+def test_list_backups_newest_first_by_stamp(sb):
+    _write_backup(sb, "aegis_scheduled_1000.json.gz", {"a": 1})
+    _write_backup(sb, "aegis_emergency_2000.json.gz", {"b": 2})
+    listed = sb.list_backups()
+    assert listed[0]["timestamp"] == "2000"  # highest stamp first regardless of type

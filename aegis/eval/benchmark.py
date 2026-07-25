@@ -31,6 +31,48 @@ def _norm(v: Any) -> Any:
     return v
 
 
+def _as_number(v: Any) -> float | None:
+    """Return v as a float if it *is* a number or a numeric string, else None.
+
+    Booleans are explicitly rejected — ``True`` is not the number 1 here."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def values_match(answer: Any, expected: Any) -> bool:
+    """Type-aware equality for verifiable feedback.
+
+    Unlike a symmetric ``_norm(a) == _norm(b)``, this is asymmetric on the
+    *expected* type so a candidate cannot cheat by returning the wrong Python
+    type:
+
+    * ``bool`` compares only to ``bool`` (avoids Python's ``1 == True`` trap).
+    * a ``str`` expected requires a ``str`` answer — a number must NOT satisfy a
+      string spec (e.g. fizzbuzz ``7`` must be ``"7"``, to_binary ``"1101"``).
+      Previously ``_norm("7") == _norm(7)`` let a numeric answer pass a string
+      task.
+    * a numeric expected accepts a number or a numeric string, with float/int
+      tolerance preserved (so ``"42"`` still verifies against ``42``).
+    """
+    if isinstance(expected, bool) or isinstance(answer, bool):
+        return (isinstance(expected, bool) and isinstance(answer, bool)
+                and expected == answer)
+    if isinstance(expected, str):
+        return isinstance(answer, str) and answer.strip() == expected.strip()
+    if isinstance(expected, (int, float)):
+        num = _as_number(answer)
+        return num is not None and num == float(expected)
+    return answer == expected
+
+
 @dataclass(frozen=True)
 class Task:
     id: str
@@ -41,7 +83,7 @@ class Task:
 
     def verify(self, answer: Any) -> bool:
         try:
-            return _norm(answer) == _norm(self.expected)
+            return values_match(answer, self.expected)
         except Exception:
             return False
 

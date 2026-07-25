@@ -399,6 +399,23 @@ def test_evolve_no_matching_blueprint_source():
     assert res["created"] == []  # no blueprint matched -> no replacement
 
 
+def test_evolve_multiple_failed_snapshot_iteration_safe():
+    # _create() appends replacements to self.agents; evolve() must iterate over a
+    # snapshot so the mutation during iteration cannot corrupt the loop.
+    s = AgentSystem()
+    s._initialized = True
+    for name, src in [("arxiv_scout", "arxiv"),
+                      ("wiki_explorer", "wikipedia"),
+                      ("news_scanner", "news")]:
+        a = s._create(name, src, "task")
+        a.status = "failed"
+    res = s.evolve()  # must not raise / loop over freshly-appended replacements
+    assert len(res["retired"]) == 3
+    assert len(res["created"]) == 3   # exactly one replacement per failed agent
+    # replacements are active and were not themselves retired this cycle
+    assert res["active_agents"] == 3
+
+
 # ── Reporting ─────────────────────────────────────────────────────────────
 
 def test_get_recent_knowledge():

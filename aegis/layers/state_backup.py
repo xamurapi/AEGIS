@@ -56,9 +56,30 @@ class StateBackup:
             self.backup_history.append(record)
             return record
 
+    @staticmethod
+    def _ns_stamp(f: Path) -> int:
+        """Extract the nanosecond stamp from ``aegis_{type}_{ns}.json.gz``.
+
+        Sorting by the whole filename is WRONG: the ``{type}`` field precedes
+        the timestamp, so "scheduled" > "emergency" lexicographically and an old
+        scheduled backup would outrank a fresh emergency one. Ordering by this
+        stamp (falling back to mtime) restores true chronological order."""
+        base = f.name
+        if base.endswith(".json.gz"):
+            base = base[: -len(".json.gz")]
+        last = base.rsplit("_", 1)[-1]
+        try:
+            return int(last)
+        except ValueError:
+            try:
+                return f.stat().st_mtime_ns
+            except OSError:
+                return -1
+
     def restore_latest(self, backup_type: str | None = None) -> dict | None:
         """Restore the most recent backup, optionally filtered by type."""
-        files = sorted(self.backup_dir.glob("aegis_*.json.gz"), reverse=True)
+        files = sorted(self.backup_dir.glob("aegis_*.json.gz"),
+                       key=self._ns_stamp, reverse=True)
         for f in files:
             if backup_type and backup_type not in f.name:
                 continue
@@ -97,7 +118,8 @@ class StateBackup:
     def list_backups(self) -> list[dict]:
         """List available backup files with metadata."""
         result = []
-        for f in sorted(self.backup_dir.glob("aegis_*.json.gz"), reverse=True):
+        for f in sorted(self.backup_dir.glob("aegis_*.json.gz"),
+                        key=self._ns_stamp, reverse=True):
             parts = f.stem.replace(".json", "").split("_")
             result.append({
                 "file": f.name,

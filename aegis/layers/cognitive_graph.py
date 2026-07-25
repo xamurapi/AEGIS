@@ -130,10 +130,18 @@ class CognitiveGraph:
             for dsts in self.edges.values():
                 dsts.pop(node_id, None)
 
-    def ingest_memory(self, memory, concept_limit: int = 20):
-        """Pull recent semantic concepts and new episodic events from the
-        MemorySystem into the graph, linking events to the concepts whose
-        tokens they mention."""
+    def ingest_memory(self, memory, concept_limit: int = 20, event_window: int = 40):
+        """Pull recent semantic concepts and recent episodic events into the
+        graph, linking events to the concepts whose tokens they mention.
+
+        Events are taken from the last `event_window` of episodic memory rather
+        than tracked by an absolute high-water index. An index breaks silently:
+        `apply_forgetting` and the on-disk `episodic[-1000:]` truncation remove
+        items from anywhere in the list, so a saved index can exceed the (now
+        shorter) list and skip every new event forever. add_node/add_edge are
+        idempotent (dedup by id, edges reinforce), so re-scanning a bounded
+        recent window is safe and cheap, and never drops a fresh event.
+        """
         # Concepts (most recent slice).
         for concept in list(memory.semantic.keys())[-concept_limit:]:
             rel = memory.semantic[concept].get("relations", {})
@@ -141,14 +149,12 @@ class CognitiveGraph:
                 "source": rel.get("type", "semantic"),
             })
 
-        # New episodic events since last ingest (high-water mark survives restarts).
-        start = min(self._ingested_episodic, len(memory.episodic))
         concept_tokens = {c: _tokenize(c) for c in self.nodes
                           if self.nodes[c]["type"] == "concept"}
-        for ep in memory.episodic[start:]:
-            event_id = f"ev:{ep['event'][:100]}"
+        for ep in memory.episodic[-event_window:]:
+            event_id = f"ev:{ep.get('event', '')[:100]}"
             self.add_node(event_id, "event", {"importance": ep.get("importance", 0.5)})
-            ev_tokens = _tokenize(ep["event"])
+            ev_tokens = _tokenize(ep.get("event", ""))
             for concept, ctoks in concept_tokens.items():
                 if ctoks and ctoks & ev_tokens:
                     self.add_edge(event_id, concept, "relates_to",

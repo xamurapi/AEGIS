@@ -83,3 +83,14 @@ def test_status_recent_truncates_summary():
     a.log_event("c", "z" * 200, impact=0.5)
     s = a.status()
     assert len(s["recent"][0]["summary"]) == 60
+
+
+def test_total_impact_stays_consistent_after_truncation():
+    # total_impact must equal the sum over the RETAINED events, not keep
+    # accumulating the impact of events dropped by the [-500:] truncation.
+    a = Autobiographer()
+    for i in range(600):
+        a.log_event("c", f"e{i}", impact=0.1)
+    assert len(a.events) == 500
+    expected = sum(e["impact"] for e in a.events)
+    assert abs(a.total_impact - expected) < 1e-9

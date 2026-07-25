@@ -154,3 +154,25 @@ def test_status_averages_with_history(monkeypatch):
     s = h.status()
     assert s["cpu_avg"] == 50.0
     assert s["mem_avg"] == 40.0
+
+
+def test_recovery_count_increments_on_recovery(monkeypatch):
+    h = HealthMonitor()
+    _use_fake_psutil(monkeypatch, cpu=99, mem=20)  # critical
+    h.check()
+    assert h.recovery_count == 0
+    _use_fake_psutil(monkeypatch, cpu=10, mem=20)  # back to healthy
+    h.check()
+    assert h.recovery_count == 1
+    h.check()  # staying healthy must not double-count
+    assert h.recovery_count == 1
+
+
+def test_recovery_count_from_warning(monkeypatch):
+    h = HealthMonitor()
+    _use_fake_psutil(monkeypatch, cpu=80, mem=20)  # warning (degraded)
+    h.check()
+    assert h.recovery_count == 0
+    _use_fake_psutil(monkeypatch, cpu=10, mem=20)  # healthy
+    h.check()
+    assert h.recovery_count == 1

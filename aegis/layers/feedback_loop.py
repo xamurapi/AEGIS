@@ -34,6 +34,34 @@ class FeedbackLoop:
         self.failures = 0
         self.recent: list[dict] = []
         self._store_path = store_path or (FEEDBACK_DIR / "experiences.jsonl")
+        self._load()
+
+    def _load(self):
+        """Rebuild counters from the persisted JSONL log so status()/success_rate
+        are correct after a restart, and continue the id sequence past the last
+        stored experience (otherwise new exp_ids would collide with old rows).
+        """
+        if not self._store_path.exists():
+            return
+        try:
+            with self._store_path.open("r", encoding="utf-8") as fh:
+                rows = [json.loads(ln) for ln in fh if ln.strip()]
+        except Exception:
+            logger.warning("Failed to load experiences from %s", self._store_path, exc_info=True)
+            return
+        self.resolved = len(rows)
+        self.successes = sum(1 for r in rows if r.get("success"))
+        self.failures = self.resolved - self.successes
+        max_seq = 0
+        for r in rows:
+            eid = str(r.get("id", ""))
+            if eid.startswith("exp_"):
+                try:
+                    max_seq = max(max_seq, int(eid.split("_")[1]))
+                except (ValueError, IndexError):
+                    pass
+        self._seq = max_seq
+        self.recent = rows[-50:]
 
     # ── recording ────────────────────────────────────────────────────
 

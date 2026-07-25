@@ -650,6 +650,31 @@ class _CallableTokenizer:
         return "  generated  "
 
 
+def test_generate_is_deterministic_greedy(wm):
+    # "zero randomness": generation must be greedy (do_sample=False) with no
+    # sampling knobs (temperature/top_p) that would introduce non-determinism.
+    wm.model_loaded = True
+
+    class FakeInputs(dict):
+        def to(self, device):
+            return self
+
+    inputs = FakeInputs(input_ids=types.SimpleNamespace(shape=[1, 3]))
+    wm.tokenizer = _CallableTokenizer(inputs)
+
+    captured = {}
+
+    def gen(**kwargs):
+        captured.update(kwargs)
+        return [[10, 11, 12, 13, 14]]
+
+    wm.model = types.SimpleNamespace(device="cpu", generate=gen)
+    wm.generate("hello")
+    assert captured["do_sample"] is False
+    assert "temperature" not in captured
+    assert "top_p" not in captured
+
+
 # --------------------------------------------------------------------------- #
 # list_checkpoints / status                                                    #
 # --------------------------------------------------------------------------- #

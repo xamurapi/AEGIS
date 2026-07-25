@@ -218,6 +218,25 @@ class Substrate:
                 data = json.loads(self._checkpoint_path.read_text(encoding="utf-8"))
                 self.tick_count = data.get("tick_count", 0)
                 self.self_mod.current_version = data.get("version", "1.0.0")
+                # Restore the tunable parameters (audit H1) — otherwise every
+                # benchmark-verified Evolution win is lost on restart while the
+                # persisted champion genome still records the evolved values,
+                # desyncing the two.
+                saved_params = data.get("parameters")
+                if isinstance(saved_params, dict):
+                    for k, v in saved_params.items():
+                        if k in self.self_mod.parameters:
+                            try:
+                                self.self_mod.parameters[k] = float(v)
+                            except (TypeError, ValueError):
+                                pass
+                    # Keep the Evolution champion genome in sync with the live
+                    # (restored) parameters — the parameters are the source of
+                    # truth for what is actually running.
+                    if self.evolution.champion:
+                        for k in self.evolution.champion["genome"]:
+                            if k in self.self_mod.parameters:
+                                self.evolution.champion["genome"][k] = self.self_mod.parameters[k]
             except Exception:
                 logger.warning("Failed to restore checkpoint %s — starting fresh",
                                self._checkpoint_path, exc_info=True)
@@ -231,6 +250,9 @@ class Substrate:
             "mood": self.emotions.mood,
             "consciousness_mode": self.consciousness.mode,
             "energy": self.emotions.energy,
+            # Persist tunable parameters so accepted Evolution mutations survive
+            # restart (audit H1).
+            "parameters": dict(self.self_mod.parameters),
         }
         # Atomic write — a crash mid-write must not corrupt the checkpoint and
         # silently reset tick_count/version to defaults on next boot.
@@ -829,7 +851,10 @@ class Substrate:
         # ── Periodic held-out benchmark (the fitness graph, point 2) ──
         if (self.tick_count % max(1, EVAL_EVERY_N_TICKS) == 0
                 and (self._eval_task is None or self._eval_task.done())):
-            self._eval_task = asyncio.create_task(self._run_benchmark())
+            # Pass the tick at which the benchmark STARTS so a candidate proposed
+            # after this point is not judged by a benchmark that never saw it
+            # (audit M3).
+            self._eval_task = asyncio.create_task(self._run_benchmark(self.tick_count))
 
         # ── Skill synthesis: close a failing kind, learn a coding solution, or
         #    simplify an already-solved kind (points 3, 4 + coding + versioning) ──
@@ -842,7 +867,7 @@ class Substrate:
 
         self.memory.add_working({"phase": "act", "result": action_result})
 
-    async def _run_benchmark(self):
+    async def _run_benchmark(self, started_tick: int | None = None):
         """Run the held-out benchmark off the tick loop and update the reward signal."""
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, self.evaluator.run)
@@ -851,9 +876,14 @@ class Substrate:
                 "benchmark", f"score={report['score']:.3f} ({report['passed']}/{report['total']})", 0.7)
 
             # ── System 3: natural selection. If a mutated genome is pending,
-            #    the fresh benchmark is its fitness. Keep it only if it beat the
-            #    champion; otherwise roll the parameter back to its old value. ──
-            if self.evolution.candidate is not None:
+            #    the fresh benchmark is its fitness — but ONLY judge with a
+            #    benchmark that STARTED after the mutation was applied, else the
+            #    run never measured the mutated state (audit M3). A candidate
+            #    that appeared after this benchmark started waits for the next.
+            cand = self.evolution.candidate
+            if cand is not None and (
+                    started_tick is None
+                    or cand.get("proposed_at_tick", -1) < started_tick):
                 verdict = self.evolution.judge_candidate(report["score"])
                 if verdict.get("decision") == "rejected" and verdict.get("revert_to") is not None:
                     param = verdict["param"]

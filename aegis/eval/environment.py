@@ -18,7 +18,9 @@ class TaskEnvironment:
     def __init__(self, solver: MultiAgentSolver, tasks: list[Task] | None = None,
                  window: int = 20):
         self.solver = solver
-        self.tasks = tasks or list(DEFAULT_BENCHMARK)
+        # `tasks or ...` would silently replace a deliberately-empty [] with the
+        # default set; distinguish "not provided" (None) from "empty".
+        self.tasks = tasks if tasks is not None else list(DEFAULT_BENCHMARK)
         self._idx = 0
         self.rewards: deque = deque(maxlen=window)
         self.total_steps = 0

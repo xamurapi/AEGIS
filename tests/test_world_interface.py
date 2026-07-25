@@ -1,4 +1,7 @@
 """Tests for WorldInterface."""
+import time
+import types
+
 from aegis.layers import world_interface
 from aegis.layers.world_interface import WorldInterface
 
@@ -101,3 +104,35 @@ def test_status():
     assert "permissions" in st
     assert len(st["recent_actions"]) == 1
     assert st["recent_actions"][0]["type"] == "observe"
+
+
+def test_uptime_hours_is_real_process_uptime():
+    # uptime must be measured from start_time, NOT (time.time() % 86400)/3600
+    # which is the wall-clock time of day and resets each midnight.
+    wi = WorldInterface()
+    wi.start_time = time.time() - 7200  # pretend the process started 2h ago
+    data = wi.perceive()
+    assert data["uptime_hours"] >= 1.9  # ~2 hours
+
+
+def test_uptime_hours_small_for_fresh_instance():
+    wi = WorldInterface()
+    data = wi.perceive()
+    assert 0.0 <= data["uptime_hours"] < 0.01  # brand new -> near zero
+
+
+def test_perceive_disk_usage_failure_degrades(monkeypatch):
+    fake = types.SimpleNamespace(
+        cpu_percent=lambda interval=0: 5.0,
+        virtual_memory=lambda: types.SimpleNamespace(percent=30.0),
+        disk_usage=lambda p: (_ for _ in ()).throw(OSError("no disk")),
+        net_io_counters=lambda: types.SimpleNamespace(bytes_sent=1, bytes_recv=2),
+        pids=lambda: [1, 2, 3],
+    )
+    monkeypatch.setattr(world_interface, "HAS_PSUTIL", True)
+    monkeypatch.setattr(world_interface, "psutil", fake, raising=False)
+    wi = WorldInterface()
+    data = wi.perceive()  # must not raise despite disk_usage error
+    assert data["disk_free_gb"] == 0.0
+    assert data["cpu_load"] == 5.0
+    assert data["process_count"] == 3

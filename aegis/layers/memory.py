@@ -12,6 +12,11 @@ from aegis.config import MEMORY_DIR, MAX_WORKING_MEMORY, MEMORY_DECAY_RATE
 
 logger = logging.getLogger("aegis.memory")
 
+# Soft RAM caps so a long-running process cannot grow memory without bound.
+# These are far above normal working sizes — they only trip on runaway growth.
+MAX_EPISODIC_RAM = 5000       # episodic entries kept in RAM (oldest dropped)
+MAX_SEMANTIC_CONCEPTS = 2000  # semantic concepts kept (least-recently-updated pruned)
+
 
 class MemorySystem:
     def __init__(self):
@@ -32,6 +37,7 @@ class MemorySystem:
                 self.semantic = data.get("semantic", {})
                 self.procedural = data.get("procedural", [])
                 self.meta = data.get("meta", {})
+                self.forgotten_total = data.get("forgotten_total", 0)
             except Exception:
                 logger.warning("Failed to load memory state from %s — starting empty",
                                self._persistence_path, exc_info=True)
@@ -42,6 +48,7 @@ class MemorySystem:
             "semantic": self.semantic,
             "procedural": self.procedural[-100:],
             "meta": self.meta,
+            "forgotten_total": self.forgotten_total,
         }
         # Atomic write: dump to a temp file in the same directory, then replace.
         # A crash mid-write must not truncate the existing state and wipe all
@@ -70,14 +77,32 @@ class MemorySystem:
             "last_access": time.time(),
         }
         self.episodic.append(entry)
+        # Soft RAM cap: drop the oldest episodic entries on runaway growth.
+        if len(self.episodic) > MAX_EPISODIC_RAM:
+            self.episodic = self.episodic[-MAX_EPISODIC_RAM:]
 
     def add_semantic(self, concept: str, relations: dict):
+        # Preserve the original creation time when re-learning a known concept —
+        # an update must not masquerade as a brand-new concept.
+        existing = self.semantic.get(concept)
+        created = existing.get("created", time.time()) if isinstance(existing, dict) else time.time()
         self.semantic[concept] = {
             "relations": relations,
-            "created": time.time(),
+            "created": created,
             "updated": time.time(),
             "confidence": relations.get("confidence", 0.8),
         }
+        # Soft RAM cap: prune the least-recently-updated concepts on overflow.
+        if len(self.semantic) > MAX_SEMANTIC_CONCEPTS:
+            self._prune_semantic()
+
+    def _prune_semantic(self):
+        """Keep the most-recently-updated MAX_SEMANTIC_CONCEPTS concepts,
+        dropping the least-used (oldest-updated) ones."""
+        ranked = sorted(self.semantic.items(),
+                        key=lambda kv: kv[1].get("updated", 0) if isinstance(kv[1], dict) else 0,
+                        reverse=True)
+        self.semantic = dict(ranked[:MAX_SEMANTIC_CONCEPTS])
 
     def add_procedural(self, name: str, procedure: dict):
         self.procedural.append({
@@ -142,8 +167,9 @@ class MemorySystem:
     def recall_episodic(self, query: str = "", limit: int = 10) -> list[dict]:
         results = []
         for ep in reversed(self.episodic):
-            if not query or query.lower() in ep["event"].lower():
-                ep["access_count"] += 1
+            event = ep.get("event", "")
+            if not query or query.lower() in event.lower():
+                ep["access_count"] = ep.get("access_count", 0) + 1
                 ep["last_access"] = time.time()
                 results.append(ep)
                 if len(results) >= limit:
@@ -155,10 +181,10 @@ class MemorySystem:
         surviving = []
         forgotten = 0
         for ep in self.episodic:
-            age_hours = (now - ep["timestamp"]) / 3600
+            age_hours = (now - ep.get("timestamp", now)) / 3600
             retention = math.exp(-MEMORY_DECAY_RATE * age_hours)
-            retention *= (1 + ep["importance"])
-            retention *= (1 + 0.1 * ep["access_count"])
+            retention *= (1 + ep.get("importance", 0.5))
+            retention *= (1 + 0.1 * ep.get("access_count", 0))
             if retention > 0.1:
                 surviving.append(ep)
             else:
@@ -177,7 +203,8 @@ class MemorySystem:
             "meta_domains": len(self.meta),
             "total_memories": len(self.episodic) + len(self.semantic) + len(self.procedural),
             "forgotten_count": self.forgotten_total,
-            "recent_episodic": [{"event": e["event"], "time": e["timestamp"], "importance": e["importance"]}
+            "recent_episodic": [{"event": e.get("event", ""), "time": e.get("timestamp"),
+                                 "importance": e.get("importance", 0.5)}
                                 for e in self.episodic[-5:]],
             "knowledge_graph_sample": list(self.semantic.keys())[:20],
         }

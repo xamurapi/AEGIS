@@ -16,6 +16,7 @@ except ImportError:
 
 class WorldInterface:
     def __init__(self):
+        self.start_time = time.time()
         self.actions_log: list[dict] = []
         self.sensors: dict[str, float] = {}
         self.permissions: dict[str, bool] = {
@@ -29,18 +30,27 @@ class WorldInterface:
         self._environment_cache: dict = {}
 
     def perceive(self) -> dict:
+        # Real process uptime measured from construction, NOT the time-of-day
+        # that ``time.time() % 86400`` produced (which reset every midnight).
+        uptime_hours = (time.time() - self.start_time) / 3600
         if HAS_PSUTIL:
             cpu = psutil.cpu_percent(interval=0)
             mem = psutil.virtual_memory()
-            disk = psutil.disk_usage("/") if os.name != "nt" else psutil.disk_usage("C:\\")
+            # disk_usage can raise (unmounted/unavailable path) — degrade
+            # gracefully rather than crashing the whole perception cycle.
+            try:
+                disk = psutil.disk_usage("/") if os.name != "nt" else psutil.disk_usage("C:\\")
+                disk_free_gb = round(disk.free / (1024 ** 3), 1)
+            except Exception:
+                disk_free_gb = 0.0
             net_io = psutil.net_io_counters()
             self.sensors = {
                 "cpu_load": cpu,
                 "memory_usage_pct": mem.percent,
-                "disk_free_gb": round(disk.free / (1024 ** 3), 1),
+                "disk_free_gb": disk_free_gb,
                 "network_bytes_sent": net_io.bytes_sent,
                 "network_bytes_recv": net_io.bytes_recv,
-                "uptime_hours": (time.time() % 86400) / 3600,
+                "uptime_hours": uptime_hours,
                 "process_count": len(psutil.pids()),
             }
         else:
@@ -52,7 +62,7 @@ class WorldInterface:
                 "disk_free_gb": 200.0,
                 "network_bytes_sent": 0,
                 "network_bytes_recv": 0,
-                "uptime_hours": (t % 86400) / 3600,
+                "uptime_hours": uptime_hours,
                 "process_count": 0,
             }
 

@@ -1,6 +1,5 @@
 """MetaReflection — deep self-analysis, insight generation, trend detection."""
 import time
-import random
 from collections import deque
 
 

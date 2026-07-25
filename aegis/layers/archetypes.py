@@ -1,5 +1,4 @@
 """Archetypes — personality sub-systems with activation conditions and geopolitical dynamics."""
-import random
 
 
 class Archetype:

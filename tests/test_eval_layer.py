@@ -387,3 +387,50 @@ def test_compute_reward_falls_back_before_first_eval():
     # Legacy synthetic estimate is still a valid [0,1] reward.
     r = s._compute_reward()
     assert 0.0 <= r <= 1.0
+
+
+# ── type-aware verification: number must not pass a string spec ──────
+def test_string_task_rejects_numeric_answer():
+    # A str-expected task (fizzbuzz "7", to_binary "1101") must NOT be
+    # satisfied by a number that merely stringifies the same way.
+    t = Task("fb", "fizzbuzz", "", {}, "7")
+    assert t.verify("7")
+    assert not t.verify(7)
+    assert not t.verify(7.0)
+    b = Task("bin", "to_binary", "", {}, "1101")
+    assert b.verify("1101")
+    assert not b.verify(1101)
+
+
+def test_numeric_task_still_accepts_numeric_string():
+    # The float/int tolerance is preserved: "42" still verifies against 42.
+    t = Task("n", "calc", "", {}, 42)
+    assert t.verify(42) and t.verify(42.0) and t.verify("42")
+    assert not t.verify("43")
+
+
+def test_coding_numeric_answer_fails_string_spec():
+    from aegis.eval.coding import verify_solution, CodingTask
+    task = CodingTask("num", "f", "spec",
+                      visible_tests=(([7], "7"),),
+                      hidden_tests=(([7], "7"), ([15], "15")))
+    # returns an int instead of the required string -> must NOT count as solved
+    assert not verify_solution("def f(n):\n    return n\n", task)["solved"]
+    # correct string version passes
+    assert verify_solution("def f(n):\n    return str(n)\n", task)["solved"]
+
+
+def test_coding_empty_hidden_tests_not_vacuously_solved():
+    from aegis.eval.coding import verify_solution, CodingTask
+    task = CodingTask("empty", "f", "spec", visible_tests=(), hidden_tests=())
+    v = verify_solution("def f():\n    return 1\n", task)
+    assert v["total"] == 0
+    assert v["solved"] is False  # was vacuously True under passed == total
+
+
+def test_environment_empty_task_list_is_preserved():
+    lib = SkillLibrary(seed=True)
+    env = TaskEnvironment(MultiAgentSolver(lib, timeout=5.0), tasks=[])
+    assert env.tasks == []  # deliberately empty, NOT replaced by the default set
+    step = env.step()
+    assert step["task"] is None and step["reward"] == 0.0

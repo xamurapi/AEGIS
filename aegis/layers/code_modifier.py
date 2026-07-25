@@ -231,19 +231,36 @@ class CodeModifier:
             # "import os as o" doesn't let "o.kill(...)" slip past the
             # (module, attr) blocklist.
             alias_to_module: dict[str, str] = {}
+            # Local names bound to a dangerous function via `from os import kill`
+            # (possibly aliased) — a bare call to them must be treated as the
+            # dangerous (module, attr) call it really is (audit: from-import
+            # bypass). Maps local_name -> "module.attr".
+            dangerous_from_aliases: dict[str, str] = {}
+            _danger_modules = {m for m, _ in DANGEROUS_ATTR_CALLS}
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
                         root = alias.name.split(".")[0]
                         alias_to_module[alias.asname or root] = root
+                elif isinstance(node, ast.ImportFrom):
+                    mod = (node.module or "").split(".")[0]
+                    for alias in node.names:
+                        if (mod, alias.name) in DANGEROUS_ATTR_CALLS:
+                            dangerous_from_aliases[alias.asname or alias.name] = f"{mod}.{alias.name}"
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
                         if alias.name.split(".")[0] in FORBIDDEN_IMPORTS:
                             warnings.append(f"BLOCKED: forbidden import '{alias.name}'")
                 elif isinstance(node, ast.ImportFrom):
-                    if node.module and node.module.split(".")[0] in FORBIDDEN_IMPORTS:
+                    mod = (node.module or "").split(".")[0]
+                    if node.module and mod in FORBIDDEN_IMPORTS:
                         warnings.append(f"BLOCKED: forbidden import from '{node.module}'")
+                    # `from os import *` / `from shutil import *` — a wildcard from
+                    # a module that hosts dangerous calls hides them from the
+                    # (module, attr) blocklist.
+                    if mod in _danger_modules and any(a.name == "*" for a in node.names):
+                        warnings.append(f"BLOCKED: wildcard import from '{node.module}'")
                 elif isinstance(node, ast.Attribute):
                     # Reflection-escape dunder access (audit L6).
                     if node.attr in DANGEROUS_DUNDERS:
@@ -256,6 +273,10 @@ class CodeModifier:
                     # Bare call: eval(...), exec(...), __import__(...)
                     if isinstance(func, ast.Name) and func.id in DANGEROUS_CALL_NAMES:
                         warnings.append(f"BLOCKED: dangerous call '{func.id}(...)'")
+                    # Bare call to a `from os import kill`-style dangerous alias.
+                    elif isinstance(func, ast.Name) and func.id in dangerous_from_aliases:
+                        warnings.append(
+                            f"BLOCKED: dangerous call '{dangerous_from_aliases[func.id]}(...)'")
                     # open(..., 'w') and friends — arbitrary file write (audit A1).
                     elif isinstance(func, ast.Name) and func.id == "open":
                         reason = _open_write_mode(node)
@@ -268,6 +289,13 @@ class CodeModifier:
                         pair = (module, func.attr)
                         if pair in DANGEROUS_ATTR_CALLS:
                             warnings.append(f"BLOCKED: dangerous call '{pair[0]}.{pair[1]}(...)'")
+                        # io.open(..., 'w') / os.open(...) — write via a module
+                        # aliasing the builtin open (audit: open() bypass).
+                        elif func.attr == "open" and module in ("io", "os"):
+                            reason = _open_write_mode(node)
+                            if reason or module == "os":
+                                warnings.append(
+                                    f"BLOCKED: {reason or f'{module}.open() (file write)'}")
         except SyntaxError:
             pass  # already caught by validate_syntax
 
