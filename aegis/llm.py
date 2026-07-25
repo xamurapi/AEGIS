@@ -3,11 +3,12 @@ import json
 import asyncio
 import logging
 from pathlib import Path
+from aegis._atomic import atomic_write_text
 from aegis.config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
     CLAUDE_API_KEY, CLAUDE_MODEL,
     LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_PROVIDER,
-    LLM_MAX_CALLS_PER_RUN, LLM_MIN_INTERVAL_SECONDS,
+    LLM_MAX_CALLS_PER_RUN, LLM_MIN_INTERVAL_SECONDS, LLM_TIMEOUT_SECONDS,
     DATA_DIR,
 )
 
@@ -158,18 +159,21 @@ class LLMEngine:
             "last_updated": time.time(),
         }
         try:
-            TOKEN_STATS_FILE.write_text(json.dumps(data), encoding="utf-8")
+            atomic_write_text(TOKEN_STATS_FILE, json.dumps(data))
         except Exception:
             pass
 
     def _init_clients(self):
         if DEEPSEEK_API_KEY:
             OAI = _get_openai()
-            self.deepseek_client = OAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+            # timeout= bounds every request so a hung provider can't stall the
+            # tick loop / a dashboard call indefinitely (audit H3).
+            self.deepseek_client = OAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL,
+                                       timeout=LLM_TIMEOUT_SECONDS)
             self.deepseek.enabled = True
         if CLAUDE_API_KEY:
             Anth = _get_anthropic()
-            self.claude_client = Anth(api_key=CLAUDE_API_KEY)
+            self.claude_client = Anth(api_key=CLAUDE_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
             self.claude.enabled = True
         # Local model — enabled when weight_modifier is loaded
         if self.provider_mode == "local":
@@ -224,8 +228,14 @@ class LLMEngine:
             full_prompt = full_prompt[-4000:]
 
         t0 = time.time()
-        content = await asyncio.get_event_loop().run_in_executor(
-            None, self.weight_modifier.generate, full_prompt, LLM_MAX_TOKENS
+        # Bound the local generate() so a stuck decode can't wedge the caller
+        # forever (audit H3). The executor thread may keep running, but the
+        # coroutine returns and the tick loop stays responsive.
+        content = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                None, self.weight_modifier.generate, full_prompt, LLM_MAX_TOKENS
+            ),
+            timeout=LLM_TIMEOUT_SECONDS,
         )
         elapsed = time.time() - t0
 

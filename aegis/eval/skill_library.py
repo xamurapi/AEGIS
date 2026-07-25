@@ -8,9 +8,11 @@ forever (unlike fine-tuning a model on its own text, which drifts/collapses).
 import json
 import time
 import logging
+import threading
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+from aegis._atomic import atomic_write_text
 from aegis.eval.sandbox import check_safe
 
 logger = logging.getLogger("aegis.skills")
@@ -87,9 +89,21 @@ _SEED_SKILLS = [
 
 
 class SkillLibrary:
+    """Thread-safe skill store.
+
+    The capability layer mutates the library from the event-loop thread
+    (add/remove during skill synthesis) while the solver reads it from executor
+    threads (for_kind during env steps / benchmarks). Without synchronization
+    that races: "dictionary changed size during iteration", and concurrent
+    save() calls corrupt skills.json (audit H1). A single reentrant lock guards
+    every access to self.skills; readers return snapshots so callers can iterate
+    outside the lock safely.
+    """
+
     def __init__(self, store_path: Path | None = None, seed: bool = True):
         self.skills: dict[str, Skill] = {}
         self._store_path = store_path
+        self._lock = threading.RLock()
         if seed:
             for s in _SEED_SKILLS:
                 self.skills[s.name] = Skill(**asdict(s))
@@ -101,9 +115,10 @@ class SkillLibrary:
             return
         try:
             data = json.loads(self._store_path.read_text(encoding="utf-8"))
-            for d in data.get("skills", []):
-                d.pop("success_rate", None)
-                self.skills[d["name"]] = Skill(**d)
+            with self._lock:
+                for d in data.get("skills", []):
+                    d.pop("success_rate", None)
+                    self.skills[d["name"]] = Skill(**d)
         except Exception:
             logger.warning("Failed to load skill library from %s", self._store_path, exc_info=True)
 
@@ -111,43 +126,50 @@ class SkillLibrary:
         if not self._store_path:
             return
         try:
-            self._store_path.write_text(
-                json.dumps({"skills": [s.to_dict() for s in self.skills.values()]}, indent=1),
-                encoding="utf-8",
-            )
+            with self._lock:
+                payload = json.dumps(
+                    {"skills": [s.to_dict() for s in self.skills.values()]}, indent=1)
+            atomic_write_text(self._store_path, payload)
         except Exception:
             logger.warning("Failed to save skill library", exc_info=True)
 
     # ── dispatch ─────────────────────────────────────────────────
     def for_kind(self, kind: str) -> list[Skill]:
-        return [s for s in self.skills.values() if kind in s.kinds]
+        # Snapshot under the lock so a concurrent add/remove cannot mutate the
+        # dict mid-iteration.
+        with self._lock:
+            return [s for s in self.skills.values() if kind in s.kinds]
 
     def add(self, skill: Skill) -> tuple[bool, str]:
         safe, reasons = check_safe(skill.code)
         if not safe:
             return False, f"rejected (unsafe): {reasons}"
-        self.skills[skill.name] = skill
+        with self._lock:
+            self.skills[skill.name] = skill
         self.save()
         return True, "added"
 
     def remove(self, name: str):
-        self.skills.pop(name, None)
+        with self._lock:
+            self.skills.pop(name, None)
         self.save()
 
     def record(self, name: str, success: bool):
-        s = self.skills.get(name)
-        if s:
-            s.attempts += 1
-            if success:
-                s.successes += 1
+        with self._lock:
+            s = self.skills.get(name)
+            if s:
+                s.attempts += 1
+                if success:
+                    s.successes += 1
 
     def status(self) -> dict:
-        return {
-            "total_skills": len(self.skills),
-            "kinds_covered": sorted({k for s in self.skills.values() for k in s.kinds}),
-            "skills": [
-                {"name": s.name, "kinds": s.kinds, "origin": s.origin,
-                 "attempts": s.attempts, "success_rate": round(s.success_rate(), 3)}
-                for s in self.skills.values()
-            ],
-        }
+        with self._lock:
+            return {
+                "total_skills": len(self.skills),
+                "kinds_covered": sorted({k for s in self.skills.values() for k in s.kinds}),
+                "skills": [
+                    {"name": s.name, "kinds": s.kinds, "origin": s.origin,
+                     "attempts": s.attempts, "success_rate": round(s.success_rate(), 3)}
+                    for s in self.skills.values()
+                ],
+            }

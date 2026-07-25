@@ -98,8 +98,17 @@ def check_safe(code: str) -> tuple[bool, list[str]]:
             # This catches aliasing escapes like ``_i = __import__; _i('os')``
             # and ``g = getattr`` that a call-site-only check would miss, while
             # exempting parameters that merely shadow a builtin name.
-            if node.id in FORBIDDEN_CALLS and node.id not in params:
-                reasons.append(f"forbidden name '{node.id}'")
+            if node.id not in params:
+                if node.id in FORBIDDEN_CALLS:
+                    reasons.append(f"forbidden name '{node.id}'")
+                elif node.id.startswith("__") and node.id.endswith("__"):
+                    # Block ALL dunder *names*, not just dunder attributes. The
+                    # dunder-attribute rule below misses ``__builtins__`` /
+                    # ``__loader__`` used as a bare name — e.g.
+                    # ``__builtins__.eval("...")`` — because ``.eval`` is not a
+                    # dunder attribute and ``__builtins__`` is not a Name in
+                    # FORBIDDEN_CALLS. That was a real sandbox-escape (audit C1).
+                    reasons.append(f"forbidden dunder name '{node.id}'")
         elif isinstance(node, ast.Attribute):
             # Block dunder attribute escapes like obj.__globals__ / __builtins__.
             if node.attr.startswith("__") and node.attr.endswith("__"):

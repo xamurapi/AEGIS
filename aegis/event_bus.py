@@ -1,5 +1,6 @@
 """AEGIS Event Bus — inter-layer typed message system (INT-001..004)."""
 import asyncio
+import copy
 import logging
 import time
 import uuid
@@ -8,6 +9,16 @@ from enum import Enum
 from typing import Any, Callable
 
 logger = logging.getLogger("aegis.event_bus")
+
+
+def _safe_copy(payload):
+    """Best-effort deep copy of an event payload for history storage. Falls back
+    to the original on un-copyable content (e.g. a live object) rather than
+    failing the publish."""
+    try:
+        return copy.deepcopy(payload)
+    except Exception:
+        return payload
 
 
 class Layer(str, Enum):
@@ -62,12 +73,22 @@ class EventBus:
             "source": event.source.value,
             "target": event.target.value if event.target else "broadcast",
             "type": event.event_type,
-            "payload": event.payload,
+            # Snapshot the payload (audit L3) — storing the live reference means
+            # a later mutation of event.payload would rewrite history after the
+            # fact, and get_history() would hand internal state out to callers.
+            "payload": _safe_copy(event.payload),
             "ethical_clearance": event.ethical_clearance,
         }
 
         if self._veto_fn:
-            allowed = self._veto_fn(event)
+            # A crash in the veto (safety) function must not propagate and kill
+            # the tick (audit L2). Fail CLOSED — treat an errored safety check as
+            # a block, since we cannot confirm the event is safe.
+            try:
+                allowed = self._veto_fn(event)
+            except Exception:
+                logger.exception("Veto function raised; blocking event (fail-closed)")
+                allowed = False
             if not allowed:
                 record["blocked"] = True
                 self._total_blocked += 1
@@ -100,10 +121,12 @@ class EventBus:
         return True
 
     def get_history(self, limit: int = 50) -> list[dict]:
-        return self._history[-limit:]
+        # Return copies so a consumer (e.g. the WS status payload) cannot mutate
+        # the bus's internal history records (audit L3).
+        return [_safe_copy(r) for r in self._history[-limit:]]
 
     def get_blocked(self, limit: int = 20) -> list[dict]:
-        return self._blocked[-limit:]
+        return [_safe_copy(r) for r in self._blocked[-limit:]]
 
     def stats(self) -> dict:
         return {

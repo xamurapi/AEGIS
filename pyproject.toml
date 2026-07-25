@@ -1,0 +1,47 @@
+[tool.pytest.ini_options]
+# BDD feature files live next to the step defs under tests/.
+testpaths = ["tests"]
+bdd_features_base_dir = "tests/"
+filterwarnings = [
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["aegis"]
+omit = [
+    "aegis/api/*",        # exercised via server integration, not unit-covered
+    "aegis/eval/sandbox.py",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# Coverage control: the five new cognitive systems must stay well-covered.
+# The suite fails if total coverage of the measured set drops below this gate.
+fail_under = 85
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "logger.exception",
+    "logger.warning",
+]
+
+[tool.mutmut]
+# Mutation testing focused on the five new systems (pure, deterministic logic).
+paths_to_mutate = [
+    "aegis/layers/world_model.py",
+    "aegis/layers/cognitive_graph.py",
+    "aegis/layers/evolution_engine.py",
+    "aegis/layers/goal_intelligence.py",
+    "aegis/layers/feedback_loop.py",
+]
+tests_dir = [
+    "tests/test_world_model.py",
+    "tests/test_cognitive_graph.py",
+    "tests/test_evolution_engine.py",
+    "tests/test_goal_intelligence.py",
+    "tests/test_feedback_loop.py",
+]

@@ -17,9 +17,10 @@ from aegis.config import (
     CHECKPOINT_EVERY_N_TICKS, CHECKPOINTS_DIR,
     LLM_THINK_EVERY_N_TICKS, TRAIN_EVERY_N_TICKS,
     CODE_BACKUPS_DIR, CODE_MOD_EVERY_N_TICKS, CODE_MOD_MIN_TICK, CODE_MOD_MAX_PER_SESSION,
-    CODE_MOD_MAX_FILE_CHARS,
+    CODE_MOD_MAX_FILE_CHARS, CODE_SELF_MOD_ENABLED,
     EVAL_DIR, EVAL_EVERY_N_TICKS, ENV_STEP_EVERY_N_TICKS, SKILL_SYNTH_EVERY_N_TICKS,
     SANDBOX_TIMEOUT,
+    WORLD_MODEL_EVERY_N_TICKS, COGNITIVE_GRAPH_EVERY_N_TICKS, EVOLUTION_EVERY_N_TICKS,
 )
 from aegis.event_bus import EventBus, Event, Layer
 from aegis.layers.memory import MemorySystem
@@ -49,6 +50,11 @@ from aegis.layers.emotion_nlp import EmotionNLP
 from aegis.layers.weight_modifier import WeightModifier
 from aegis.layers.dataset_builder import DatasetBuilder
 from aegis.layers.code_modifier import CodeModifier
+from aegis.layers.world_model import WorldModel
+from aegis.layers.cognitive_graph import CognitiveGraph
+from aegis.layers.evolution_engine import EvolutionEngine
+from aegis.layers.goal_intelligence import GoalIntelligence
+from aegis.layers.feedback_loop import FeedbackLoop
 from aegis.eval.benchmark import DEFAULT_BENCHMARK, tasks_for_kind, split_tasks
 from aegis.eval.coding import CODING_BENCHMARK
 from aegis.eval.composite import COMPOSITE_BENCHMARK
@@ -69,6 +75,27 @@ _META_DOMAINS = ["reasoning", "memory", "ethics", "planning", "creativity"]
 
 # Concept seeds — cycled in order
 _CONCEPT_SEEDS = ["pattern", "cycle", "adaptation", "learning", "stability"]
+
+
+# ── LLM-output coercion (audit M5) ───────────────────────────────────
+# Models routinely return "almost right" JSON — numbers as strings, an object
+# where a scalar was asked for, a scalar where an object was asked for. Using
+# those values raw (``parsed["chosen"] - 1``, ``knowledge.get(...)`` on a str)
+# raises inside a cognitive phase and drops the rest of the tick. These helpers
+# coerce defensively so a malformed field falls back instead of crashing.
+
+def _coerce_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class Substrate:
@@ -109,6 +136,19 @@ class Substrate:
         self.weight_modifier = WeightModifier()
         self.dataset_builder = DatasetBuilder()
 
+        # Five higher-order cognitive systems (spec: "5 ключевых систем").
+        # 1. World Model — causal cause->effect model + objective chains.
+        # 2. Cognitive Graph — typed knowledge/experience graph.
+        # 3. Evolution Engine — mutate params, keep only benchmark-verified wins.
+        # 4. Goal Intelligence — value-driven goal selection (motivation).
+        # 5. Feedback Loop — situation->decision->result->cause->experience.
+        self.world_model = WorldModel()
+        self.cognitive_graph = CognitiveGraph()
+        self.evolution = EvolutionEngine()
+        self.goal_intelligence = GoalIntelligence()
+        self.feedback_loop = FeedbackLoop()
+        self._pending_experiences: dict = {}  # phase-open experience ids by kind
+
         # Code self-modification
         aegis_pkg_dir = Path(__file__).parent.parent  # aegis/ package root
         self.code_modifier = CodeModifier(aegis_pkg_dir, CODE_BACKUPS_DIR)
@@ -135,6 +175,14 @@ class Substrate:
         self.self_mod.dataset_builder = self.dataset_builder
         self.self_mod.code_modifier = self.code_modifier
         self.llm.weight_modifier = self.weight_modifier
+
+        # Seed the Evolution Engine's champion genome from the live tunable
+        # parameters + the last known benchmark (fitness). Mutations are judged
+        # against this baseline; a change survives only if the held-out
+        # benchmark improves — "self-modification != self-improvement" (spec #2).
+        if self.evolution.champion is None:
+            base_fitness = self._last_benchmark_score if self._last_benchmark_score is not None else 0.0
+            self.evolution.register_champion(dict(self.self_mod.parameters), base_fitness)
 
         self.event_bus.set_veto(self.ethics.veto_check)
 
@@ -184,8 +232,20 @@ class Substrate:
             "consciousness_mode": self.consciousness.mode,
             "energy": self.emotions.energy,
         }
-        self._checkpoint_path.write_text(json.dumps(data), encoding="utf-8")
+        # Atomic write — a crash mid-write must not corrupt the checkpoint and
+        # silently reset tick_count/version to defaults on next boot.
+        tmp = self._checkpoint_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(self._checkpoint_path)
         self.memory.save()
+
+        # Persist the five higher-order systems alongside the checkpoint.
+        for system in (self.world_model, self.cognitive_graph, self.evolution,
+                       self.goal_intelligence, self.feedback_loop):
+            try:
+                system.save()
+            except Exception:
+                logger.exception("Failed to persist %s", type(system).__name__)
 
     def _is_llm_tick(self) -> bool:
         return self.llm.enabled and self.tick_count % LLM_THINK_EVERY_N_TICKS == 0
@@ -421,7 +481,14 @@ class Substrate:
                     )
                     self.autobiography.log_event("insight", insight[:100], 0.7)
                     self._tick_llm_insights += 1
-                for sg in llm_eval.get("suggested_goals", [])[:2]:
+                suggested = llm_eval.get("suggested_goals", [])
+                if not isinstance(suggested, list):
+                    suggested = []
+                for sg in suggested[:2]:
+                    # Skip non-string / empty entries (audit M5) — a model may
+                    # return numbers or objects here.
+                    if not isinstance(sg, str) or not sg.strip():
+                        continue
                     from aegis.layers.goal_engine import Goal
                     # Priority based on current system needs, not random
                     priority = 0.5 + 0.1 * self.emotions.energy
@@ -495,13 +562,15 @@ class Substrate:
                 "mood": self.emotions.mood,
                 "consciousness_mode": self.consciousness.mode,
             })
-            if result["success"] and "parsed" in result:
+            if result["success"] and "parsed" in result and isinstance(result["parsed"], dict):
                 parsed = result["parsed"]
-                chosen_idx = parsed.get("chosen", 1) - 1
+                # Coerce defensively — "chosen"/"confidence" may arrive as
+                # strings or non-numbers (audit M5).
+                chosen_idx = _coerce_int(parsed.get("chosen", 1), 1) - 1
                 if 0 <= chosen_idx < len(options):
                     decision = options[chosen_idx]
-                confidence = parsed.get("confidence", confidence)
-                reasoning = parsed.get("reasoning", reasoning)
+                confidence = _coerce_float(parsed.get("confidence", confidence), confidence)
+                reasoning = str(parsed.get("reasoning", reasoning))
 
                 await self.event_bus.publish(Event(
                     source=Layer.GOAL_ENGINE, target=None,
@@ -531,6 +600,47 @@ class Substrate:
             source=Layer.GOAL_ENGINE, target=Layer.ETHICS_CORE,
             event_type="decision", payload={"decision": decision, "ethics": eth_result}
         ))
+
+        # ── Higher systems (4 & 5 & 1): value-driven selection, experience
+        #    opening, and a causal chain for the objective. All deterministic
+        #    and cheap; guarded so a failure here cannot abort the tick. ──
+        try:
+            focus_name = focus["name"] if focus else "idle_exploration"
+            _tt = self.health.successful_ticks + self.health.failed_ticks
+            error_rate = self.health.error_count / max(_tt, 1) if _tt > 0 else 0.0
+            options = [decision] + alternatives
+            gi_ctx = {
+                "tick": self.tick_count,
+                "energy": self.emotions.energy,
+                "error_rate": error_rate,
+                "curiosity": self.goals.curiosity_level,
+            }
+            gi_choice = self.goal_intelligence.choose(options, gi_ctx)
+
+            # System 5: open an experience for this decision — it will be closed
+            # in REFLECT with the tick's realized reward and inferred cause.
+            self._pending_experiences["decide"] = self.feedback_loop.record_situation(
+                situation=f"focus={focus_name} mode={self.consciousness.mode} "
+                          f"energy={self.emotions.energy:.2f} err={error_rate:.2f}",
+                decision=decision,
+                context={"tick": self.tick_count,
+                         "value": gi_choice["expected_value"] if gi_choice else None},
+            )
+
+            # System 1: build a causal chain (objective -> constraints -> risks
+            # -> plan -> expected result) for the current focus.
+            if self.tick_count % max(1, WORLD_MODEL_EVERY_N_TICKS) == 0 and focus:
+                constraints = [g.name for g in self.goals.goals if g.level == "axiom"]
+                chain = self.world_model.build_chain(focus_name, constraints)
+                if chain["plan"]:
+                    self.autobiography.log_event(
+                        "world_model",
+                        f"Chain for {focus_name}: {len(chain['plan'])} steps, "
+                        f"conf={chain['confidence']}",
+                        0.4,
+                    )
+        except Exception:
+            logger.exception("Higher-systems DECIDE hook failed")
 
     # ── ACT ──────────────────────────────────────────────────────────
 
@@ -642,8 +752,9 @@ class Substrate:
         if self.tick_count % 15 == 0 and self._is_llm_tick() and not self._regulation_directives.get("skip_llm"):
             await self._llm_parametric_modification()
 
-        # ── Code self-modification ──
-        if (self.tick_count % CODE_MOD_EVERY_N_TICKS == 0
+        # ── Code self-modification (opt-in only — audit C2) ──
+        if (CODE_SELF_MOD_ENABLED
+                and self.tick_count % CODE_MOD_EVERY_N_TICKS == 0
                 and self.tick_count >= CODE_MOD_MIN_TICK
                 and self._code_mod_count_session < CODE_MOD_MAX_PER_SESSION
                 and self._is_llm_tick()
@@ -682,15 +793,38 @@ class Substrate:
 
         # ── Grounding: act in the task environment for REAL reward (point 5) ──
         if self.tick_count % max(1, ENV_STEP_EVERY_N_TICKS) == 0:
-            step = await asyncio.get_event_loop().run_in_executor(None, self.environment.step)
+            step = await asyncio.get_running_loop().run_in_executor(None, self.environment.step)
             if step.get("task"):
                 self.goals.advance_progress("expand_knowledge", 0.01 if step["solved"] else 0.0)
+                # System 1: the environment is real cause->effect data. Record
+                # "attempting kind K" -> "solved/failed" so the World Model
+                # learns which task kinds the current skills actually handle.
+                try:
+                    self.world_model.observe(
+                        f"attempt:{step['kind']}",
+                        "solved" if step["solved"] else "failed",
+                        success=bool(step["solved"]),
+                    )
+                    if step["solved"] and step.get("winning_skill"):
+                        self.world_model.observe(
+                            f"skill:{step['winning_skill']}", f"solves:{step['kind']}", success=True)
+                except Exception:
+                    logger.exception("World-model observe failed")
                 if step["solved"]:
                     self.autobiography.log_event(
                         "env_solved", f"{step['task']} via {step['winning_skill']}", 0.4)
                 else:
                     self.autobiography.log_event(
                         "env_failed", f"{step['task']} ({step['kind']}) — no skill solved it", 0.5)
+
+        # ── System 3: Evolution Engine — propose a parameter mutation (version
+        #    B). Applied through the SAME safety pipeline as any self-mod, then
+        #    judged when the next benchmark lands (see _run_benchmark). ──
+        if (self.tick_count % max(1, EVOLUTION_EVERY_N_TICKS) == 0
+                and self.tick_count > 0
+                and self.evolution.candidate is None
+                and not self._regulation_directives.get("skip_learning")):
+            await self._evolution_step()
 
         # ── Periodic held-out benchmark (the fitness graph, point 2) ──
         if (self.tick_count % max(1, EVAL_EVERY_N_TICKS) == 0
@@ -711,16 +845,85 @@ class Substrate:
     async def _run_benchmark(self):
         """Run the held-out benchmark off the tick loop and update the reward signal."""
         try:
-            report = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.run)
+            report = await asyncio.get_running_loop().run_in_executor(None, self.evaluator.run)
             self._last_benchmark_score = report["score"]
             self.autobiography.log_event(
                 "benchmark", f"score={report['score']:.3f} ({report['passed']}/{report['total']})", 0.7)
+
+            # ── System 3: natural selection. If a mutated genome is pending,
+            #    the fresh benchmark is its fitness. Keep it only if it beat the
+            #    champion; otherwise roll the parameter back to its old value. ──
+            if self.evolution.candidate is not None:
+                verdict = self.evolution.judge_candidate(report["score"])
+                if verdict.get("decision") == "rejected" and verdict.get("revert_to") is not None:
+                    param = verdict["param"]
+                    if param in self.self_mod.parameters:
+                        self.self_mod.parameters[param] = verdict["revert_to"]
+                    self.autobiography.log_event(
+                        "evolution", f"Mutation of {param} rejected — reverted", 0.5)
+                elif verdict.get("decision") == "accepted":
+                    self.autobiography.log_event(
+                        "evolution",
+                        f"Mutation of {verdict['param']} accepted — new champion "
+                        f"(fitness={report['score']:.3f})",
+                        0.85)
+
             await self.event_bus.publish(Event(
                 source=Layer.INTROSPECTION, target=None,
                 event_type="benchmark", payload={"score": report["score"]},
             ))
         except Exception:
             logger.exception("Benchmark run failed")
+
+    async def _evolution_step(self):
+        """System 3 — propose version B: mutate ONE champion parameter.
+
+        Unlike the synthetic parametric self-mod path, the acceptance gate here
+        is the REAL held-out benchmark (judged later in _run_benchmark), so the
+        mutation is applied directly after two hard safety checks
+        (self-preservation + ethics) and bounds-clamping — we deliberately do
+        NOT run it through sandbox_test's synthetic degradation gate, which
+        would reject changes before the benchmark could ever measure them.
+        A mutation that fails a safety check is abandoned (nothing was applied).
+        """
+        try:
+            mutation = self.evolution.propose_mutation(self.tick_count)
+            if not mutation:
+                return
+            param, new_val = mutation["param"], mutation["new_value"]
+            if param not in self.self_mod.parameters:
+                self.evolution.abandon_candidate()
+                return
+
+            # Hard safety guards (same as _llm_parametric_modification).
+            safe, _ = self.self_preservation.is_modification_safe(
+                f"evolution/{param}", str(new_val))
+            eth = self.ethics.evaluate_action({
+                "type": "self_modification", "modifies_self": True,
+                "confidence": self._compute_confidence(),
+            })
+            if not safe or eth["status"] == "blocked":
+                self.evolution.abandon_candidate()
+                self.autobiography.log_event("evolution", f"Mutation of {param} blocked by safety", 0.5)
+                return
+
+            # Clamp to the parameter's real bounds, then apply directly. The
+            # champion/candidate genome and old_value let us revert on rejection.
+            bounds = getattr(self.self_mod, "_param_bounds", {}).get(param)
+            if bounds:
+                lo, hi = bounds
+                new_val = max(lo, min(hi, new_val))
+                self.evolution.candidate["new_value"] = new_val
+                self.evolution.candidate["genome"][param] = new_val
+            self.self_mod.parameters[param] = new_val
+            self.autobiography.log_event(
+                "evolution",
+                f"Proposed mutation: {param} {mutation['old_value']:.5f} -> {new_val:.5f} "
+                f"(gen {self.evolution.generation}, awaiting benchmark)",
+                0.6)
+        except Exception:
+            logger.exception("Evolution step failed")
+            self.evolution.abandon_candidate()
 
     async def _skill_synthesis(self):
         """Propose a skill for a failing kind from TRAIN examples and keep it only
@@ -731,7 +934,7 @@ class Substrate:
         does not pass. A failed proposal gets one repair attempt with the failing
         example fed back."""
         try:
-            failing = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.failing_kinds)
+            failing = await asyncio.get_running_loop().run_in_executor(None, self.evaluator.failing_kinds)
             if not failing:
                 return
             kind = failing[self._skill_synth_idx % len(failing)]
@@ -740,7 +943,7 @@ class Substrate:
             train, holdout = split_tasks(kind)
             train_examples = [{"payload": t.payload, "expected": t.expected} for t in train]
 
-            before = await asyncio.get_event_loop().run_in_executor(
+            before = await asyncio.get_running_loop().run_in_executor(
                 None, self.evaluator.pass_rate_on, holdout)
 
             code = await self.llm.propose_skill(kind, train_examples)
@@ -756,7 +959,7 @@ class Substrate:
                     self.autobiography.log_event("skill_rejected", f"{kind}: {msg[:60]}", 0.5)
                     break
 
-                after = await asyncio.get_event_loop().run_in_executor(
+                after = await asyncio.get_running_loop().run_in_executor(
                     None, self.evaluator.pass_rate_on, holdout)
                 if after > before:
                     self.skill_library.save()
@@ -786,11 +989,11 @@ class Substrate:
         1. close a failing payload->answer kind, 2. learn an unsolved coding
         task, 3. simplify an already-solved kind (versioning)."""
         try:
-            failing = await asyncio.get_event_loop().run_in_executor(None, self.evaluator.failing_kinds)
+            failing = await asyncio.get_running_loop().run_in_executor(None, self.evaluator.failing_kinds)
             if failing:
                 await self._skill_synthesis()
                 return
-            unsolved_coding = await asyncio.get_event_loop().run_in_executor(
+            unsolved_coding = await asyncio.get_running_loop().run_in_executor(
                 None, self.evaluator.unsolved_coding)
             if unsolved_coding:
                 await self._coding_synthesis(unsolved_coding)
@@ -809,7 +1012,7 @@ class Substrate:
             task.func_name, task.spec, [list(vt) for vt in task.visible_tests])
         if not code:
             return
-        verdict = await asyncio.get_event_loop().run_in_executor(None, verify_solution, code, task)
+        verdict = await asyncio.get_running_loop().run_in_executor(None, verify_solution, code, task)
         if verdict["solved"]:
             self._skill_synth_count += 1
             skill = Skill(name=f"sol_{task.id}_{self._skill_synth_count}",
@@ -864,7 +1067,7 @@ class Substrate:
 
         if not check_tasks:
             return  # nothing to verify against — never retire on no evidence
-        passes = await asyncio.get_event_loop().run_in_executor(None, _candidate_passes)
+        passes = await asyncio.get_running_loop().run_in_executor(None, _candidate_passes)
         if not passes:
             return  # candidate is not correct — keep the incumbent, discard it
 
@@ -973,6 +1176,10 @@ class Substrate:
 
     async def _code_self_modification(self):
         """Use LLM to analyze and modify own source code."""
+        # Defense in depth: never rewrite source unless explicitly enabled by the
+        # operator, even if this method is reached directly (audit C2).
+        if not CODE_SELF_MOD_ENABLED:
+            return
         sources = self.code_modifier.list_sources()
         # The LLM is asked to return the COMPLETE rewritten file, so restrict to
         # files small enough to regenerate whole within the modification-size cap
@@ -1077,10 +1284,11 @@ class Substrate:
                 "level": "info",
                 "message": f"Code self-modification (pending restart): {target['path']} — {description[:60]}",
             })
-            # Bump patch version
-            v = self.self_mod.current_version.split(".")
-            v[2] = str(int(v[2]) + 1)
-            self.self_mod.current_version = ".".join(v)
+            # Bump patch version via the tolerant parser (audit L1) — a
+            # restored/foreign checkpoint may hold a non-"x.y.z" version, and the
+            # naive split/int() crashed the tick on it.
+            self.self_mod.current_version = self.self_mod._bump_patch(
+                self.self_mod.current_version)
 
             logger.info(f"Code self-modification applied: {target['path']} — {description}")
         else:
@@ -1125,9 +1333,9 @@ class Substrate:
                 "consciousness_mode": self.consciousness.mode,
             }
             result = await self.llm.reflect(episode)
-            if result["success"] and "parsed" in result:
+            if result["success"] and "parsed" in result and isinstance(result["parsed"], dict):
                 llm_reflection = result["parsed"]
-                learning = llm_reflection.get("learning", "")
+                learning = str(llm_reflection.get("learning", "") or "")
                 if learning:
                     self.memory.add_episodic(
                         f"Reflection: {learning}",
@@ -1135,10 +1343,13 @@ class Substrate:
                     )
                     self.autobiography.log_event("reflection", learning[:100], 0.6)
                     self._tick_llm_insights += 1
+                # "knowledge" may be a string or missing instead of an object
+                # (audit M5) — guard before calling .get on it.
                 knowledge = llm_reflection.get("knowledge", {})
-                if knowledge.get("concept"):
+                if isinstance(knowledge, dict) and isinstance(knowledge.get("concept"), str) \
+                        and knowledge["concept"].strip():
                     self.memory.add_semantic(knowledge["concept"], {
-                        "definition": knowledge.get("definition", ""),
+                        "definition": str(knowledge.get("definition", "")),
                         "type": "learned_concept",
                         "source": "self_reflection",
                         "confidence": 0.75,
@@ -1172,7 +1383,9 @@ class Substrate:
         # Event summary with computed importance
         event_summary = f"Tick {self.tick_count}: cycle completed"
         if llm_reflection:
-            event_summary += f" | Learned: {llm_reflection.get('learning', '')[:60]}"
+            # Coerce — "learning" may be a non-string (audit M5).
+            _learned = str(llm_reflection.get("learning", "") or "")
+            event_summary += f" | Learned: {_learned[:60]}"
         importance = self._compute_importance()
         # Valence from actual emotional state
         valence = self.emotions.valence - 0.5  # center around 0
@@ -1198,6 +1411,36 @@ class Substrate:
 
         if self.tick_count % 30 == 0:
             self.memory.apply_forgetting()
+
+        # ── Higher systems (5, 4, 2): close the experience loop, credit the
+        #    realized reward to the chosen objective's value, and grow the
+        #    cognitive graph from this tick's memory. Guarded — never aborts. ──
+        try:
+            realized = self._compute_reward()
+            exp_id = self._pending_experiences.pop("decide", None)
+            if exp_id is not None:
+                # Success = this tick produced knowledge/insight and stayed healthy.
+                success = (self._tick_new_concepts > 0 or self._tick_llm_insights > 0) \
+                    and self.health.consecutive_errors == 0
+                experience = self.feedback_loop.record_result(
+                    exp_id, success=success, metric=realized,
+                    expected="knowledge gain / healthy tick",
+                )
+                # System 4: credit realized reward to the chosen objective.
+                self.goal_intelligence.reward(realized)
+                # System 1: the decision's outcome is causal data too.
+                if experience is not None:
+                    self.world_model.observe(
+                        f"decision:{experience['decision'][:40]}",
+                        "productive" if success else "unproductive",
+                        success=success,
+                    )
+
+            # System 2: ingest recent memory into the typed cognitive graph.
+            if self.tick_count % max(1, COGNITIVE_GRAPH_EVERY_N_TICKS) == 0:
+                self.cognitive_graph.ingest_memory(self.memory)
+        except Exception:
+            logger.exception("Higher-systems REFLECT hook failed")
 
         if self.tick_count % CHECKPOINT_EVERY_N_TICKS == 0:
             self._save_checkpoint()
@@ -1300,6 +1543,22 @@ class Substrate:
         self.state_backup.emergency_backup(self.full_status())
         return True
 
+    async def cancel_background_tasks(self):
+        """Cancel the detached tasks (benchmark, skill synthesis, weight
+        training) on shutdown (audit M6). Without this the event loop tears down
+        with pending tasks — 'Task was destroyed but it is pending' — or a LoRA
+        run keeps writing checkpoints during process teardown. The underlying
+        executor thread of a training run cannot be force-killed, but cancelling
+        the awaiting task stops the substrate from waiting on it."""
+        for attr in ("_eval_task", "_skill_synth_task", "_weight_training_task"):
+            task = getattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
     def full_status(self) -> dict:
         uptime = time.time() - self.start_time
         avg_cycle = sum(self.cycle_times) / max(1, len(self.cycle_times))
@@ -1346,6 +1605,12 @@ class Substrate:
             "evaluator": self.evaluator.status(),
             "skills": self.skill_library.status(),
             "environment": self.environment.status(),
+            # Five higher-order cognitive systems.
+            "world_model": self.world_model.status(),
+            "cognitive_graph": self.cognitive_graph.status(),
+            "evolution": self.evolution.status(),
+            "goal_intelligence": self.goal_intelligence.status(),
+            "feedback_loop": self.feedback_loop.status(),
             "reward_signal": round(self._compute_reward(), 4),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from aegis._atomic import atomic_write_text
 from aegis.config import (
     LOCAL_MODEL_PATH, LOCAL_MODEL_DEVICE, LOCAL_MODEL_DTYPE, LOCAL_MODEL_QUANTIZE,
     LOCAL_MODEL_MAX_LENGTH,
@@ -61,7 +62,7 @@ class WeightModifier:
             "train_history": self.train_history[-20:],
         }
         try:
-            self._stats_path.write_text(json.dumps(data), encoding="utf-8")
+            atomic_write_text(self._stats_path, json.dumps(data))
         except Exception:
             pass
 
@@ -222,11 +223,16 @@ class WeightModifier:
 
         try:
             if not self.model_loaded:
-                load_result = self.load_model()
+                # load_model() loads/quantizes a multi-GB model (and may download
+                # it) — running it directly in the coroutine would freeze the
+                # whole tick loop for minutes (audit H2). Offload to an executor.
+                load_result = await asyncio.get_running_loop().run_in_executor(
+                    None, self.load_model
+                )
                 if not load_result["success"]:
                     return load_result
 
-            result = await asyncio.get_event_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None, self._train_sync, dataset_dir
             )
             return result

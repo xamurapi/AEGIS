@@ -6,6 +6,8 @@ import py_compile
 import logging
 from pathlib import Path
 
+from aegis._atomic import atomic_write_text
+
 logger = logging.getLogger("aegis.code_modifier")
 
 # Substring patterns that must NEVER appear in modified code. This is a cheap
@@ -39,6 +41,18 @@ DANGEROUS_ATTR_CALLS = {
 FORBIDDEN_IMPORTS = {"subprocess", "ctypes", "signal", "socket", "marshal",
                      "pickle", "importlib", "builtins"}
 
+# Reflection-escape dunders (audit L6). These are the primitives used to break
+# out of a name/import blocklist — e.g. ().__class__.__bases__[0].__subclasses__()
+# to reach `os`, or func.__globals__ to reach the module namespace. They have no
+# legitimate use in ordinary AEGIS source, so blocking these SPECIFIC dunders
+# hardens the blocklist WITHOUT rejecting normal `__init__` / `__file__` /
+# `if __name__ == "__main__"` that whole-file rewrites legitimately contain.
+DANGEROUS_DUNDERS = {
+    "__subclasses__", "__bases__", "__mro__", "__base__",
+    "__globals__", "__builtins__", "__code__", "__closure__",
+    "__getattribute__", "__reduce__", "__reduce_ex__",
+}
+
 # Files that are IMMUTABLE — cannot be modified by the system.
 IMMUTABLE_FILES = {
     "layers/ethics_core.py",        # ethical axioms must never be changed by AI
@@ -48,6 +62,32 @@ IMMUTABLE_FILES = {
 
 # Max diff size (chars) per single modification
 MAX_MODIFICATION_SIZE = 5000
+
+
+def _open_write_mode(call: ast.Call) -> str | None:
+    """For an ``open(...)`` Call, return a reason string if the call opens a file
+    for WRITING/APPENDING (arbitrary-file-write risk), else None.
+
+    Read-only opens (no mode, or a literal 'r'/'rb'/'rt') are allowed. A mode
+    that cannot be resolved to a read-only string literal is treated as unsafe —
+    a self-modifying module has no business writing arbitrary files, and a
+    dynamic mode (variable/expression) cannot be verified. (Audit A1.)
+    """
+    mode_node = None
+    if len(call.args) >= 2:
+        mode_node = call.args[1]
+    else:
+        for kw in call.keywords:
+            if kw.arg == "mode":
+                mode_node = kw.value
+    if mode_node is None:
+        return None  # no mode -> default 'r' (read) -> allowed
+    if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+        mode = mode_node.value
+        if any(c in mode for c in "wax+"):
+            return f"open() in write/append mode ('{mode}')"
+        return None  # read-only literal -> allowed
+    return "open() with a non-literal mode (cannot verify it is read-only)"
 
 
 class CodeModifier:
@@ -92,7 +132,7 @@ class CodeModifier:
             "last_updated": time.time(),
         }
         try:
-            self._stats_path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            atomic_write_text(self._stats_path, json.dumps(data, indent=1))
         except Exception:
             pass
 
@@ -204,11 +244,23 @@ class CodeModifier:
                 elif isinstance(node, ast.ImportFrom):
                     if node.module and node.module.split(".")[0] in FORBIDDEN_IMPORTS:
                         warnings.append(f"BLOCKED: forbidden import from '{node.module}'")
+                elif isinstance(node, ast.Attribute):
+                    # Reflection-escape dunder access (audit L6).
+                    if node.attr in DANGEROUS_DUNDERS:
+                        warnings.append(f"BLOCKED: reflection dunder '{node.attr}'")
+                elif isinstance(node, ast.Name):
+                    if node.id in DANGEROUS_DUNDERS or node.id == "__builtins__":
+                        warnings.append(f"BLOCKED: reflection name '{node.id}'")
                 elif isinstance(node, ast.Call):
                     func = node.func
                     # Bare call: eval(...), exec(...), __import__(...)
                     if isinstance(func, ast.Name) and func.id in DANGEROUS_CALL_NAMES:
                         warnings.append(f"BLOCKED: dangerous call '{func.id}(...)'")
+                    # open(..., 'w') and friends — arbitrary file write (audit A1).
+                    elif isinstance(func, ast.Name) and func.id == "open":
+                        reason = _open_write_mode(node)
+                        if reason:
+                            warnings.append(f"BLOCKED: {reason}")
                     # Attribute call: os.system(...), subprocess.run(...),
                     # resolving any import alias to the real module first.
                     elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):

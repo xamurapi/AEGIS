@@ -1,3 +1,6 @@
 # Development / test dependencies.
 #   pip install -r requirements.txt -r requirements-dev.txt
 pytest>=8.0
+pytest-bdd>=8.0        # executable Gherkin scenarios (tests/features/*.feature)
+coverage>=7.0          # line + branch coverage with a fail_under gate
+mutmut>=3.0            # mutation testing for the five cognitive systems

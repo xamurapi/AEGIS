@@ -11,6 +11,7 @@ import logging
 from collections import deque
 from pathlib import Path
 
+from aegis._atomic import atomic_write_text
 from aegis.eval.benchmark import Task, DEFAULT_BENCHMARK, all_kinds
 from aegis.eval.coding import CodingTask, CODING_BENCHMARK, verify_solution
 from aegis.eval.composite import CompositeTask, COMPOSITE_BENCHMARK
@@ -55,11 +56,11 @@ class Evaluator:
         if not self._store_path:
             return
         try:
-            self._store_path.write_text(json.dumps({
+            atomic_write_text(self._store_path, json.dumps({
                 "last_score": self.last_score,
                 "total_runs": self.total_runs,
                 "history": list(self.history),
-            }), encoding="utf-8")
+            }))
         except Exception:
             logger.warning("Failed to save eval history", exc_info=True)
 

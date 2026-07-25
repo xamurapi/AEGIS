@@ -1,11 +1,12 @@
 """AEGIS API Server — REST + WebSocket for monitoring and control (EXT-001..EXT-003)."""
 import asyncio
+import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -40,6 +41,30 @@ async def broadcast(data: dict):
 
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+_LOOPBACK_WS_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _ws_origin_allowed(origin: str | None) -> bool:
+    """Guard against Cross-Site WebSocket Hijacking (audit H4).
+
+    WebSockets are NOT covered by CORS, so a malicious page in the user's
+    browser could otherwise open ws://127.0.0.1:8888/ws, read full_status() and
+    (with an empty token) flip the kill switch. Browsers always send an Origin
+    header on WS handshakes; we allow only same-host loopback origins and any
+    explicitly-configured CORS origins. A missing Origin means a non-browser
+    client (curl, native app), which cannot be driven by a hostile web page.
+    """
+    if not origin:
+        return True
+    if origin in cfg.API_CORS_ORIGINS:
+        return True
+    from urllib.parse import urlparse
+    try:
+        host = urlparse(origin).hostname
+    except Exception:
+        return False
+    return host in _LOOPBACK_WS_HOSTS
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,6 +78,9 @@ async def lifespan(app: FastAPI):
     finally:
         if substrate is not None:
             substrate.stop()
+            # Cancel detached benchmark/skill-synthesis/training tasks too, not
+            # just the main loop (audit M6).
+            await substrate.cancel_background_tasks()
         if _run_task is not None:
             _run_task.cancel()
             try:
@@ -64,11 +92,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AEGIS Control Center", version="2.0.0", lifespan=lifespan)
 
 
+def _token_ok(provided: str | None) -> bool:
+    """Constant-time token comparison (audit L10) — avoids leaking the token via
+    response-timing. Returns True when no token is configured."""
+    if not cfg.API_TOKEN:
+        return True
+    return hmac.compare_digest(provided or "", cfg.API_TOKEN)
+
+
 @app.middleware("http")
 async def auth_middleware(request, call_next):
     """Require X-API-Token on every state-changing request when a token is set."""
     if cfg.API_TOKEN and request.method in _MUTATING_METHODS:
-        if request.headers.get("x-api-token") != cfg.API_TOKEN:
+        if not _token_ok(request.headers.get("x-api-token")):
             return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
     return await call_next(request)
 
@@ -613,7 +649,11 @@ async def code_modifier_analyze(request: CodeModAnalyzeRequest):
 
 
 @app.get("/api/code-modifier/read/{file_path:path}")
-async def code_modifier_read(file_path: str):
+async def code_modifier_read(file_path: str, request: Request):
+    # This GET returns raw source; when a token is configured it must be
+    # presented (the auth middleware only guards mutating methods) — audit L9.
+    if not _token_ok(request.headers.get("x-api-token")):
+        return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
     try:
         code = substrate.code_modifier.read_source(file_path)
         return {"file": file_path, "code": code, "lines": code.count("\n") + 1}
@@ -674,7 +714,7 @@ async def get_skills():
 @app.post("/api/eval/run")
 async def run_eval():
     """Trigger a synchronous benchmark run and return the report."""
-    report = await asyncio.get_event_loop().run_in_executor(None, substrate.evaluator.run)
+    report = await asyncio.get_running_loop().run_in_executor(None, substrate.evaluator.run)
     substrate._last_benchmark_score = report["score"]
     return report
 
@@ -687,7 +727,7 @@ async def synthesize():
         return {"error": "No LLM configured — set an API key to enable live synthesis"}
     before = substrate.evaluator.last_score
     await substrate._learning_cycle()
-    report = await asyncio.get_event_loop().run_in_executor(None, substrate.evaluator.run)
+    report = await asyncio.get_running_loop().run_in_executor(None, substrate.evaluator.run)
     substrate._last_benchmark_score = report["score"]
     return {"status": "ran", "score_before": before, "score_after": report["score"],
             "skills": substrate.skill_library.status()["total_skills"]}
@@ -704,9 +744,15 @@ async def eval_history_csv():
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    # Reject cross-origin browser connections BEFORE accepting (audit H4) — the
+    # full_status() payload and kill switch must not be reachable from a hostile
+    # web page.
+    if not _ws_origin_allowed(ws.headers.get("origin")):
+        await ws.close(code=1008)  # policy violation
+        return
     # When a token is configured, privileged actions require it as a query param
     # (?token=...) since browsers cannot set custom headers on WebSockets.
-    authorized = not cfg.API_TOKEN or ws.query_params.get("token") == cfg.API_TOKEN
+    authorized = _token_ok(ws.query_params.get("token"))
     await ws.accept()
     connected_ws.append(ws)
     try:
@@ -728,5 +774,12 @@ async def websocket_endpoint(ws: WebSocket):
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
+        pass
+    except Exception:
+        # Any other error must still clean up the connection (audit H7) —
+        # otherwise a dead socket lingers in connected_ws and broadcast() keeps
+        # trying to write to it.
+        logger.exception("WebSocket connection error")
+    finally:
         if ws in connected_ws:
             connected_ws.remove(ws)
