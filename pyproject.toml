@@ -9,18 +9,21 @@ filterwarnings = [
 [tool.coverage.run]
 branch = true
 source = ["aegis"]
+# NOTHING is excluded from measurement. `aegis/api/*` and `aegis/eval/sandbox.py`
+# used to be omitted here as "not unit-covered" — and the round-3 audit then found
+# a CRITICAL sandbox escape plus two dead API endpoints in exactly those files.
+# An unmeasured module is an unguarded one, so the gate now covers the package.
 omit = [
-    "aegis/api/*",        # exercised via server integration, not unit-covered
-    "aegis/eval/sandbox.py",
     "*/__pycache__/*",
 ]
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# Coverage control: the five new cognitive systems must stay well-covered.
-# The suite fails if total coverage of the measured set drops below this gate.
-fail_under = 85
+# Coverage control: the suite fails if total branch coverage of the whole
+# package drops below this gate. Ratcheted 85 -> 90 once the previously
+# unmeasured modules were brought up (package total is currently 92%).
+fail_under = 90
 exclude_lines = [
     "pragma: no cover",
     "raise NotImplementedError",
@@ -29,19 +32,11 @@ exclude_lines = [
     "logger.warning",
 ]
 
-[tool.mutmut]
-# Mutation testing focused on the five new systems (pure, deterministic logic).
-paths_to_mutate = [
-    "aegis/layers/world_model.py",
-    "aegis/layers/cognitive_graph.py",
-    "aegis/layers/evolution_engine.py",
-    "aegis/layers/goal_intelligence.py",
-    "aegis/layers/feedback_loop.py",
-]
-tests_dir = [
-    "tests/test_world_model.py",
-    "tests/test_cognitive_graph.py",
-    "tests/test_evolution_engine.py",
-    "tests/test_goal_intelligence.py",
-    "tests/test_feedback_loop.py",
-]
+# NOTE: there is deliberately no [tool.mutmut] section. mutmut needs WSL on
+# Windows and mutatest 3.1.0 is broken on Python 3.11, so mutation testing runs
+# through the in-repo harness instead, which owns its own target list:
+#
+#     python scripts/mutation_test.py            # every target module
+#     python scripts/mutation_test.py sandbox    # one module by keyword
+#
+# The harness exits non-zero if any non-equivalent mutant survives (CI gate).

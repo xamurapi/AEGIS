@@ -24,6 +24,12 @@ def _make_substrate():
     s.external_learning.learn_from_source = _noop_learn
     s.llm.enabled = False
     s.environment.step = lambda: {"reward": 0.0, "solved": False, "task": None}
+    # Pin health to "healthy": HealthMonitor.check() reads REAL cpu/memory via
+    # psutil, so under full-suite load it reports "critical", MetaRegulation
+    # switches to emergency mode and the tick legitimately skips learning /
+    # ethics blocks self-modification — a machine-load dependency, not a defect.
+    s.health.check = lambda: {"status": "healthy", "warnings": [],
+                              "critical": [], "metrics": {}}
     return s
 
 

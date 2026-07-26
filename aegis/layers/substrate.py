@@ -233,10 +233,18 @@ class Substrate:
                     # Keep the Evolution champion genome in sync with the live
                     # (restored) parameters — the parameters are the source of
                     # truth for what is actually running.
-                    if self.evolution.champion:
-                        for k in self.evolution.champion["genome"]:
-                            if k in self.self_mod.parameters:
-                                self.evolution.champion["genome"][k] = self.self_mod.parameters[k]
+                    #
+                    # EXCEPT the parameter of a still-pending candidate: its live
+                    # value is the UNJUDGED mutation. Copying it into the champion
+                    # would silently accept a change no benchmark ever scored, and
+                    # a later rejection (which reverts only self_mod.parameters)
+                    # would leave champion and live values desynced (audit R3-4).
+                    champion = self.evolution.champion
+                    if champion:
+                        pending = (self.evolution.candidate or {}).get("mutated_param")
+                        for k in champion["genome"]:
+                            if k in self.self_mod.parameters and k != pending:
+                                champion["genome"][k] = self.self_mod.parameters[k]
             except Exception:
                 logger.warning("Failed to restore checkpoint %s — starting fresh",
                                self._checkpoint_path, exc_info=True)

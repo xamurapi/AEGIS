@@ -182,17 +182,30 @@ class WorldModel:
         shape, and store it. Returns the stored chain or None if malformed."""
         if not isinstance(parsed, dict) or not parsed.get("objective"):
             return None
+
+        def _as_list(value) -> list:
+            """An LLM may answer with a dict, a bare string or a number where a
+            list was asked for. Slicing those either explodes (dict) or silently
+            iterates characters (str), so coerce the shape first (audit R3-8)."""
+            return value if isinstance(value, list) else []
+
+        def _as_confidence(value) -> float:
+            try:
+                return max(0.0, min(1.0, float(value)))
+            except (TypeError, ValueError):
+                return 0.5
+
         chain = {
             "objective": str(parsed.get("objective"))[:200],
-            "constraints": [str(c)[:120] for c in parsed.get("constraints", [])[:5]],
-            "risks": [{"cause": str(r)[:120], "effect": "", "failure_rate": 0.5, "observations": 0}
-                      if isinstance(r, str) else r
-                      for r in parsed.get("risks", [])[:5]],
-            "plan": [{"action": str(s)[:160], "expected": "", "confidence": 0.5}
-                     if isinstance(s, str) else s
-                     for s in parsed.get("plan", [])[:7]],
+            "constraints": [str(c)[:120] for c in _as_list(parsed.get("constraints"))[:5]],
+            "risks": [r if isinstance(r, dict) else
+                      {"cause": str(r)[:120], "effect": "", "failure_rate": 0.5, "observations": 0}
+                      for r in _as_list(parsed.get("risks"))[:5]],
+            "plan": [s if isinstance(s, dict) else
+                     {"action": str(s)[:160], "expected": "", "confidence": 0.5}
+                     for s in _as_list(parsed.get("plan"))[:7]],
             "expected_result": str(parsed.get("expected_result", ""))[:200],
-            "confidence": max(0.0, min(1.0, float(parsed.get("confidence", 0.5) or 0.5))),
+            "confidence": _as_confidence(parsed.get("confidence", 0.5)),
             "source": "llm",
             "created": time.time(),
         }

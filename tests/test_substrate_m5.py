@@ -48,6 +48,12 @@ def _make_substrate():
     s.llm.evaluate_state = _eval_state
     s.llm.make_decision = _make_decision
     s.llm.reflect = _reflect
+    # Pin health to "healthy": HealthMonitor.check() reads REAL cpu/memory via
+    # psutil, so under full-suite load it reports "critical", MetaRegulation
+    # switches to emergency mode and the tick legitimately skips learning /
+    # ethics blocks self-modification — a machine-load dependency, not a defect.
+    s.health.check = lambda: {"status": "healthy", "warnings": [],
+                              "critical": [], "metrics": {}}
     return s
 
 

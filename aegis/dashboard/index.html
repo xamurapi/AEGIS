@@ -1143,15 +1143,63 @@ let ws;
 // kill switch removed
 let lastData = {};
 
+// When AEGIS_API_TOKEN is configured the server streams state only to an
+// authorized socket, and browsers cannot set headers on a WebSocket — so the
+// token travels as a query param. Take it from ?token=... (once) and remember
+// it, so the dashboard keeps working across reloads without it in the URL.
+function apiToken() {
+  const fromUrl = new URLSearchParams(location.search).get('token');
+  if (fromUrl) {
+    try { localStorage.setItem('aegis_token', fromUrl); } catch (e) {}
+    return fromUrl;
+  }
+  try { return localStorage.getItem('aegis_token') || ''; } catch (e) { return ''; }
+}
+
+// Mutating endpoints require X-API-Token. Inject it once here instead of at
+// each of the ~18 call sites, so no dashboard action silently 401s.
+const _rawFetch = window.fetch.bind(window);
+window.fetch = (input, init) => {
+  init = init || {};
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  const token = apiToken();
+  if (token && url.startsWith('/api')) {
+    init = Object.assign({}, init, {
+      headers: Object.assign({}, init.headers || {}, {'X-API-Token': token}),
+    });
+  }
+  return _rawFetch(input, init);
+};
+
+function showAuthBanner(show) {
+  let el = document.getElementById('authBanner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'authBanner';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;padding:0.6rem 1rem;'
+      + 'background:#5a1420;color:#ffd7de;font:600 13px/1.4 system-ui,sans-serif;text-align:center';
+    el.textContent = 'Not authorized — this dashboard is not receiving state. '
+      + 'Open it as  ?token=YOUR_AEGIS_API_TOKEN  to connect.';
+    document.body.appendChild(el);
+  }
+  el.style.display = show ? 'block' : 'none';
+}
+
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const token = apiToken();
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  ws = new WebSocket(`${proto}://${location.host}/ws${qs}`);
   ws.onopen = () => console.log('WS connected');
   ws.onclose = () => setTimeout(connect, 2000);
   ws.onerror = () => ws.close();
   ws.onmessage = (e) => {
     try {
-      lastData = JSON.parse(e.data);
+      const data = JSON.parse(e.data);
+      // Without this the page just froze silently on an unauthorized socket.
+      if (data && data.error === 'unauthorized') { showAuthBanner(true); return; }
+      showAuthBanner(false);
+      lastData = data;
       updateDashboard(lastData);
     } catch(err) { console.error(err); }
   };
@@ -1654,19 +1702,25 @@ function updateDashboard(d) {
 
   // Events
   if (d.event_bus) {
-    setText('ev_published', d.event_bus.published);
-    setText('ev_vetoed', d.event_bus.vetoed);
-    setText('ev_total', d.event_bus.published);
+    setText('ev_published', d.event_bus.total_events ?? 0);
+    // EventBus.stats() reports `total_events` / `blocked_events`; the old key
+    // names never existed, so both counters rendered blank (audit R3-13).
+    setText('ev_vetoed', d.event_bus.blocked_events ?? 0);
+    setText('ev_total', d.event_bus.total_events ?? 0);
   }
   if (d.event_history) {
     const evLog = document.getElementById('eventLog');
     if (evLog) {
       evLog.innerHTML = d.event_history.slice().reverse().map(ev => {
+        // EventBus.get_history() serializes the kind as `type`; reading
+        // `event_type` printed "undefined" for every row and left the colour
+        // coding permanently dead (audit R3-13).
+        const kind = ev.type || ev.event_type || 'event';
         let cls = '';
-        if (ev.event_type && ev.event_type.startsWith('llm')) cls = 'llm';
+        if (kind.startsWith('llm')) cls = 'llm';
         else if (ev.source === 'ethics_core') cls = 'ethics';
-        else if (ev.event_type === 'decision') cls = 'goal';
-        return `<div class="event-item ${cls}"><span style="color:var(--text-dim)">[${ev.source}]</span> ${ev.event_type}: ${JSON.stringify(ev.payload||{}).slice(0,120)}</div>`;
+        else if (kind === 'decision') cls = 'goal';
+        return `<div class="event-item ${cls}"><span style="color:var(--text-dim)">[${ev.source}]</span> ${kind}: ${JSON.stringify(ev.payload||{}).slice(0,120)}</div>`;
       }).join('');
     }
   }

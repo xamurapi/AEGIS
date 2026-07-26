@@ -103,9 +103,17 @@ class EvolutionEngine:
         param = params[self._param_idx % len(params)]
         self._param_idx += 1
         old_value = self.champion["genome"][param]
-        factor = (1 + MUTATION_MAGNITUDE) if self._direction_up else (1 - MUTATION_MAGNITUDE)
-        self._direction_up = not self._direction_up
+        up = self._direction_up
+        factor = (1 + MUTATION_MAGNITUDE) if up else (1 - MUTATION_MAGNITUDE)
+        self._direction_up = not up
         new_value = old_value * factor
+        if new_value == old_value:
+            # A zero (or subnormal) parameter is a fixed point of the
+            # multiplicative step, so that genome slot could never be explored —
+            # the round-robin kept burning benchmark cycles on a no-op mutation
+            # (audit R3-3). Fall back to an ADDITIVE step; the caller clamps it
+            # to the parameter's real bounds.
+            new_value = old_value + (MUTATION_MAGNITUDE if up else -MUTATION_MAGNITUDE)
         genome = dict(self.champion["genome"])
         genome[param] = new_value
 

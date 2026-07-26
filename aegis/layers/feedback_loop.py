@@ -33,6 +33,9 @@ class FeedbackLoop:
         self.successes = 0
         self.failures = 0
         self.recent: list[dict] = []
+        # Rows currently on disk — tracked incrementally so an append does not
+        # have to read the whole log back to decide about truncation.
+        self._rows_on_disk = 0
         self._store_path = store_path or (FEEDBACK_DIR / "experiences.jsonl")
         self._load()
 
@@ -43,12 +46,25 @@ class FeedbackLoop:
         """
         if not self._store_path.exists():
             return
+        rows = []
         try:
             with self._store_path.open("r", encoding="utf-8") as fh:
-                rows = [json.loads(ln) for ln in fh if ln.strip()]
+                for ln in fh:
+                    if not ln.strip():
+                        continue
+                    try:
+                        row = json.loads(ln)
+                    except json.JSONDecodeError:
+                        # One torn line (crash mid-append) must not discard the
+                        # ENTIRE history and silently reset every counter to
+                        # zero — skip the bad row and keep the rest (audit R3-5).
+                        continue
+                    if isinstance(row, dict):
+                        rows.append(row)
         except Exception:
             logger.warning("Failed to load experiences from %s", self._store_path, exc_info=True)
             return
+        self._rows_on_disk = len(rows)
         self.resolved = len(rows)
         self.successes = sum(1 for r in rows if r.get("success"))
         self.failures = self.resolved - self.successes
@@ -129,23 +145,29 @@ class FeedbackLoop:
         except Exception:
             logger.warning("Failed to append experience to %s", self._store_path, exc_info=True)
             return
-        self._truncate_if_needed()
+        self._rows_on_disk += 1
+        # Only touch the file system when the tracked count says we are over
+        # budget. The previous version read the ENTIRE log back on every single
+        # append (O(n) I/O per recorded experience) just to count lines
+        # (audit R3-6).
+        if self._rows_on_disk > MAX_JSONL_ROWS * 2:
+            self._truncate_if_needed()
 
     def _truncate_if_needed(self):
         """Bound the on-disk log so it cannot grow without limit."""
         try:
             if not self._store_path.exists():
                 return
-            # Count cheaply; only rewrite when clearly over budget (2× cap) to
-            # avoid rewriting the whole file every append.
             with self._store_path.open("r", encoding="utf-8") as fh:
                 lines = fh.readlines()
             if len(lines) <= MAX_JSONL_ROWS * 2:
+                self._rows_on_disk = len(lines)
                 return
             keep = lines[-MAX_JSONL_ROWS:]
             tmp = self._store_path.with_suffix(".jsonl.tmp")
             tmp.write_text("".join(keep), encoding="utf-8")
             tmp.replace(self._store_path)
+            self._rows_on_disk = len(keep)
         except Exception:
             logger.warning("Failed to truncate experience log %s", self._store_path, exc_info=True)
 
@@ -166,16 +188,25 @@ class FeedbackLoop:
                 with self._store_path.open("r", encoding="utf-8") as fh:
                     for line in fh.readlines()[-limit:]:
                         line = line.strip()
-                        if line:
-                            rows.append(json.loads(line))
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(row, dict):
+                            rows.append(row)
         except Exception:
             logger.warning("Failed to read experiences for export", exc_info=True)
+        # Rows written by an older schema (or torn by a crash) may be missing
+        # fields — read them defensively so one bad row cannot break the whole
+        # dataset export (audit R3-5).
         return [{
-            "prompt": f"Situation: {r['situation']}\nDecision: {r['decision']}",
-            "completion": f"Result: {'success' if r['success'] else 'failure'} "
-                          f"(metric={r['metric']}). Cause: {r['cause']}",
-            "success": r["success"],
-            "metric": r["metric"],
+            "prompt": f"Situation: {r.get('situation', '')}\nDecision: {r.get('decision', '')}",
+            "completion": f"Result: {'success' if r.get('success') else 'failure'} "
+                          f"(metric={r.get('metric', 0.0)}). Cause: {r.get('cause', 'unknown')}",
+            "success": bool(r.get("success", False)),
+            "metric": r.get("metric", 0.0),
         } for r in rows]
 
     # ── status ───────────────────────────────────────────────────────
@@ -191,8 +222,10 @@ class FeedbackLoop:
             "failures": self.failures,
             "success_rate": self.success_rate(),
             "recent": [
-                {"situation": r["situation"][:60], "success": r["success"],
-                 "metric": r["metric"], "cause": r["cause"][:80]}
+                {"situation": str(r.get("situation", ""))[:60],
+                 "success": bool(r.get("success", False)),
+                 "metric": r.get("metric", 0.0),
+                 "cause": str(r.get("cause", ""))[:80]}
                 for r in self.recent[-5:]
             ],
         }

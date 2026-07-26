@@ -46,6 +46,13 @@ class CognitiveGraph:
         self.nodes: dict[str, dict] = {}
         # edges[src][dst] = {relation, weight, updated}
         self.edges: dict[str, dict[str, dict]] = {}
+        # Derived index: number of INCOMING edges per node. Maintained
+        # incrementally because computing it by scanning every adjacency list
+        # made _degree() O(E), and _degree() is a sort key in _prune(),
+        # central_nodes() and related() — i.e. O(N·E) per status() call on a
+        # graph capped at 5000 nodes (audit R3-7). Not persisted: rebuilt from
+        # self.edges on load, so the on-disk format is unchanged.
+        self._in_degree: dict[str, int] = {}
         self._ingested_episodic = 0  # high-water mark into memory.episodic
         self._store_path = store_path or (COGNITIVE_GRAPH_DIR / "graph.json")
         self._load()
@@ -62,6 +69,13 @@ class CognitiveGraph:
             except Exception:
                 logger.warning("Failed to load cognitive graph from %s — starting empty",
                                self._store_path, exc_info=True)
+        self._rebuild_in_degree()
+
+    def _rebuild_in_degree(self):
+        self._in_degree = {}
+        for dsts in self.edges.values():
+            for dst in dsts:
+                self._in_degree[dst] = self._in_degree.get(dst, 0) + 1
 
     def save(self):
         data = {
@@ -112,11 +126,10 @@ class CognitiveGraph:
                 "weight": max(0.0, min(1.0, weight)),
                 "updated": time.time(),
             }
+            self._in_degree[dst] = self._in_degree.get(dst, 0) + 1
 
     def _degree(self, node_id: str) -> int:
-        out_deg = len(self.edges.get(node_id, {}))
-        in_deg = sum(1 for dsts in self.edges.values() if node_id in dsts)
-        return out_deg + in_deg
+        return len(self.edges.get(node_id, {})) + self._in_degree.get(node_id, 0)
 
     def _prune(self):
         if len(self.nodes) <= MAX_NODES:
@@ -126,9 +139,16 @@ class CognitiveGraph:
                             key=lambda kv: (self._degree(kv[0]), kv[1]["updated"]))
         for node_id, _ in candidates[:len(self.nodes) - MAX_NODES]:
             self.nodes.pop(node_id, None)
-            self.edges.pop(node_id, None)
+            # Outgoing edges disappear — every target loses one incoming edge.
+            for dst in self.edges.pop(node_id, {}):
+                if dst in self._in_degree:
+                    self._in_degree[dst] -= 1
+                    if self._in_degree[dst] <= 0:
+                        del self._in_degree[dst]
+            # Incoming edges disappear with the node itself.
             for dsts in self.edges.values():
                 dsts.pop(node_id, None)
+            self._in_degree.pop(node_id, None)
 
     def ingest_memory(self, memory, concept_limit: int = 20, event_window: int = 40):
         """Pull recent semantic concepts and recent episodic events into the

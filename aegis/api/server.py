@@ -41,6 +41,15 @@ async def broadcast(data: dict):
 
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+# Paths whose handlers perform their own X-API-Token check and must therefore
+# be reached even before the runtime exists, so they answer 401 (not 503) to an
+# unauthenticated caller.
+_SELF_AUTH_PATHS = (
+    "/api/code-modifier/sources",
+    "/api/code-modifier/analyze",
+    "/api/code-modifier/read",
+)
+
 _LOOPBACK_WS_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -106,6 +115,19 @@ async def auth_middleware(request, call_next):
     if cfg.API_TOKEN and request.method in _MUTATING_METHODS:
         if not _token_ok(request.headers.get("x-api-token")):
             return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
+    # Every /api handler dereferences the module-level `substrate`, which only
+    # exists once the lifespan handler has run. Without this guard the whole API
+    # answers an opaque 500 (AttributeError on None) instead of saying the
+    # runtime is not up yet (audit R3-10).
+    #
+    # Routes in _SELF_AUTH_PATHS are GETs/POSTs that run their OWN token check
+    # (the middleware only gates mutating methods), so they must be allowed to
+    # answer 401 first — an unauthenticated caller must never be able to tell
+    # runtime state apart from a rejected request.
+    path = request.url.path
+    if (substrate is None and path.startswith("/api")
+            and not path.startswith(_SELF_AUTH_PATHS)):
+        return JSONResponse({"detail": "AEGIS runtime is not started"}, status_code=503)
     return await call_next(request)
 
 
@@ -323,7 +345,15 @@ def _semantic_summary(val: dict) -> str:
 
     MemorySystem.add_semantic nests the payload under ``relations`` so we must
     look there first (top-level lookups always missed before this fix)."""
-    rel = val.get("relations", {}) if isinstance(val, dict) else {}
+    if not isinstance(val, dict):
+        # Semantic entries are not guaranteed to be dicts (older rows and
+        # externally-learned concepts can be plain strings); the top-level
+        # .get() calls below crashed the whole autonomous reply on those
+        # (audit R3-11).
+        return ""
+    rel = val.get("relations", {})
+    if not isinstance(rel, dict):
+        rel = {}
     return (rel.get("summary") or rel.get("definition")
             or val.get("summary") or val.get("definition") or "")
 
@@ -515,9 +545,18 @@ async def create_agent(data: dict):
     name = data.get("name", "spider")
     source_type = data.get("source_type", "custom")
     task = data.get("task", "Collect data")
-    agent = substrate.agent_system.create_agent(name, source_type, task)
-    prompt = substrate.agent_system.generate_prompt(agent)
-    return {"agent": agent.to_dict(), "prompt": prompt}
+    topic = data.get("topic", "")
+    agent = substrate.agent_system.create_agent(name, source_type, task, topic)
+    info = agent.to_dict()
+    # `agent_system.generate_prompt()` does not exist — this endpoint raised
+    # AttributeError (HTTP 500) on EVERY call. It went unnoticed because
+    # aegis/api/* was excluded from the coverage gate (audit R3-12). Describe
+    # the agent from its own fields instead of calling a phantom API.
+    return {
+        "agent": info,
+        "prompt": f"[{info['source_type']}] {task}"
+                  + (f" — topic: {info['topic']}" if info.get("topic") else ""),
+    }
 
 
 @app.get("/api/state-backup")
@@ -533,10 +572,17 @@ async def save_backup():
 
 @app.post("/api/state-backup/restore")
 async def restore_backup():
+    # NOTE: this LOADS the newest snapshot; it does not re-apply it to the
+    # running substrate (there is no live rehydration path). Reporting
+    # "restored" told the operator their state had been rolled back when
+    # nothing had changed — report what actually happened (audit R3-9).
     state = substrate.state_backup.restore_latest()
     if state:
-        return {"status": "restored", "tick": state.get("substrate", {}).get("tick", "?")}
-    return {"status": "no backup found"}
+        return {"status": "loaded",
+                "applied": False,
+                "detail": "Snapshot loaded for inspection; restart AEGIS to boot from it.",
+                "tick": state.get("substrate", {}).get("tick", "?")}
+    return {"status": "no backup found", "applied": False}
 
 
 @app.get("/api/state-backup/list")
@@ -641,6 +687,8 @@ async def code_modifier_sources(request: Request):
     # Exposes file names/sizes/structure — gate on the token like /read (audit).
     if not _token_ok(request.headers.get("x-api-token")):
         return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
+    if substrate is None:
+        return JSONResponse({"detail": "AEGIS runtime is not started"}, status_code=503)
     return substrate.code_modifier.list_sources()
 
 
@@ -653,6 +701,8 @@ async def code_modifier_analyze(request: CodeModAnalyzeRequest, http_request: Re
     # Reads and analyzes source (classes/functions/imports) — gate on the token.
     if not _token_ok(http_request.headers.get("x-api-token")):
         return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
+    if substrate is None:
+        return JSONResponse({"detail": "AEGIS runtime is not started"}, status_code=503)
     try:
         return substrate.code_modifier.analyze_file(request.file_path)
     except Exception as e:
@@ -665,6 +715,8 @@ async def code_modifier_read(file_path: str, request: Request):
     # presented (the auth middleware only guards mutating methods) — audit L9.
     if not _token_ok(request.headers.get("x-api-token")):
         return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
+    if substrate is None:
+        return JSONResponse({"detail": "AEGIS runtime is not started"}, status_code=503)
     try:
         code = substrate.code_modifier.read_source(file_path)
         return {"file": file_path, "code": code, "lines": code.count("\n") + 1}
@@ -761,11 +813,19 @@ async def websocket_endpoint(ws: WebSocket):
     if not _ws_origin_allowed(ws.headers.get("origin")):
         await ws.close(code=1008)  # policy violation
         return
+    if substrate is None:
+        await ws.close(code=1011)  # internal error — runtime not started
+        return
     # When a token is configured, privileged actions require it as a query param
     # (?token=...) since browsers cannot set custom headers on WebSockets.
     authorized = _token_ok(ws.query_params.get("token"))
     await ws.accept()
-    connected_ws.append(ws)
+    # Only AUTHORIZED sockets join the broadcast fan-out. Registering every
+    # socket leaked the periodic full_status() push (Substrate broadcasts to
+    # every entry in connected_ws) to unauthenticated clients, defeating the
+    # token gate below — the handshake check alone was not enough (audit R3-2).
+    if authorized:
+        connected_ws.append(ws)
     try:
         # full_status is internal state — only stream it to an authorized client
         # (when a token is set). Unauthorized clients get an error and no data.

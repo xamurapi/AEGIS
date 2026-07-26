@@ -1,7 +1,8 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
 > A self-developing AI that rewrites its own source code, trains its own neural network weights, and evolves autonomously through a closed feedback loop.
-> **31 modules · 7-layer architecture · Triple LLM brain · Deterministic core cycle · Hardened & tested.**
+> **36 modules · 7-layer architecture + 5 higher-order systems · Triple LLM brain · Deterministic core cycle.**
+> **1354 tests · 92% branch coverage · 99.8% mutation score · 3 audit rounds.**
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
 
@@ -17,9 +18,14 @@ PERCEIVE → EVALUATE → DECIDE → ACT → REFLECT
 
 The **core cognitive cycle is deterministic** — reward, confidence, importance, emotions, goals, dreams, and self-modification are all driven by real system metrics (`success_rate`, `energy`, `error_rate`, `goal_completion`), not random number generators. The only non-deterministic part is knowledge-source/topic selection in the external-learning and spider-agent layers, where a topic is picked at random when none is supplied.
 
+On top of that cycle run five higher-order systems that give it a causal model of
+the world, a connected knowledge graph, benchmark-gated evolution, value-driven
+motivation, and a closed loop from real outcomes back into training data — see
+[below](#the-five-higher-order-systems).
+
 ---
 
-## Architecture — 7 Layers, 31 Modules
+## Architecture — 7 Layers, 36 Modules
 
 | Layer | Name | Key Files |
 |---|---|---|
@@ -31,6 +37,35 @@ The **core cognitive cycle is deterministic** — reward, confidence, importance
 | L5 | World Interface | `agent_system.py`, `sensor_cortex.py`, `external_learning.py` |
 | L6 | Ethics Core | `ethics_core.py` *(immutable)*, `self_preservation.py` |
 | Meta | Higher-Order | `meta_consciousness.py`, `meta_regulation.py`, `meta_reflection.py` |
+
+---
+
+## The Five Higher-Order Systems
+
+Layers L0–L6 make AEGIS *self-aware*. These five make it *effective in the world* —
+they close the gap between "the model talks about itself" and "the system reasons
+about causes, keeps only changes that measurably help, and learns from real results."
+
+| # | System | File | What it does |
+|---|---|---|---|
+| 1 | **World Model** | `world_model.py` | Learns cause→effect links from observed outcomes (Laplace-smoothed frequencies) and builds causal chains: `objective → constraints → risks → plan → expected result`. Answers "what tends to fail around this topic" from memory, not from text generation. |
+| 2 | **Cognitive Graph** | `cognitive_graph.py` | Typed graph of knowledge and experience (`concept / event / skill / goal / outcome`, edges `causes / requires / learned_from / led_to`). Gives path finding, relevance and centrality, so reasoning uses **connected** knowledge instead of a flat recency list. |
+| 3 | **Evolution Engine** | `evolution_engine.py` | Natural selection over its own parameters: `champion → mutation → candidate → held-out benchmark → keep only if better`. This is what makes self-modification ≠ self-*improvement* an enforced distinction: a change survives only when an external, verifiable metric says so. |
+| 4 | **Goal Intelligence** | `goal_intelligence.py` | Turns internal state into motivation: `goal → value → action choice → reward`. Keeps a learned utility per objective, updated from realized reward, and picks what to pursue by expected value under four intrinsic drives (competence, knowledge, coherence, stability). |
+| 5 | **Feedback Loop** | `feedback_loop.py` | Closes the experience loop: `situation → decision → real result → evaluation → cause → new experience`. Every row is structured (it records **why** an outcome happened), so the LoRA dataset carries causes rather than raw text. |
+
+All five are deterministic and dependency-free; an LLM may refine a plan, but is
+never required for them to function. They persist atomically and are bounded in
+size, so no structure grows without limit.
+
+> **Known limitation, stated plainly.** The Evolution Engine's *mechanism* is
+> sound — mutate, benchmark, keep or revert, with the champion never updated from
+> self-report. But the parameters it currently mutates (`learning_rate`,
+> `attention_heads`, …) are simulated knobs that do not causally drive the skill
+> benchmark, so selection currently rides on benchmark drift from other changes.
+> Making the loop meaningful requires wiring the genome to something that
+> measurably moves the metric. This is an architectural gap, not a bug, and it is
+> tracked in [`docs/АУДИТ.md`](docs/АУДИТ.md).
 
 ---
 
@@ -81,9 +116,29 @@ Axiom integrity is checked on every evaluation against an out-of-band fingerprin
 ### 🔐 Control-Plane Security
 The control plane can toggle the kill switch, grant permissions, and trigger self-modification — so it is **not** exposed by default:
 
-- Binds to **`127.0.0.1`** only (override with `AEGIS_API_HOST`).
-- Set **`AEGIS_API_TOKEN`** to require an `X-API-Token` header on every mutating request (POST/PUT/PATCH/DELETE) and on privileged WebSocket actions.
+- Binds to **`127.0.0.1`** only (override with `AEGIS_API_HOST`). Binding elsewhere without a token logs a loud warning at import.
+- Set **`AEGIS_API_TOKEN`** to require an `X-API-Token` header on every mutating request (POST/PUT/PATCH/DELETE) and on privileged WebSocket actions. Comparison is constant-time.
+- **Only authenticated WebSocket clients join the state broadcast.** The handshake check alone was not enough: an unauthorized socket used to stay in the fan-out list and receive the periodic `full_status()` push, so simply connecting and waiting leaked internal state past the token gate (audit R3-2).
+- WebSockets are not covered by CORS, so the `Origin` header is checked **before** the handshake is accepted — a hostile page cannot open `ws://127.0.0.1:8888/ws` (CSWSH).
 - Cross-origin access is off unless `AEGIS_API_CORS_ORIGINS` is set. A wildcard (`*`) origin automatically **disables credentials**, so a permissive CORS config can never be combined with credentialed cross-site calls.
+
+**Using the dashboard with a token.** Open it as `http://127.0.0.1:8888/?token=YOUR_TOKEN`.
+The token is remembered in `localStorage` and attached to every `/api` request;
+an unauthorized session shows an explicit banner instead of silently freezing.
+
+### 🧪 Sandboxed skill execution
+
+Self-written skills never run in the main process: they are AST-checked against an
+allowlist and then executed via `python -I` in a child process under a hard
+wall-clock timeout. The static gate inspects **everything Python evaluates at
+definition time** — decorators, default values, keyword-only defaults, and
+parameter/return **annotations**. That last one matters: an unchecked annotation
+(`def solve(p, _z: __import__('os').system('...'))`) passed the old gate and then
+executed arbitrary code in the child (audit R3-1, fixed and proven by test).
+
+This is defense-in-depth, **not** an OS-level jail. Two escapes were found in this
+layer across two audit rounds, which is itself the argument: a production
+deployment should add a container/seccomp sandbox with network egress blocked.
 
 ---
 
@@ -95,8 +150,15 @@ aegis/
 ├── requirements.txt           # core runtime
 ├── requirements-llm.txt        # hosted LLM providers (DeepSeek/Claude)
 ├── requirements-ml.txt         # local model + LoRA (multi-GB, pinned)
-├── requirements-dev.txt        # pytest
-├── tests/                      # pytest suite (89 tests)
+├── requirements-dev.txt        # pytest, pytest-bdd, coverage, httpx
+├── docs/
+│   ├── АУДИТ.md               # 3 audit rounds — every finding, fix and test
+│   ├── QA.md                  # QA procedures, quality metrics, gates
+│   └── СИСТЕМЫ.md             # the five higher-order systems in detail
+├── scripts/
+│   └── mutation_test.py       # dependency-free mutation-testing harness
+├── tests/                      # 1354 tests
+│   └── features/              # executable Gherkin specifications
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
 │   ├── event_bus.py
@@ -105,6 +167,7 @@ aegis/
 │   │   └── server.py          # FastAPI + WebSocket (token-guarded)
 │   ├── dashboard/
 │   │   └── index.html         # Real-time SPA dashboard
+│   ├── eval/                  # benchmark, skill library, isolated sandbox
 │   └── layers/
 │       ├── substrate.py
 │       ├── memory.py
@@ -126,6 +189,11 @@ aegis/
 │       ├── agent_system.py
 │       ├── ethics_core.py     # IMMUTABLE
 │       ├── self_preservation.py # IMMUTABLE
+│       ├── world_model.py     # System 1 — causal model
+│       ├── cognitive_graph.py # System 2 — knowledge graph
+│       ├── evolution_engine.py# System 3 — benchmark-gated evolution
+│       ├── goal_intelligence.py # System 4 — value-driven motivation
+│       ├── feedback_loop.py   # System 5 — learning from real outcomes
 │       ├── worldview.py
 │       ├── autobiography.py
 │       ├── health_monitor.py
@@ -198,6 +266,13 @@ Status: ONLINE
 | `CODE_MOD_EVERY_N_TICKS` | Code self-modification interval | `500` |
 | `CODE_MOD_MAX_FILE_CHARS` | Max source file size eligible for rewrite | `4000` |
 | `TRAIN_EVERY_N_TICKS` | LoRA training interval | `1000` |
+| **Higher-order systems** | | |
+| `WORLD_MODEL_EVERY_N_TICKS` | Observe cause→effect, build a causal chain | `5` |
+| `COGNITIVE_GRAPH_EVERY_N_TICKS` | Ingest recent memory into the graph | `8` |
+| `EVOLUTION_EVERY_N_TICKS` | Propose a mutation (judged by the next benchmark) | `100` |
+| `EVAL_EVERY_N_TICKS` | Held-out benchmark run (the fitness signal) | `50` |
+| `SKILL_SYNTH_EVERY_N_TICKS` | Attempt to synthesize a skill for a failing task kind | `200` |
+| `SANDBOX_TIMEOUT` | Hard timeout for one sandboxed skill execution (s) | `3.0` |
 | **Security & limits** | | |
 | `AEGIS_API_HOST` | API bind address | `127.0.0.1` |
 | `AEGIS_API_PORT` | API port | `8888` |
@@ -211,14 +286,48 @@ API keys can also be set at runtime via the dashboard (LLM Brain tab).
 
 ---
 
-## Testing
+## Testing & Quality
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q
+
+python -m pytest -q                                    # 1354 tests
+python -m coverage run -m pytest -q && python -m coverage report   # gate: 90%
+python scripts/mutation_test.py                        # gate: no survivors
 ```
 
-The suite (89 tests) covers the safety-critical paths: ethics evaluation & axiom integrity, code-modifier validation/rollback (including path-traversal containment), the self-preservation watchdog, parametric self-modification bounds, memory, LLM helpers/budget, the capability/eval layer (benchmark verification, sandbox safety gate, skill library), and that scheduled LoRA training does not block the tick loop. No ML dependencies are required to run it.
+No ML dependencies are required — the whole suite runs offline (no network, no LLM).
+
+| Metric | Value | Gate |
+|---|---:|---:|
+| Tests | **1354** (+2 skipped) | all green |
+| Branch coverage (whole package) | **92%** | **90%** |
+| Mutation score | **99.8%** (446/447) | no survivors |
+| Modules at 100% mutation score | **12 of 13** | — |
+
+**Levels.** Unit tests per module · integration tests running the five systems
+inside a real `Substrate` tick · executable **Gherkin** specifications
+(`tests/features/*.feature`, driven by `pytest-bdd`) · audit regression tests ·
+an API contract sweep derived from the app's own route table · a dashboard
+contract test that checks all 161 field reads against the real status payload.
+
+**Mutation testing** uses a dependency-free in-repo harness (`scripts/mutation_test.py`):
+mutmut needs WSL on Windows and mutatest 3.1.0 is broken on Python 3.11. It flips
+comparisons, arithmetic, boolean operators and boolean constants, runs the module's
+tests per mutant, and always restores the source byte-for-byte. It exits non-zero if
+any non-equivalent mutant survives.
+
+Why it earns its keep: `event_bus` had 98% coverage, yet flipping its fail-closed
+veto (`allowed = False` → `True`) — i.e. *a crashed safety check now lets the event
+through* — left the entire suite green. Coverage measures execution; mutation score
+measures whether anything actually asserts.
+
+**Audit.** Three rounds are documented in [`docs/АУДИТ.md`](docs/АУДИТ.md), with every
+finding tied to a test that was verified **red before the fix**. Round 3 found a
+critical sandbox escape (proven RCE), an unauthenticated state leak over WebSocket,
+and two dead API endpoints — all four in files that were excluded from the coverage
+gate at the time. Those exclusions are gone. QA procedures and metrics live in
+[`docs/QA.md`](docs/QA.md).
 
 ---
 

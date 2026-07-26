@@ -29,24 +29,39 @@ ROOT = Path(__file__).resolve().parent.parent
 # (source module, test file(s) that exercise it). The test entry may be a single
 # path or a space-separated list of paths — all are run together per mutant.
 TARGETS = [
-    # The five new cognitive systems.
-    ("aegis/layers/world_model.py", "tests/test_world_model.py"),
-    ("aegis/layers/cognitive_graph.py", "tests/test_cognitive_graph.py"),
-    ("aegis/layers/evolution_engine.py", "tests/test_evolution_engine.py"),
+    # The five new cognitive systems. Each entry also runs the round-3 audit
+    # regression tests, which are what cover the hardening added to these
+    # modules (shape coercion, degree index, torn-log recovery, ...).
+    ("aegis/layers/world_model.py",
+     "tests/test_world_model.py tests/test_audit_round3.py"),
+    ("aegis/layers/cognitive_graph.py",
+     "tests/test_cognitive_graph.py tests/test_audit_round3.py tests/test_mutation_gaps.py"),
+    ("aegis/layers/evolution_engine.py",
+     "tests/test_evolution_engine.py tests/test_audit_round3.py"),
     ("aegis/layers/goal_intelligence.py", "tests/test_goal_intelligence.py"),
-    ("aegis/layers/feedback_loop.py", "tests/test_feedback_loop.py"),
+    ("aegis/layers/feedback_loop.py",
+     "tests/test_feedback_loop.py tests/test_audit_round3.py tests/test_mutation_gaps.py"),
+    # The sandbox is the single highest-consequence module in the tree: it is
+    # the only thing standing between self-written skill code and the host.
+    ("aegis/eval/sandbox.py",
+     "tests/test_sandbox_security.py tests/test_sandbox_mutation.py "
+     "tests/test_audit_round2.py tests/test_audit_round3.py "
+     "tests/test_bdd_safety_resilience.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
-    ("aegis/event_bus.py", "tests/test_event_bus.py"),
+    ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",
      "tests/test_ethics.py tests/test_ethics_core_ext.py tests/test_ethics_core_mut.py"),
     ("aegis/layers/self_preservation.py",
      "tests/test_self_preservation.py tests/test_self_preservation_ext.py "
-     "tests/test_self_preservation_mut.py"),
+     "tests/test_self_preservation_mut.py tests/test_mutation_gaps.py"),
     ("aegis/layers/goal_engine.py",
      "tests/test_goal_engine.py tests/test_goal_engine_mut.py"),
-    ("aegis/layers/emotions.py", "tests/test_emotions.py"),
-    ("aegis/layers/health_monitor.py", "tests/test_health_monitor.py"),
-    ("aegis/layers/meta_regulation.py", "tests/test_meta_regulation.py"),
+    ("aegis/layers/emotions.py",
+     "tests/test_emotions.py tests/test_behaviour_mutation.py"),
+    ("aegis/layers/health_monitor.py",
+     "tests/test_health_monitor.py tests/test_behaviour_mutation.py"),
+    ("aegis/layers/meta_regulation.py",
+     "tests/test_meta_regulation.py tests/test_behaviour_mutation.py"),
 ]
 
 # Comparison operator flips: each maps to a semantically different operator.

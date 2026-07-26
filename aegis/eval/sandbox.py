@@ -81,15 +81,35 @@ class _SafetyVisitor(ast.NodeVisitor):
         self._scope: list[set[str]] = [set()]  # stack of accumulated bound params
 
     # ── scope-introducing nodes ──
-    def _visit_function(self, node):
-        # Decorators & default values are evaluated in the OUTER scope.
-        for d in node.decorator_list:
+    def _visit_signature(self, args: ast.arguments):
+        """Visit every part of a signature that Python EVALUATES at definition
+        time, in the enclosing scope: default values and parameter annotations.
+
+        Annotations are real expressions evaluated when the ``def`` executes
+        (there is no ``from __future__ import annotations`` in generated skill
+        code), so leaving them unchecked was a sandbox escape (audit R3-1):
+        ``def solve(p, _z: __import__('os').system('...')): ...`` passed
+        check_safe and then ran arbitrary code in the child process.
+        """
+        for d in args.defaults:
             self.visit(d)
-        for d in node.args.defaults:
-            self.visit(d)
-        for d in node.args.kw_defaults:
+        for d in args.kw_defaults:
             if d is not None:
                 self.visit(d)
+        for a in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                  args.vararg, args.kwarg):
+            if a is not None and a.annotation is not None:
+                self.visit(a.annotation)
+
+    def _visit_function(self, node):
+        # Decorators, defaults and annotations are evaluated in the OUTER scope.
+        for d in node.decorator_list:
+            self.visit(d)
+        self._visit_signature(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)          # `def f() -> <expr>` also runs
+        for tp in getattr(node, "type_params", ()):   # PEP 695 generics
+            self.visit(tp)
         self._scope.append(self._scope[-1] | _arg_names(node.args))
         for stmt in node.body:
             self.visit(stmt)
@@ -99,8 +119,9 @@ class _SafetyVisitor(ast.NodeVisitor):
     visit_AsyncFunctionDef = _visit_function
 
     def visit_Lambda(self, node):
-        for d in node.args.defaults:
-            self.visit(d)
+        # A lambda has no annotations, but it CAN carry keyword-only defaults
+        # (`lambda *, a=<expr>: ...`) which are evaluated in the outer scope.
+        self._visit_signature(node.args)
         self._scope.append(self._scope[-1] | _arg_names(node.args))
         self.visit(node.body)
         self._scope.pop()
