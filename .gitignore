@@ -61,3 +61,8 @@ weight_checkpoints/
 # --- Logs ---
 *.log
 logs/
+
+# Coverage / mutation artifacts
+.coverage
+cov_tmp.json
+*.mut.bak

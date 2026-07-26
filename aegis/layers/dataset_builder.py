@@ -1,7 +1,12 @@
-"""Dataset Builder — builds fine-tuning datasets from AEGIS memory and agent data."""
+"""Dataset Builder — builds fine-tuning datasets from AEGIS memory and agent data.
+
+Deterministic: samples are ordered by a stable content hash (a reproducible
+"shuffle") instead of ``random.shuffle`` — same inputs always yield the same
+dataset, and no RNG is used (zero-randomness guarantee).
+"""
 import json
 import time
-import random
+import hashlib
 from pathlib import Path
 from aegis.config import WEIGHT_DATASETS_DIR, TRAIN_MAX_SAMPLES, TRAIN_VAL_SPLIT
 
@@ -144,8 +149,10 @@ class DatasetBuilder:
                 unique_samples.append(s)
         samples = unique_samples
 
-        # Limit and shuffle
-        random.shuffle(samples)
+        # Deterministic "shuffle": order by a stable content hash so the mix is
+        # decorrelated from insertion order without using an RNG (reproducible).
+        samples.sort(key=lambda s: hashlib.md5(
+            json.dumps(s, sort_keys=True, default=str).encode("utf-8")).hexdigest())
         samples = samples[:TRAIN_MAX_SAMPLES]
 
         if not samples:

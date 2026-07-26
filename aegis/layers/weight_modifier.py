@@ -6,6 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from aegis._atomic import atomic_write_text
 from aegis.config import (
     LOCAL_MODEL_PATH, LOCAL_MODEL_DEVICE, LOCAL_MODEL_DTYPE, LOCAL_MODEL_QUANTIZE,
     LOCAL_MODEL_MAX_LENGTH,
@@ -61,7 +62,7 @@ class WeightModifier:
             "train_history": self.train_history[-20:],
         }
         try:
-            self._stats_path.write_text(json.dumps(data), encoding="utf-8")
+            atomic_write_text(self._stats_path, json.dumps(data))
         except Exception:
             pass
 
@@ -222,11 +223,16 @@ class WeightModifier:
 
         try:
             if not self.model_loaded:
-                load_result = self.load_model()
+                # load_model() loads/quantizes a multi-GB model (and may download
+                # it) — running it directly in the coroutine would freeze the
+                # whole tick loop for minutes (audit H2). Offload to an executor.
+                load_result = await asyncio.get_running_loop().run_in_executor(
+                    None, self.load_model
+                )
                 if not load_result["success"]:
                     return load_result
 
-            result = await asyncio.get_event_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None, self._train_sync, dataset_dir
             )
             return result
@@ -460,12 +466,14 @@ class WeightModifier:
 
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         with torch.no_grad():
+            # Greedy (do_sample=False) is deterministic — the project's
+            # "zero randomness" guarantee. Sampling with temperature/top_p and no
+            # seed made identical prompts yield different completions, so those
+            # knobs are dropped entirely rather than left inert.
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                temperature=0.7,
-                do_sample=True,
-                top_p=0.9,
+                do_sample=False,
                 repetition_penalty=1.1,
                 pad_token_id=self.tokenizer.pad_token_id,
             )

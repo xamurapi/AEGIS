@@ -19,16 +19,19 @@ import tempfile
 import subprocess
 from pathlib import Path
 
-# Stdlib modules a pure-compute skill may import.
+# Stdlib modules a pure-compute skill may import. ``random`` is deliberately
+# EXCLUDED — skills solve deterministic, exactly-verified benchmark tasks, and
+# the system carries a project-wide "zero randomness" guarantee.
 SAFE_IMPORTS = {
     "math", "cmath", "statistics", "itertools", "functools", "operator",
     "re", "json", "collections", "string", "decimal", "fractions",
-    "heapq", "bisect", "datetime", "random", "typing",
+    "heapq", "bisect", "datetime", "typing",
 }
 # Names that must never be called from skill code.
 FORBIDDEN_CALLS = {
     "eval", "exec", "compile", "open", "__import__", "input",
     "globals", "locals", "vars", "getattr", "setattr", "delattr", "exit", "quit",
+    "breakpoint",
 }
 
 
@@ -52,59 +55,112 @@ def _write_temp_script(script: str) -> Path:
     return Path(name)
 
 
-def _param_names(tree: ast.AST) -> set[str]:
-    """Collect names bound as function/lambda parameters anywhere in the tree.
-
-    A parameter named ``input`` (or ``vars``, ``open``, …) shadows the builtin
-    inside its function, so a reference to it is NOT the dangerous builtin — we
-    exempt those to avoid false-positives on ordinary code like
-    ``def solve(input): return sorted(input)``. Assignment targets are
-    deliberately NOT exempted, so the aliasing escape ``_i = __import__`` (whose
-    right-hand side is a genuine builtin reference) is still caught."""
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            a = node.args
-            for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs):
-                names.add(arg.arg)
-            if a.vararg:
-                names.add(a.vararg.arg)
-            if a.kwarg:
-                names.add(a.kwarg.arg)
+def _arg_names(args: ast.arguments) -> set[str]:
+    names = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    if args.vararg:
+        names.add(args.vararg.arg)
+    if args.kwarg:
+        names.add(args.kwarg.arg)
     return names
+
+
+class _SafetyVisitor(ast.NodeVisitor):
+    """Scope-aware safety gate.
+
+    A parameter named ``input`` shadows a builtin ONLY inside its own function,
+    so the exemption must be scoped. The previous flat "all params anywhere"
+    set was a sandbox-escape (audit): ``_ = lambda eval: None`` bound ``eval``
+    in a throw-away lambda and thereby un-blocked the real builtin ``eval`` at
+    module scope, giving RCE via ``eval("__import__('os')...")``. Here the
+    exemption only applies to names actually bound as parameters in an
+    ENCLOSING function of the reference.
+    """
+
+    def __init__(self):
+        self.reasons: list[str] = []
+        self._scope: list[set[str]] = [set()]  # stack of accumulated bound params
+
+    # ── scope-introducing nodes ──
+    def _visit_signature(self, args: ast.arguments):
+        """Visit every part of a signature that Python EVALUATES at definition
+        time, in the enclosing scope: default values and parameter annotations.
+
+        Annotations are real expressions evaluated when the ``def`` executes
+        (there is no ``from __future__ import annotations`` in generated skill
+        code), so leaving them unchecked was a sandbox escape (audit R3-1):
+        ``def solve(p, _z: __import__('os').system('...')): ...`` passed
+        check_safe and then ran arbitrary code in the child process.
+        """
+        for d in args.defaults:
+            self.visit(d)
+        for d in args.kw_defaults:
+            if d is not None:
+                self.visit(d)
+        for a in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                  args.vararg, args.kwarg):
+            if a is not None and a.annotation is not None:
+                self.visit(a.annotation)
+
+    def _visit_function(self, node):
+        # Decorators, defaults and annotations are evaluated in the OUTER scope.
+        for d in node.decorator_list:
+            self.visit(d)
+        self._visit_signature(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)          # `def f() -> <expr>` also runs
+        for tp in getattr(node, "type_params", ()):   # PEP 695 generics
+            self.visit(tp)
+        self._scope.append(self._scope[-1] | _arg_names(node.args))
+        for stmt in node.body:
+            self.visit(stmt)
+        self._scope.pop()
+
+    visit_FunctionDef = _visit_function
+    visit_AsyncFunctionDef = _visit_function
+
+    def visit_Lambda(self, node):
+        # A lambda has no annotations, but it CAN carry keyword-only defaults
+        # (`lambda *, a=<expr>: ...`) which are evaluated in the outer scope.
+        self._visit_signature(node.args)
+        self._scope.append(self._scope[-1] | _arg_names(node.args))
+        self.visit(node.body)
+        self._scope.pop()
+
+    # ── checks ──
+    def visit_Import(self, node):
+        for a in node.names:
+            if a.name.split(".")[0] not in SAFE_IMPORTS:
+                self.reasons.append(f"forbidden import '{a.name}'")
+
+    def visit_ImportFrom(self, node):
+        root = (node.module or "").split(".")[0]
+        if root not in SAFE_IMPORTS:
+            self.reasons.append(f"forbidden import from '{node.module}'")
+
+    def visit_Name(self, node):
+        nid = node.id
+        if nid in self._scope[-1]:
+            return  # genuinely shadowed by an enclosing parameter
+        if nid in FORBIDDEN_CALLS:
+            self.reasons.append(f"forbidden name '{nid}'")
+        elif nid.startswith("__") and nid.endswith("__"):
+            self.reasons.append(f"forbidden dunder name '{nid}'")
+
+    def visit_Attribute(self, node):
+        if node.attr.startswith("__") and node.attr.endswith("__"):
+            self.reasons.append(f"forbidden dunder attribute '{node.attr}'")
+        self.generic_visit(node)
 
 
 def check_safe(code: str) -> tuple[bool, list[str]]:
     """Static safety gate for skill code. Returns (safe, reasons)."""
-    reasons: list[str] = []
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
         return False, [f"syntax error: {e.msg} (line {e.lineno})"]
-
-    params = _param_names(tree)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name.split(".")[0] not in SAFE_IMPORTS:
-                    reasons.append(f"forbidden import '{a.name}'")
-        elif isinstance(node, ast.ImportFrom):
-            root = (node.module or "").split(".")[0]
-            if root not in SAFE_IMPORTS:
-                reasons.append(f"forbidden import from '{node.module}'")
-        elif isinstance(node, ast.Name):
-            # Flag every *reference* to a forbidden name, not just direct calls.
-            # This catches aliasing escapes like ``_i = __import__; _i('os')``
-            # and ``g = getattr`` that a call-site-only check would miss, while
-            # exempting parameters that merely shadow a builtin name.
-            if node.id in FORBIDDEN_CALLS and node.id not in params:
-                reasons.append(f"forbidden name '{node.id}'")
-        elif isinstance(node, ast.Attribute):
-            # Block dunder attribute escapes like obj.__globals__ / __builtins__.
-            if node.attr.startswith("__") and node.attr.endswith("__"):
-                reasons.append(f"forbidden dunder attribute '{node.attr}'")
-    return (len(reasons) == 0), reasons
+    v = _SafetyVisitor()
+    v.visit(tree)
+    return (len(v.reasons) == 0), v.reasons
 
 
 _RUNNER = """{code}

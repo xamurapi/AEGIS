@@ -1,6 +1,10 @@
-"""ExternalLearning — multi-source knowledge acquisition (Wikipedia, arXiv, news, text files)."""
+"""ExternalLearning — multi-source knowledge acquisition (Wikipedia, arXiv, news, text files).
+
+Fully deterministic: default topic / quote selection rotates through fixed lists
+via a round-robin counter instead of ``random`` — no RNG anywhere (see the
+project-wide "zero randomness" guarantee).
+"""
 import time
-import random
 from collections import deque
 
 try:
@@ -30,6 +34,24 @@ class ExternalLearning:
         self.total_concepts = 0
         self.failed_fetches = 0
         self.source_stats: dict[str, int] = {s: 0 for s in self.SOURCES}
+        self._rr = 0  # deterministic round-robin counter for default selections
+
+    def _rotate(self, seq):
+        """Deterministically pick the next item from a fixed sequence."""
+        if not seq:
+            return ""
+        item = seq[self._rr % len(seq)]
+        self._rr += 1
+        return item
+
+    def _rotate_n(self, seq, n):
+        """Deterministically pick the next n items (rotating window)."""
+        if not seq:
+            return []
+        n = min(n, len(seq))
+        start = self._rr
+        self._rr += n
+        return [seq[(start + i) % len(seq)] for i in range(n)]
 
     async def learn_from_source(self, source: str, topic: str = "") -> dict:
         """Fetch knowledge from a specific source."""
@@ -80,8 +102,8 @@ class ExternalLearning:
     async def _fetch_wikipedia(self, topic: str) -> dict:
         """Fetch from Wikipedia API using httpx. Auto-detects language."""
         if not topic:
-            topic = random.choice(["artificial intelligence", "consciousness", "neural network",
-                                   "reinforcement learning", "cognitive science", "emergence"])
+            topic = self._rotate(["artificial intelligence", "consciousness", "neural network",
+                                  "reinforcement learning", "cognitive science", "emergence"])
         # Use Russian Wikipedia for Cyrillic topics
         has_cyrillic = any('\u0400' <= c <= '\u04ff' for c in topic)
         lang = "ru" if has_cyrillic else "en"
@@ -106,8 +128,8 @@ class ExternalLearning:
     async def _fetch_arxiv(self, topic: str) -> dict:
         """Fetch from arXiv API using httpx."""
         if not topic:
-            topic = random.choice(["machine learning", "neural architecture", "reinforcement learning",
-                                   "transformer models", "self-supervised learning"])
+            topic = self._rotate(["machine learning", "neural architecture", "reinforcement learning",
+                                  "transformer models", "self-supervised learning"])
         try:
             url = f"https://export.arxiv.org/api/query?search_query=all:{topic.replace(' ', '+')}&max_results=3&sortBy=submittedDate"
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=DEFAULT_HEADERS, follow_redirects=True) as client:
@@ -133,7 +155,7 @@ class ExternalLearning:
     async def _fetch_news(self, topic: str) -> dict:
         """Fetch news from Google News RSS using httpx."""
         if not topic:
-            topic = random.choice(["artificial intelligence", "AI safety", "machine learning"])
+            topic = self._rotate(["artificial intelligence", "AI safety", "machine learning"])
         try:
             query = topic.replace(" ", "+")
             url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
@@ -162,7 +184,7 @@ class ExternalLearning:
         # Fallback
         topics = ["AI breakthrough", "quantum computing", "climate research",
                   "space exploration", "neuroscience discovery"]
-        selected = random.sample(topics, min(3, len(topics)))
+        selected = self._rotate_n(topics, 3)
         return {
             "success": True,
             "source": "news",
@@ -198,7 +220,7 @@ class ExternalLearning:
             "I think, therefore I am. — Descartes",
             "The unexamined life is not worth living. — Socrates",
         ]
-        q = random.choice(quotes)
+        q = self._rotate(quotes)
         return {"success": True, "source": "quotes", "topic": "wisdom", "summary": q, "concepts": [q[:60]]}
 
     @staticmethod

@@ -8,7 +8,7 @@ genuine "can it actually program this" signal.
 """
 from dataclasses import dataclass
 
-from aegis.eval.benchmark import _norm
+from aegis.eval.benchmark import values_match
 from aegis.eval.sandbox import run_tests
 
 
@@ -91,7 +91,9 @@ def verify_solution(code: str, task: CodingTask, timeout: float = 3.0) -> dict:
                 "error": out.get("error", "sandbox failure")}
     passed = 0
     for res, (_, expected) in zip(out["results"], task.hidden_tests):
-        if res.get("ok") and _norm(res.get("result")) == _norm(expected):
+        if res.get("ok") and values_match(res.get("result"), expected):
             passed += 1
     total = len(task.hidden_tests)
-    return {"solved": passed == total, "passed": passed, "total": total, "error": None}
+    # total > 0 guards against a vacuous solved=True when hidden_tests is empty.
+    return {"solved": total > 0 and passed == total,
+            "passed": passed, "total": total, "error": None}

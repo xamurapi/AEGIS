@@ -9,6 +9,10 @@ import logging
 
 logger = logging.getLogger("aegis.self_modification")
 
+# Cap on each in-memory audit list so a long-running process cannot grow them
+# without bound (mirrors _metric_history's 50-entry cap).
+_MAX_RECORDS = 200
+
 
 class SelfModification:
     def __init__(self):
@@ -48,6 +52,16 @@ class SelfModification:
         self.weight_mod_total = 0
         self.weight_mod_success = 0
         self.weight_mod_rollbacks = 0
+
+    @staticmethod
+    def _cap(lst: list, item: dict, limit: int = _MAX_RECORDS) -> dict:
+        """Append `item` to `lst`, then trim it in place to the last `limit`
+        entries so the audit lists never grow without bound."""
+        lst.append(item)
+        excess = len(lst) - limit
+        if excess > 0:
+            del lst[:excess]
+        return item
 
     def propose_modification(self, mod_type: str, target: str, new_value: float) -> dict:
         proposal = {
@@ -146,7 +160,7 @@ class SelfModification:
             "tests_passed": tests_passed,
             "reasons": reasons,
         }
-        self.sandbox_results.append(result)
+        self._cap(self.sandbox_results, result)
 
         # Record metric for trend tracking
         self._metric_history.append(current_metric)
@@ -158,7 +172,7 @@ class SelfModification:
     def apply_modification(self, proposal: dict, sandbox_result: dict) -> dict:
         if not sandbox_result["passed"]:
             proposal["status"] = "rejected"
-            self.modifications.append(proposal)
+            self._cap(self.modifications, proposal)
             return {"applied": False, "reason": "sandbox_failed"}
 
         if sandbox_result["degradation"] > 0.05:
@@ -167,12 +181,12 @@ class SelfModification:
             # Restoring _stable_checkpoint here would wrongly undo the PREVIOUS
             # accepted modification. Keep the audit trail without mutating state.
             proposal["status"] = "rejected_degradation"
-            self.rollbacks.append({
+            self._cap(self.rollbacks, {
                 "timestamp": time.time(),
                 "proposal_id": proposal["id"],
                 "reason": "degradation_exceeded_threshold",
             })
-            self.modifications.append(proposal)
+            self._cap(self.modifications, proposal)
             return {"applied": False, "reason": "degradation_too_high"}
 
         if proposal["target"] in self.parameters:
@@ -183,7 +197,7 @@ class SelfModification:
         else:
             proposal["status"] = "target_not_found"
 
-        self.modifications.append(proposal)
+        self._cap(self.modifications, proposal)
         return {"applied": proposal["status"] == "applied", "version": self.current_version}
 
     @staticmethod
@@ -211,13 +225,13 @@ class SelfModification:
 
     def _rollback(self, proposal: dict):
         self.parameters = copy.deepcopy(self._stable_checkpoint)
-        self.rollbacks.append({
+        self._cap(self.rollbacks, {
             "timestamp": time.time(),
             "proposal_id": proposal["id"],
             "reason": "degradation_exceeded_threshold",
         })
         proposal["status"] = "rolled_back"
-        self.modifications.append(proposal)
+        self._cap(self.modifications, proposal)
 
     async def propose_weight_modification(self, memory, agent_system=None, ethics_core=None) -> dict:
         """Propose and execute a weight modification via LoRA fine-tuning.
@@ -244,7 +258,7 @@ class SelfModification:
         if not dataset_result.get("success"):
             record["status"] = "dataset_failed"
             record["error"] = dataset_result.get("error", "Dataset build failed")
-            self.weight_modifications.append(record)
+            self._cap(self.weight_modifications, record)
             return record
 
         record["dataset_size"] = dataset_result["total_size"]
@@ -257,7 +271,7 @@ class SelfModification:
         if not ethics_core:
             record["status"] = "ethics_unavailable"
             record["error"] = "Ethics core not configured — training blocked"
-            self.weight_modifications.append(record)
+            self._cap(self.weight_modifications, record)
             return record
         ethics_approved = True
         if ethics_core:
@@ -271,7 +285,7 @@ class SelfModification:
             if eth_result["status"] != "approved":
                 record["status"] = "ethics_blocked" if eth_result["status"] == "blocked" else "ethics_review_required"
                 record["ethics_score"] = eth_result["score"]
-                self.weight_modifications.append(record)
+                self._cap(self.weight_modifications, record)
                 return record
             ethics_approved = True
 
@@ -279,10 +293,19 @@ class SelfModification:
         record["status"] = "training"
         logger.info(f"Weight modification: starting LoRA training on {dataset_result['total_size']} samples...")
         from pathlib import Path
-        train_result = await self.weight_modifier.train(
-            Path(dataset_result["dataset_dir"]),
-            ethics_approved=ethics_approved,
-        )
+        # Guard the (expensive, external) training call: an exception here must
+        # never leave the record stuck at status="training" and unrecorded, nor
+        # desync the counters. Fail CLOSED to a recorded "failed" outcome.
+        try:
+            train_result = await self.weight_modifier.train(
+                Path(dataset_result["dataset_dir"]),
+                ethics_approved=ethics_approved,
+            )
+            if not isinstance(train_result, dict):
+                train_result = {"success": False, "error": "Training returned no result"}
+        except Exception as exc:
+            logger.warning("Weight modification training raised", exc_info=True)
+            train_result = {"success": False, "error": f"training_exception: {exc}"}
 
         if train_result.get("success"):
             record["status"] = "applied"
@@ -306,7 +329,7 @@ class SelfModification:
                 record["status"] = "rolled_back"
                 self.weight_mod_rollbacks += 1
 
-        self.weight_modifications.append(record)
+        self._cap(self.weight_modifications, record)
         return record
 
     def rollback_weights(self, checkpoint_path: str = None) -> dict:
@@ -321,7 +344,7 @@ class SelfModification:
 
         if result.get("success"):
             self.weight_mod_rollbacks += 1
-            self.weight_modifications.append({
+            self._cap(self.weight_modifications, {
                 "id": f"wmod_rollback_{int(time.time())}",
                 "timestamp": time.time(),
                 "status": "manual_rollback",
@@ -331,7 +354,11 @@ class SelfModification:
 
     def status(self) -> dict:
         applied = sum(1 for m in self.modifications if m["status"] == "applied")
-        rejected = sum(1 for m in self.modifications if m["status"] in ("rejected", "rolled_back"))
+        # A proposal whose target does not exist, or that was rejected for
+        # degradation, is a rejection too — otherwise success_rate is inflated.
+        rejected = sum(1 for m in self.modifications
+                       if m["status"] in ("rejected", "rolled_back",
+                                          "target_not_found", "rejected_degradation"))
 
         weight_status = {}
         if self.weight_modifier:

@@ -47,6 +47,16 @@ LETHAL_ATTR_CALLS = {
     ("shutil", "rmtree"),
 }
 
+# Reflection-escape dunders (audit L6) — the primitives used to break out of the
+# name/import blocklist (e.g. ().__class__.__bases__[0].__subclasses__()). These
+# specific dunders have no legitimate use in AEGIS source, unlike __init__ /
+# __file__ / __name__, so blocking exactly these hardens without false positives.
+DANGEROUS_DUNDERS = {
+    "__subclasses__", "__bases__", "__mro__", "__base__",
+    "__globals__", "__builtins__", "__code__", "__closure__",
+    "__getattribute__", "__reduce__", "__reduce_ex__",
+}
+
 
 def _ast_lethal_findings(code: str) -> list[str]:
     """Structural (AST) detection of lethal operations. Returns reason strings.
@@ -59,6 +69,15 @@ def _ast_lethal_findings(code: str) -> list[str]:
     except SyntaxError:
         return []
     found: list[str] = []
+    # Names bound to a lethal function via `from os import kill` (audit:
+    # from-import bypass) — a bare call to them is really the lethal call.
+    lethal_from_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = (node.module or "").split(".")[0]
+            for alias in node.names:
+                if (mod, alias.name) in LETHAL_ATTR_CALLS:
+                    lethal_from_aliases[alias.asname or alias.name] = f"{mod}.{alias.name}"
     for node in ast.walk(tree):
         # raise SystemExit / raise SystemExit(...)
         if isinstance(node, ast.Raise):
@@ -78,6 +97,13 @@ def _ast_lethal_findings(code: str) -> list[str]:
                     found.append(f"{pair[0]}.{pair[1]}(...)")
             elif isinstance(func, ast.Name) and func.id in ("exit", "quit"):
                 found.append(f"{func.id}(...)")
+            elif isinstance(func, ast.Name) and func.id in lethal_from_aliases:
+                found.append(f"{lethal_from_aliases[func.id]}(...)")
+        # Reflection-escape dunder access/name (audit L6).
+        elif isinstance(node, ast.Attribute) and node.attr in DANGEROUS_DUNDERS:
+            found.append(f"reflection dunder '{node.attr}'")
+        elif isinstance(node, ast.Name) and node.id in DANGEROUS_DUNDERS:
+            found.append(f"reflection name '{node.id}'")
     return found
 
 

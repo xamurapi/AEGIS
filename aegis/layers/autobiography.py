@@ -17,6 +17,11 @@ class Autobiographer:
         self.events.append(entry)
         self.total_impact += entry["impact"]
         if len(self.events) > 500:
+            # Keep total_impact consistent with the retained events: subtract the
+            # impact of the events being dropped instead of letting the sum drift
+            # above what the (truncated) list actually holds.
+            dropped = self.events[:-500]
+            self.total_impact -= sum(e["impact"] for e in dropped)
             self.events = self.events[-500:]
 
     def generate_narrative(self, last_n: int = 10) -> str:

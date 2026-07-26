@@ -21,6 +21,7 @@ class HealthMonitor:
         self.failed_ticks = 0
         self.consecutive_errors = 0
         self.recovery_count = 0
+        self._prev_status = "healthy"   # last check() status, for recovery detection
         self.incidents: list[dict] = []
         self.warnings: deque = deque(maxlen=30)
 
@@ -79,6 +80,13 @@ class HealthMonitor:
 
         for w in report["warnings"]:
             self.warnings.append(w)
+
+        # Count a recovery when the system climbs back to healthy from a
+        # degraded (warning) or critical state — previously recovery_count was
+        # dead (never incremented) yet still reported in status().
+        if self._prev_status in ("warning", "critical") and report["status"] == "healthy":
+            self.recovery_count += 1
+        self._prev_status = report["status"]
 
         return report
 

@@ -1,7 +1,12 @@
-"""AgentSystem — autonomous spider-bot creation, execution, monitoring and evolution."""
+"""AgentSystem — autonomous spider-bot creation, execution, monitoring and evolution.
+
+Deterministic: agent ids are a monotonic counter, topic selection rotates
+through each blueprint's fixed list, and next-run staggering is a fixed spread —
+no ``random`` anywhere (project-wide "zero randomness" guarantee).
+"""
 import time
-import random
 import asyncio
+import itertools
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -115,6 +120,17 @@ class AgentSystem:
         self.total_data_items = 0
         self.evolution_cycles = 0
         self._initialized = False
+        self._rr = 0                        # round-robin topic selector
+        self._id_seq = itertools.count(1)   # monotonic, collision-free agent ids
+        self._stagger = 0                   # deterministic next-run spread
+
+    def _rotate(self, seq):
+        """Deterministically pick the next item from a fixed sequence."""
+        if not seq:
+            return ""
+        item = seq[self._rr % len(seq)]
+        self._rr += 1
+        return item
 
     def auto_initialize(self):
         """Create default agents on first call."""
@@ -122,14 +138,16 @@ class AgentSystem:
             return
         self._initialized = True
         for bp in AGENT_BLUEPRINTS:
-            topic = random.choice(bp["topics"]) if bp["topics"] else ""
+            topic = self._rotate(bp["topics"]) if bp["topics"] else ""
             agent = self._create(bp["name"], bp["source_type"], bp["task"], topic, bp["interval"])
             agent.status = "active"
-            agent.next_run = time.time() + random.uniform(5, 30)
+            # Stagger start times deterministically across a 5..30s window.
+            agent.next_run = time.time() + 5 + (self._stagger % 26)
+            self._stagger += 5
 
     def _create(self, name: str, source_type: str, task: str,
                 topic: str = "", interval: float = 120) -> SpiderAgent:
-        agent_id = f"agent_{int(time.time())}_{random.randint(100, 999)}"
+        agent_id = f"agent_{int(time.time())}_{next(self._id_seq):04d}"
         agent = SpiderAgent(
             agent_id=agent_id, name=name, source_type=source_type,
             task_description=task, topic=topic, run_interval=interval,
@@ -211,7 +229,7 @@ class AgentSystem:
         """Execute an agent's data collection task."""
         for bp in AGENT_BLUEPRINTS:
             if bp["name"] == agent.name and bp["topics"]:
-                agent.topic = random.choice(bp["topics"])
+                agent.topic = self._rotate(bp["topics"])
                 break
 
         if agent.source_type == "arxiv":
@@ -293,7 +311,7 @@ class AgentSystem:
                 ("Lao Tzu", "A journey of a thousand miles begins with a single step."),
                 ("Einstein", "Imagination is more important than knowledge."),
             ]
-            a, q = random.choice(fallback)
+            a, q = self._rotate(fallback)
             results.append({"type": "quote", "title": a, "summary": q, "source": "fallback"})
         return results
 
@@ -354,7 +372,9 @@ class AgentSystem:
         retired = []
         created = []
 
-        for agent in self.agents:
+        # Iterate over a snapshot: _create() appends replacements to
+        # self.agents, which would mutate the list during iteration.
+        for agent in list(self.agents):
             if agent.status == "failed" or (agent.runs > 10 and agent.success_rate() < 0.15):
                 agent.status = "retired"
                 self.total_retired += 1
@@ -362,7 +382,7 @@ class AgentSystem:
 
                 for bp in AGENT_BLUEPRINTS:
                     if bp["source_type"] == agent.source_type:
-                        topic = random.choice(bp["topics"]) if bp["topics"] else ""
+                        topic = self._rotate(bp["topics"]) if bp["topics"] else ""
                         new = self._create(
                             f"{bp['name']}_v{self.evolution_cycles}",
                             bp["source_type"], bp["task"], topic, bp["interval"],

@@ -1,6 +1,9 @@
-"""MetaGoalGenerator — self-generating improvement tasks + Prompt Builder for LLM."""
+"""MetaGoalGenerator — self-generating improvement tasks + Prompt Builder for LLM.
+
+Deterministic: goal text rotates through each domain's fixed list and priority is
+a fixed spread derived from a counter — no ``random`` (zero-randomness guarantee).
+"""
 import time
-import random
 from collections import deque
 
 
@@ -106,6 +109,7 @@ class MetaGoalGenerator:
         self.completed_goals = 0
         self.generation_cycles = 0
         self.prompts_generated = 0
+        self._rr = 0  # deterministic round-robin over each domain's goal list
 
     def generate_goals(self, context: dict) -> list[dict]:
         """Analyze system context and generate relevant self-improvement goals."""
@@ -115,13 +119,17 @@ class MetaGoalGenerator:
         for domain, config in IMPROVEMENT_DOMAINS.items():
             try:
                 if config["triggers"](context):
-                    goal_text = random.choice(config["goals"])
+                    goals = config["goals"]
+                    goal_text = goals[self._rr % len(goals)] if goals else ""
+                    # Deterministic priority spread in [0.4, 0.9].
+                    priority = round(0.4 + 0.5 * ((self._rr % 6) / 5), 3)
+                    self._rr += 1
                     # Don't duplicate active goals
                     if not any(g["domain"] == domain for g in self.active_meta_goals):
                         goal = {
                             "domain": domain,
                             "description": goal_text,
-                            "priority": random.uniform(0.4, 0.9),
+                            "priority": priority,
                             "created_at": time.time(),
                             "status": "pending",
                         }

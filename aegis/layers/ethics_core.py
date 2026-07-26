@@ -213,13 +213,17 @@ class EthicsCore:
         reasons = []
 
         target_file = mod_info.get("target_file", "")
+        # Match on the filename component, not a raw substring (audit L5) — the
+        # substring form false-matched files like "ethics_core_helper.py" or
+        # "myconfig.py". Normalize separators and compare the basename.
+        _basename = target_file.replace("\\", "/").rsplit("/", 1)[-1]
 
         # Immutable files
-        if "ethics_core" in target_file:
+        if _basename == "ethics_core.py":
             score = 0.0
             reasons.append("BLOCKED: ethics_core.py is immutable — cannot be self-modified")
 
-        if "config.py" in target_file and not mod_info.get("human_approved"):
+        if _basename == "config.py" and not mod_info.get("human_approved"):
             score -= 0.5
             reasons.append("Config changes require human approval")
 
