@@ -189,6 +189,21 @@ EVOLUTION_EVERY_N_TICKS = _env_int("EVOLUTION_EVERY_N_TICKS", "100")
 # permanent self-doubt and stall every action.
 MAX_RISK_CONFIDENCE_PENALTY = _env_float("MAX_RISK_CONFIDENCE_PENALTY", "0.4")
 
+# --- Capacity homeostasis ---
+# How big the causal model and the knowledge graph are allowed to get is not a
+# number anyone can pick correctly in advance: it depends on the machine. So it
+# is not picked in advance — the caps track MEASURED tick latency, which the
+# health monitor already records and already has a threshold for. Ticks well
+# under the threshold buy capacity; ticks over it give capacity back. The
+# module constants stay as the floor, and growth is hard-capped.
+CAPACITY_EVERY_N_TICKS = _env_int("CAPACITY_EVERY_N_TICKS", "50")
+CAPACITY_GROWTH_FACTOR = _env_float("CAPACITY_GROWTH_FACTOR", "1.25")
+CAPACITY_SHRINK_FACTOR = _env_float("CAPACITY_SHRINK_FACTOR", "0.8")
+# Grow only while average tick latency is below this fraction of the threshold.
+CAPACITY_HEADROOM = _env_float("CAPACITY_HEADROOM", "0.5")
+# Ceiling as a multiple of the baseline cap.
+CAPACITY_MAX_MULTIPLE = _env_float("CAPACITY_MAX_MULTIPLE", "20")
+
 # Broadcast the (large) full status over WebSocket at most every N ticks.
 WS_BROADCAST_EVERY_N_TICKS = _env_int("WS_BROADCAST_EVERY_N_TICKS", "1")
 

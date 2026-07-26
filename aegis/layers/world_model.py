@@ -10,6 +10,7 @@ The core is deterministic (Laplace-smoothed frequency estimates); LLM-assisted
 chain refinement is optional and driven by the Substrate.
 """
 import json
+import re
 import time
 import logging
 from pathlib import Path
@@ -18,9 +19,19 @@ from aegis.config import WORLD_MODEL_DIR
 
 logger = logging.getLogger("aegis.world_model")
 
-MAX_LINKS = 2000
+MAX_LINKS = 2000          # baseline floor; the live cap is self.max_links
 MAX_CHAINS = 50
 MIN_OBSERVATIONS_FOR_PREDICTION = 2
+
+# Retention. Pruning used to sort on observation count alone, so a rare but
+# decisive failure was dropped before a frequent coin-flip link — backwards for
+# a memory of what goes wrong. A link is now kept for how much it TELLS us:
+# how far its success rate sits from 50/50 (decisiveness), how much evidence
+# backs that (saturating), and a deliberate bias toward remembering failure.
+EVIDENCE_SATURATION = 10.0   # observations beyond this add no further weight
+FAILURE_RETENTION_BIAS = 1.5  # a known failure outranks an equally decisive win
+
+_TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
 
 class WorldModel:
@@ -29,6 +40,15 @@ class WorldModel:
         self.links: dict[str, dict[str, dict]] = {}
         self.chains: list[dict] = []
         self.total_observations = 0
+        # Live capacity. A module constant could only ever be a guess; this is
+        # the floor, and Substrate.regulate_capacity() raises it while ticks are
+        # cheap and gives it back when they are not.
+        self.max_links = MAX_LINKS
+        # Derived index: token -> causes containing it. Not persisted (the
+        # on-disk format is unchanged); rebuilt on load, like the cognitive
+        # graph's in-degree index. Without it every risk lookup walked the whole
+        # cause table, and risks_for now runs on every tick.
+        self._cause_index: dict[str, set[str]] = {}
         self._store_path = store_path or (WORLD_MODEL_DIR / "model.json")
         self._load()
 
@@ -44,6 +64,50 @@ class WorldModel:
             except Exception:
                 logger.warning("Failed to load world model from %s — starting empty",
                                self._store_path, exc_info=True)
+        self._rebuild_index()
+
+    # ── cause index ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _tokens(text: str) -> set[str]:
+        """Tokens of a cause/query string, lowercased and punctuation-split.
+
+        Matching is by token, not by raw substring: a query for ``rest`` no
+        longer matches ``forest_fire``. Identifiers like ``expand_knowledge``
+        still match ``expand`` because ``_`` is a separator.
+        """
+        return {t for t in _TOKEN_SPLIT.split(text.lower()) if t}
+
+    def _rebuild_index(self):
+        self._cause_index = {}
+        for cause in self.links:
+            self._index_cause(cause)
+
+    def _index_cause(self, cause: str):
+        for token in self._tokens(cause):
+            self._cause_index.setdefault(token, set()).add(cause)
+
+    def _deindex_cause(self, cause: str):
+        for token in self._tokens(cause):
+            bucket = self._cause_index.get(token)
+            if bucket is not None:
+                bucket.discard(cause)
+                if not bucket:
+                    del self._cause_index[token]
+
+    def _candidate_causes(self, tokens: list[str]) -> list[tuple[str, dict]]:
+        """Causes worth examining for these query tokens.
+
+        Sorted so the result order never depends on set iteration order — the
+        zero-randomness guarantee covers this path too.
+        """
+        query = {t for raw in tokens if raw for t in self._tokens(raw)}
+        if not query:
+            return list(self.links.items())
+        causes: set[str] = set()
+        for token in query:
+            causes |= self._cause_index.get(token, set())
+        return [(c, self.links[c]) for c in sorted(causes) if c in self.links]
 
     def save(self):
         data = {
@@ -73,24 +137,39 @@ class WorldModel:
             link["successes"] += 1
         link["updated"] = time.time()
         self.total_observations += 1
-        self._prune()
+        self._index_cause(cause)
+        self._prune(protect=(cause, effect))
 
     @staticmethod
     def _strength(link: dict) -> float:
         """Laplace-smoothed success probability of the link."""
         return (link["successes"] + 1) / (link["observations"] + 2)
 
-    def _prune(self):
+    def _retention_score(self, link: dict) -> float:
+        """How much this link tells us. Higher survives pruning longer."""
+        strength = self._strength(link)
+        decisiveness = abs(strength - 0.5) * 2
+        evidence = min(1.0, link["observations"] / EVIDENCE_SATURATION)
+        bias = FAILURE_RETENTION_BIAS if strength < 0.5 else 1.0
+        return decisiveness * evidence * bias
+
+    def _prune(self, protect: tuple[str, str] | None = None):
         total_links = sum(len(v) for v in self.links.values())
-        if total_links <= MAX_LINKS:
+        if total_links <= self.max_links:
             return
-        # Drop the least-observed, oldest links first.
-        flat = [(c, e, l) for c, effects in self.links.items() for e, l in effects.items()]
-        flat.sort(key=lambda x: (x[2]["observations"], x[2]["updated"]))
-        for cause, effect, _ in flat[:total_links - MAX_LINKS]:
+        # Drop the least informative links first — NOT simply the least
+        # observed. `protect` shields the link just recorded: otherwise a fresh
+        # observation, which necessarily has the least evidence, could be
+        # evicted by the very prune it triggered and nothing new could ever be
+        # learned once the model was full.
+        flat = [(c, e, l) for c, effects in self.links.items() for e, l in effects.items()
+                if (c, e) != protect]
+        flat.sort(key=lambda x: (self._retention_score(x[2]), x[2]["updated"]))
+        for cause, effect, _ in flat[:total_links - self.max_links]:
             del self.links[cause][effect]
             if not self.links[cause]:
                 del self.links[cause]
+                self._deindex_cause(cause)
 
     # ── inference ────────────────────────────────────────────────────
 
@@ -121,11 +200,8 @@ class WorldModel:
     def risks_for(self, tokens: list[str], k: int = 5) -> list[dict]:
         """Weak links (low success rate) whose cause matches any token — the
         model's memory of what tends to FAIL around this topic."""
-        toks = [t.lower() for t in tokens if t]
         risks = []
-        for cause, effects in self.links.items():
-            if toks and not any(t in cause.lower() for t in toks):
-                continue
+        for cause, effects in self._candidate_causes(tokens):
             for effect, link in effects.items():
                 s = self._strength(link)
                 if s < 0.5 and link["observations"] >= MIN_OBSERVATIONS_FOR_PREDICTION:
@@ -151,9 +227,7 @@ class WorldModel:
 
         # Plan: strongest links whose cause matches the objective.
         steps = []
-        for cause, effects in self.links.items():
-            if tokens and not any(t in cause.lower() for t in tokens):
-                continue
+        for cause, effects in self._candidate_causes(tokens):
             for effect, link in effects.items():
                 s = self._strength(link)
                 if s >= 0.5 and link["observations"] >= MIN_OBSERVATIONS_FOR_PREDICTION:

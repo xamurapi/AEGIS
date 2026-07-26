@@ -28,7 +28,9 @@ DEFAULT_DRIVES = {
     "stability": 0.15,    # preserve energy / health
 }
 
-MAX_VALUE_ENTRIES = 500
+# Not in any hot path: choose() costs O(number of options offered), not O(this).
+# The cap only bounds memory and the on-disk JSON, so it is generous.
+MAX_VALUE_ENTRIES = 5000
 LEARNING_RATE = 0.2  # how fast a utility moves toward realized reward
 
 

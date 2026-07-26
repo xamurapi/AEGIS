@@ -98,8 +98,10 @@ def _build_hub_graph(tmp_path, monkeypatch, leaves=3):
 def test_pruning_decrements_shared_target_without_dropping_it(tmp_path, monkeypatch):
     cg, g = _build_hub_graph(tmp_path, monkeypatch)
     # Tighten the cap so the next insert evicts the degree-0 newcomer AND the
-    # oldest leaf — the hub keeps two of its three incoming edges.
-    monkeypatch.setattr(cg, "MAX_NODES", 3)
+    # oldest leaf — the hub keeps two of its three incoming edges. The cap is
+    # per-instance now (Substrate.regulate_capacity moves it at runtime), so it
+    # is set on the graph rather than on the module constant.
+    g.max_nodes = 3
     g.add_node("newcomer", "concept")
 
     assert len(g.nodes) == 3
@@ -114,7 +116,7 @@ def test_in_degree_entry_is_dropped_when_it_reaches_zero(tmp_path, monkeypatch):
     cg, g = _build_hub_graph(tmp_path, monkeypatch, leaves=2)
     # Evict everything but the hub: its in-degree falls to 0 and the entry must
     # go away entirely rather than linger at zero.
-    monkeypatch.setattr(cg, "MAX_NODES", 1)
+    g.max_nodes = 1
     g.add_node("newcomer", "concept")
 
     assert set(g.nodes) == {"hub"}

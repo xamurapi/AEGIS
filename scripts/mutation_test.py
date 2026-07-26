@@ -33,7 +33,8 @@ TARGETS = [
     # regression tests, which are what cover the hardening added to these
     # modules (shape coercion, degree index, torn-log recovery, ...).
     ("aegis/layers/world_model.py",
-     "tests/test_world_model.py tests/test_audit_round3.py"),
+     "tests/test_world_model.py tests/test_audit_round3.py "
+     "tests/test_capacity_and_retention.py"),
     ("aegis/layers/cognitive_graph.py",
      "tests/test_cognitive_graph.py tests/test_audit_round3.py tests/test_mutation_gaps.py"),
     ("aegis/layers/evolution_engine.py",

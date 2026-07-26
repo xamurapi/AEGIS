@@ -18,7 +18,9 @@ from aegis.config import EVOLUTION_DIR
 
 logger = logging.getLogger("aegis.evolution")
 
-MAX_LINEAGE = 200
+# Pure audit trail — never read during inference, so length costs nothing but
+# disk. Kept long enough to reconstruct a full selection history.
+MAX_LINEAGE = 2000
 MUTATION_MAGNITUDE = 0.1  # ±10% per mutated parameter
 # A candidate must beat the champion by at least this margin to win —
 # guards against benchmark noise promoting a sideways change.

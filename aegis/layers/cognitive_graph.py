@@ -54,6 +54,9 @@ class CognitiveGraph:
         # self.edges on load, so the on-disk format is unchanged.
         self._in_degree: dict[str, int] = {}
         self._ingested_episodic = 0  # high-water mark into memory.episodic
+        # Live capacity — MAX_NODES is the floor, not the verdict. See
+        # Substrate.regulate_capacity(): the cap follows measured tick cost.
+        self.max_nodes = MAX_NODES
         self._store_path = store_path or (COGNITIVE_GRAPH_DIR / "graph.json")
         self._load()
 
@@ -132,12 +135,12 @@ class CognitiveGraph:
         return len(self.edges.get(node_id, {})) + self._in_degree.get(node_id, 0)
 
     def _prune(self):
-        if len(self.nodes) <= MAX_NODES:
+        if len(self.nodes) <= self.max_nodes:
             return
         # Drop lowest-degree, oldest nodes and their edges.
         candidates = sorted(self.nodes.items(),
                             key=lambda kv: (self._degree(kv[0]), kv[1]["updated"]))
-        for node_id, _ in candidates[:len(self.nodes) - MAX_NODES]:
+        for node_id, _ in candidates[:len(self.nodes) - self.max_nodes]:
             self.nodes.pop(node_id, None)
             # Outgoing edges disappear — every target loses one incoming edge.
             for dst in self.edges.pop(node_id, {}):

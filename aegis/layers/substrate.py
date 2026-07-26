@@ -22,6 +22,8 @@ from aegis.config import (
     SANDBOX_TIMEOUT,
     WORLD_MODEL_EVERY_N_TICKS, COGNITIVE_GRAPH_EVERY_N_TICKS, EVOLUTION_EVERY_N_TICKS,
     MAX_RISK_CONFIDENCE_PENALTY,
+    CAPACITY_EVERY_N_TICKS, CAPACITY_GROWTH_FACTOR, CAPACITY_SHRINK_FACTOR,
+    CAPACITY_HEADROOM, CAPACITY_MAX_MULTIPLE,
 )
 from aegis.event_bus import EventBus, Event, Layer
 from aegis.layers.memory import MemorySystem
@@ -51,8 +53,8 @@ from aegis.layers.emotion_nlp import EmotionNLP
 from aegis.layers.weight_modifier import WeightModifier
 from aegis.layers.dataset_builder import DatasetBuilder
 from aegis.layers.code_modifier import CodeModifier
-from aegis.layers.world_model import WorldModel
-from aegis.layers.cognitive_graph import CognitiveGraph
+from aegis.layers.world_model import WorldModel, MAX_LINKS as WM_MAX_LINKS
+from aegis.layers.cognitive_graph import CognitiveGraph, MAX_NODES as CG_MAX_NODES
 from aegis.layers.evolution_engine import EvolutionEngine
 from aegis.layers.goal_intelligence import GoalIntelligence
 from aegis.layers.feedback_loop import FeedbackLoop
@@ -277,6 +279,42 @@ class Substrate:
                 system.save()
             except Exception:
                 logger.exception("Failed to persist %s", type(system).__name__)
+
+    def regulate_capacity(self):
+        """Size the learned structures by measured cost, not by a guess.
+
+        MAX_LINKS / MAX_NODES were hand-picked constants: nothing derived them,
+        and the right value depends on the machine. Tick latency is already
+        measured and already has a threshold, so it is used as the control
+        signal — capacity grows while ticks are comfortably cheap and is handed
+        back when they are not. Bounded on both sides: never below the
+        configured baseline, never above CAPACITY_MAX_MULTIPLE of it.
+        """
+        durations = list(self.health.tick_durations)
+        if not durations:
+            return  # no measurements yet — no evidence, so no change
+        avg_ms = sum(durations) / len(durations)
+        threshold = self.health.thresholds["tick_duration_ms"]
+
+        if avg_ms < threshold * CAPACITY_HEADROOM:
+            factor = CAPACITY_GROWTH_FACTOR
+        elif avg_ms > threshold:
+            factor = CAPACITY_SHRINK_FACTOR
+        else:
+            return  # inside the comfort band — hold
+
+        for structure, attr, baseline in (
+            (self.world_model, "max_links", WM_MAX_LINKS),
+            (self.cognitive_graph, "max_nodes", CG_MAX_NODES),
+        ):
+            try:
+                current = getattr(structure, attr)
+                scaled = int(max(baseline,
+                                 min(baseline * CAPACITY_MAX_MULTIPLE, current * factor)))
+                setattr(structure, attr, scaled)
+            except Exception:
+                logger.exception("Capacity regulation failed for %s.%s",
+                                 type(structure).__name__, attr)
 
     def _is_llm_tick(self) -> bool:
         return self.llm.enabled and self.tick_count % LLM_THINK_EVERY_N_TICKS == 0
@@ -1576,6 +1614,8 @@ class Substrate:
             await self._decide()
             await self._act()
             await self._reflect()
+            if self.tick_count % max(1, CAPACITY_EVERY_N_TICKS) == 0:
+                self.regulate_capacity()
             self.health.record_tick((time.time() - tick_start) * 1000, success=True)
         except Exception as e:
             self.health.record_tick((time.time() - tick_start) * 1000, success=False)
@@ -1703,6 +1743,12 @@ class Substrate:
             "evolution": self.evolution.status(),
             "goal_intelligence": self.goal_intelligence.status(),
             "feedback_loop": self.feedback_loop.status(),
+            "capacity": {
+                "world_model_max_links": self.world_model.max_links,
+                "cognitive_graph_max_nodes": self.cognitive_graph.max_nodes,
+                "world_model_baseline": WM_MAX_LINKS,
+                "cognitive_graph_baseline": CG_MAX_NODES,
+            },
             "reward_signal": round(self._compute_reward(), 4),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),
