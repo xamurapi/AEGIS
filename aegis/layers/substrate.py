@@ -21,6 +21,7 @@ from aegis.config import (
     EVAL_DIR, EVAL_EVERY_N_TICKS, ENV_STEP_EVERY_N_TICKS, SKILL_SYNTH_EVERY_N_TICKS,
     SANDBOX_TIMEOUT,
     WORLD_MODEL_EVERY_N_TICKS, COGNITIVE_GRAPH_EVERY_N_TICKS, EVOLUTION_EVERY_N_TICKS,
+    MAX_RISK_CONFIDENCE_PENALTY,
 )
 from aegis.event_bus import EventBus, Event, Layer
 from aegis.layers.memory import MemorySystem
@@ -581,6 +582,30 @@ class Substrate:
             for mg in new_meta:
                 self.autobiography.log_event("meta_goal", mg["description"][:60], 0.5)
 
+        # ── System 4: value-driven selection ─────────────────────────
+        # Learned utility picks the objective BEFORE the decision is final.
+        # This used to run after ethics had already judged `decision`, so the
+        # choice was recorded as a number and steered nothing: the system
+        # learned a utility it never acted on. It runs ahead of the LLM block
+        # so a hosted model can still override, and it stands alone on the
+        # ticks where no LLM call is made. Guarded — motivation must never be
+        # able to abort a tick.
+        _tt = self.health.successful_ticks + self.health.failed_ticks
+        error_rate = self.health.error_count / max(_tt, 1) if _tt > 0 else 0.0
+        gi_ctx = {
+            "tick": self.tick_count,
+            "energy": self.emotions.energy,
+            "error_rate": error_rate,
+            "curiosity": self.goals.curiosity_level,
+        }
+        gi_choice = None
+        try:
+            gi_choice = self.goal_intelligence.choose([decision] + alternatives, gi_ctx)
+            if gi_choice and gi_choice.get("objective"):
+                decision = gi_choice["objective"]
+        except Exception:
+            logger.exception("Value-driven selection failed — keeping heuristic decision")
+
         # LLM-powered decision making
         if self._is_llm_tick() and not self._regulation_directives.get("skip_llm"):
             options = [decision] + alternatives
@@ -608,6 +633,24 @@ class Substrate:
                     payload={"decision": decision, "reasoning": reasoning[:100]}
                 ))
 
+        # ── System 1: known failure history costs confidence ─────────
+        # The World Model observed which causes tend to fail. That memory was
+        # written every tick and read by nothing, so a course of action with a
+        # proven failure history was proposed with the same confidence as an
+        # untried one. Confidence feeds both the introspection trace and the
+        # ethics gate below, so this is where the causal memory earns its keep.
+        try:
+            focus_for_risk = focus["name"] if focus else "idle_exploration"
+            risks = self.world_model.risks_for([decision, focus_for_risk])
+            if risks:
+                penalty = min(MAX_RISK_CONFIDENCE_PENALTY,
+                              sum(r["failure_rate"] for r in risks) / 10)
+                confidence = round(max(0.05, confidence * (1 - penalty)), 4)
+                reasoning += (f" | {len(risks)} known failure mode(s) for this course "
+                              f"of action lower confidence by {round(penalty * 100)}%")
+        except Exception:
+            logger.exception("Risk-aware confidence adjustment failed")
+
         trace = self.introspection.trace_decision(
             decision, alternatives, reasoning, confidence
         )
@@ -631,21 +674,12 @@ class Substrate:
             event_type="decision", payload={"decision": decision, "ethics": eth_result}
         ))
 
-        # ── Higher systems (4 & 5 & 1): value-driven selection, experience
-        #    opening, and a causal chain for the objective. All deterministic
-        #    and cheap; guarded so a failure here cannot abort the tick. ──
+        # ── Higher systems (5 & 1): experience opening and a causal chain for
+        #    the objective. Deterministic and cheap; guarded so a failure here
+        #    cannot abort the tick. (System 4 now runs before the decision is
+        #    final — see the value-driven selection block above.) ──
         try:
             focus_name = focus["name"] if focus else "idle_exploration"
-            _tt = self.health.successful_ticks + self.health.failed_ticks
-            error_rate = self.health.error_count / max(_tt, 1) if _tt > 0 else 0.0
-            options = [decision] + alternatives
-            gi_ctx = {
-                "tick": self.tick_count,
-                "energy": self.emotions.energy,
-                "error_rate": error_rate,
-                "curiosity": self.goals.curiosity_level,
-            }
-            gi_choice = self.goal_intelligence.choose(options, gi_ctx)
 
             # System 5: open an experience for this decision — it will be closed
             # in REFLECT with the tick's realized reward and inferred cause.
@@ -693,9 +727,26 @@ class Substrate:
             source = _LEARNING_SOURCES[self._learning_source_idx % len(_LEARNING_SOURCES)]
             self._learning_source_idx += 1
 
-            # Pick topic from most recent semantic concepts, or default
-            topics = list(self.memory.semantic.keys())[-10:]
-            topic = topics[self.tick_count % max(1, len(topics))] if topics else "artificial intelligence"
+            # ── System 2: the graph chooses what to learn next ────────
+            # The cognitive graph was ingested every 8 ticks and read by
+            # nothing, so the topic came off a flat recency slice of semantic
+            # memory — the exact "recency list" the graph exists to replace.
+            # Now the next topic is the concept most connected to the current
+            # focus, and recency is only the fallback.
+            topic = ""
+            try:
+                learn_focus = self.goals.get_current_focus()
+                focus_name = learn_focus["name"] if learn_focus else "idle_exploration"
+                for hit in self.cognitive_graph.related(focus_name):
+                    if hit["type"] == "concept":
+                        topic = hit["node"]
+                        break
+            except Exception:
+                logger.exception("Graph-guided topic selection failed — falling back to recency")
+
+            if not topic:
+                topics = list(self.memory.semantic.keys())[-10:]
+                topic = topics[self.tick_count % max(1, len(topics))] if topics else "artificial intelligence"
 
             learn_result = await self.external_learning.learn_from_source(source, topic)
             if learn_result.get("success"):
@@ -1127,8 +1178,11 @@ class Substrate:
         not crash the substrate or leave a dangling task that blocks future runs.
         """
         try:
+            # System 5 reaches the training data here: the experience log is the
+            # only source that carries WHY an outcome happened.
             wmod_result = await self.self_mod.propose_weight_modification(
-                self.memory, self.agent_system, self.ethics
+                self.memory, self.agent_system, self.ethics,
+                feedback_loop=self.feedback_loop,
             )
             status_str = wmod_result.get("status", "unknown")
             self.autobiography.log_event(

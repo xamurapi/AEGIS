@@ -182,6 +182,13 @@ COGNITIVE_GRAPH_EVERY_N_TICKS = _env_int("COGNITIVE_GRAPH_EVERY_N_TICKS", "8")
 EVOLUTION_EVERY_N_TICKS = _env_int("EVOLUTION_EVERY_N_TICKS", "100")
 # Goal Intelligence runs every tick inside DECIDE (cheap, deterministic).
 
+# --- Behaviour closure: how strongly learned structures steer the tick ---
+# Upper bound on how much a course of action's observed failure history may cut
+# decision confidence. Confidence feeds the ethics gate, so this is capped: a
+# long tail of remembered failures must not be able to drive the system into
+# permanent self-doubt and stall every action.
+MAX_RISK_CONFIDENCE_PENALTY = _env_float("MAX_RISK_CONFIDENCE_PENALTY", "0.4")
+
 # Broadcast the (large) full status over WebSocket at most every N ticks.
 WS_BROADCAST_EVERY_N_TICKS = _env_int("WS_BROADCAST_EVERY_N_TICKS", "1")
 

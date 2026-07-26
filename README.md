@@ -1,6 +1,6 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
-[![tests](https://img.shields.io/badge/tests-1354%20passing-2ea44f)](#testing--quality)
+[![tests](https://img.shields.io/badge/tests-1363%20passing-2ea44f)](#testing--quality)
 [![coverage](https://img.shields.io/badge/branch%20coverage-92%25-2ea44f)](#testing--quality)
 [![mutation score](https://img.shields.io/badge/mutation%20score-99.8%25-2ea44f)](#testing--quality)
 [![audit](https://img.shields.io/badge/audit-3%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
@@ -9,7 +9,7 @@
 
 > A self-developing AI that rewrites its own source code, trains its own neural network weights, and evolves autonomously through a closed feedback loop.
 > **36 modules · 7-layer architecture + 5 higher-order systems · Triple LLM brain · Deterministic core cycle.**
-> **1354 tests · 92% branch coverage · 99.8% mutation score · 3 audit rounds.**
+> **1363 tests · 92% branch coverage · 99.8% mutation score · 3 audit rounds.**
 > **Safe defaults:** source self-rewriting is opt-in (`AEGIS_CODE_SELF_MOD_ENABLED=1`), the control plane binds to `127.0.0.1`, and self-written skills run only in a child-process sandbox.
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
@@ -65,6 +65,23 @@ about causes, keeps only changes that measurably help, and learns from real resu
 All five are deterministic and dependency-free; an LLM may refine a plan, but is
 never required for them to function. They persist atomically and are bounded in
 size, so no structure grows without limit.
+
+### Where each one changes behaviour
+
+A learning system that only accumulates is a logger. Four of these five recorded
+knowledge that nothing read — the chain `action → result → evaluation → new
+knowledge` stopped one step short of `→ behaviour change`. This is the step that
+closes it, and each row below is pinned by a test in
+[`tests/test_behavior_closure.py`](tests/test_behavior_closure.py) that fails if
+the wiring is removed:
+
+| System | What it now changes |
+|---|---|
+| World Model | A course of action with an observed failure history is proposed with **lower confidence** — and confidence feeds the ethics gate. Capped by `MAX_RISK_CONFIDENCE_PENALTY` so remembered failure cannot stall the system. |
+| Cognitive Graph | The **next learning topic** is the concept most connected to the current focus; the flat recency slice is only the fallback. |
+| Goal Intelligence | Learned utility **selects the decision**, before ethics judges it and before the LLM may override it — so on non-LLM ticks motivation alone steers the action. |
+| Feedback Loop | The experience log **reaches the LoRA dataset**, which is the only training source carrying *why* an outcome happened. |
+| Evolution Engine | Already closed by construction (benchmark-gated) — see the limitation below. |
 
 > **Known limitation, stated plainly.** The Evolution Engine's *mechanism* is
 > sound — mutate, benchmark, keep or revert, with the champion never updated from
@@ -176,7 +193,7 @@ AEGIS/
 │   └── СИСТЕМЫ.md             # the five higher-order systems in detail
 ├── scripts/
 │   └── mutation_test.py       # dependency-free mutation-testing harness
-├── tests/                      # 1354 tests
+├── tests/                      # 1363 tests
 │   └── features/              # executable Gherkin specifications
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
@@ -302,6 +319,7 @@ Status: ONLINE
 | `WORLD_MODEL_EVERY_N_TICKS` | Observe cause→effect, build a causal chain | `5` |
 | `COGNITIVE_GRAPH_EVERY_N_TICKS` | Ingest recent memory into the graph | `8` |
 | `EVOLUTION_EVERY_N_TICKS` | Propose a mutation (judged by the next benchmark) | `100` |
+| `MAX_RISK_CONFIDENCE_PENALTY` | Cap on how far observed failure history may cut decision confidence | `0.4` |
 | `EVAL_EVERY_N_TICKS` | Held-out benchmark run (the fitness signal) | `50` |
 | `ENV_STEP_EVERY_N_TICKS` | Live environment step — one real task, real reward | `2` |
 | `SKILL_SYNTH_EVERY_N_TICKS` | Attempt to synthesize a skill for a failing task kind | `200` |
@@ -324,7 +342,7 @@ API keys can also be set at runtime via the dashboard (LLM Brain tab).
 ```bash
 pip install -r requirements-dev.txt
 
-python -m pytest -q                                    # 1354 tests
+python -m pytest -q                                    # 1363 tests
 python -m coverage run -m pytest -q && python -m coverage report   # gate: 90%
 python scripts/mutation_test.py                        # gate: no survivors
 ```
@@ -333,7 +351,7 @@ No ML dependencies are required — the whole suite runs offline (no network, no
 
 | Metric | Value | Gate |
 |---|---:|---:|
-| Tests | **1354** (+2 skipped) | all green |
+| Tests | **1363** (+2 skipped) | all green |
 | Branch coverage (whole package) | **92%** | **90%** |
 | Mutation score | **99.8%** (446/447) | no survivors |
 | Modules at 100% mutation score | **12 of 13** | — |

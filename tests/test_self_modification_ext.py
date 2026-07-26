@@ -12,7 +12,8 @@ class FakeDatasetBuilder:
             "success": True, "total_size": 100, "dataset_dir": "/tmp/ds",
         }
 
-    def build_from_memory(self, memory, agent_system=None):
+    def build_from_memory(self, memory, agent_system=None, feedback_loop=None):
+        self.last_feedback_loop = feedback_loop
         return self._result
 
     def status(self):

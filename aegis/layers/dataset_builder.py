@@ -5,10 +5,13 @@ Deterministic: samples are ordered by a stable content hash (a reproducible
 dataset, and no RNG is used (zero-randomness guarantee).
 """
 import json
+import logging
 import time
 import hashlib
 from pathlib import Path
 from aegis.config import WEIGHT_DATASETS_DIR, TRAIN_MAX_SAMPLES, TRAIN_VAL_SPLIT
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetBuilder:
@@ -18,13 +21,14 @@ class DatasetBuilder:
         self.last_dataset_size = 0
         self.last_dataset_path = ""
 
-    def build_from_memory(self, memory, agent_system=None) -> dict:
+    def build_from_memory(self, memory, agent_system=None, feedback_loop=None) -> dict:
         """Build a training dataset from AEGIS memory systems.
 
         Creates instruction/response pairs from:
         - Semantic knowledge (concept -> definition/summary)
         - Episodic memory (events -> reflections)
         - Agent-collected data (articles, papers -> summaries)
+        - Real outcomes with their inferred cause, when a feedback loop is given
         """
         samples = []
 
@@ -138,6 +142,25 @@ class DatasetBuilder:
                     "output": str(steps),
                     "source": "procedural",
                 })
+
+        # 6. Real outcomes -> cause-carrying pairs (System 5)
+        # The feedback loop records situation -> decision -> result -> cause for
+        # every tick, and that log used to end at the dashboard: export_examples()
+        # had no caller, so the training data was built from memory alone and the
+        # causes were dropped. These are the only rows that teach WHY an outcome
+        # happened rather than restating what the system already believes.
+        if feedback_loop is not None:
+            try:
+                for row in feedback_loop.export_examples():
+                    samples.append({
+                        "instruction": "Given the situation and the decision taken, "
+                                       "state the outcome and the cause behind it.",
+                        "input": row["prompt"],
+                        "output": row["completion"],
+                        "source": "experience",
+                    })
+            except Exception:
+                logger.warning("Failed to add experiences to the dataset", exc_info=True)
 
         # Deduplicate by output
         seen = set()

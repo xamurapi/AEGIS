@@ -13,6 +13,7 @@ AEGIS (`World Model`, `Cognitive Graph`, `Evolution Engine`, `Goal Intelligence`
 | BDD (Gherkin) — поведение систем | Поведение пяти систем на языке спецификации | `tests/features/higher_systems.feature` + `tests/test_bdd_higher_systems.py` |
 | BDD (Gherkin) — безопасность и устойчивость | Гарантии sandbox, control plane, эволюции, лога опыта, обработки ответов LLM | `tests/features/safety_and_resilience.feature` + `tests/test_bdd_safety_resilience.py` |
 | Регрессия аудита | Каждая находка аудита закрыта тестом, который был красным до фикса | `tests/test_audit_low_fixes.py`, `test_audit_round2.py`, `test_audit_round3.py` |
+| Замыкание поведения | Выученная структура **меняет поведение**, а не только накапливается: решение идёт от выученной полезности, известный риск снижает уверенность, граф выбирает тему обучения, журнал опыта доходит до датасета | `tests/test_behavior_closure.py` |
 | Регрессия ядра | Существующие тесты ядра не сломаны интеграцией | `tests/test_*.py` (память, этика, self-mod, eval, …) |
 
 ### Правило для регрессий аудита
@@ -68,7 +69,7 @@ python scripts/mutation_test.py evolution        # одна система по 
 
 | Метрика | Было (раунд 2) | Стало | Гейт |
 |---|---:|---:|---:|
-| Тестов, все зелёные | 981 | **1354** (+2 skip) | — |
+| Тестов, все зелёные | 981 | **1363** (+2 skip) | — |
 | Покрытие (branch, весь пакет) | 93%¹ | **92%**¹ | **90%** |
 | Мутационный балл | 81.0% (362/447) | **99.8%** (446/447) | 100%² |
 | Модулей со 100% мутационным баллом | 6 из 13 | **12 из 13** | — |
@@ -271,7 +272,7 @@ AEGIS_API_TOKEN=demo python -m uvicorn aegis.api.server:app --port 8900
 
 ## 8. Чек-лист перед мержем
 
-1. `python -m pytest -q` — все тесты зелёные (сейчас 1354).
+1. `python -m pytest -q` — все тесты зелёные (сейчас 1363).
 2. `python -m coverage run -m pytest -q && python -m coverage report` — покрытие ≥ 90%.
 3. `python scripts/mutation_test.py` — мутационный балл 100% (кроме задокументированного эквивалентного мутанта).
 4. Новые публичные методы систем имеют: юнит-тест, ассерт на границы, и (для нового поведения) Gherkin-сценарий.

@@ -233,7 +233,8 @@ class SelfModification:
         proposal["status"] = "rolled_back"
         self._cap(self.modifications, proposal)
 
-    async def propose_weight_modification(self, memory, agent_system=None, ethics_core=None) -> dict:
+    async def propose_weight_modification(self, memory, agent_system=None, ethics_core=None,
+                                          feedback_loop=None) -> dict:
         """Propose and execute a weight modification via LoRA fine-tuning.
 
         Full pipeline: build dataset -> ethics check -> train -> validate -> apply/rollback.
@@ -254,7 +255,8 @@ class SelfModification:
 
         # Step 1: Build dataset from memory
         logger.info("Weight modification: building dataset from memory...")
-        dataset_result = self.dataset_builder.build_from_memory(memory, agent_system)
+        dataset_result = self.dataset_builder.build_from_memory(memory, agent_system,
+                                                                feedback_loop=feedback_loop)
         if not dataset_result.get("success"):
             record["status"] = "dataset_failed"
             record["error"] = dataset_result.get("error", "Dataset build failed")
