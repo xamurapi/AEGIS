@@ -1,8 +1,16 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
+[![tests](https://img.shields.io/badge/tests-1354%20passing-2ea44f)](#testing--quality)
+[![coverage](https://img.shields.io/badge/branch%20coverage-92%25-2ea44f)](#testing--quality)
+[![mutation score](https://img.shields.io/badge/mutation%20score-99.8%25-2ea44f)](#testing--quality)
+[![audit](https://img.shields.io/badge/audit-3%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](#requirements)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 > A self-developing AI that rewrites its own source code, trains its own neural network weights, and evolves autonomously through a closed feedback loop.
 > **36 modules · 7-layer architecture + 5 higher-order systems · Triple LLM brain · Deterministic core cycle.**
 > **1354 tests · 92% branch coverage · 99.8% mutation score · 3 audit rounds.**
+> **Safe defaults:** source self-rewriting is opt-in (`AEGIS_CODE_SELF_MOD_ENABLED=1`), the control plane binds to `127.0.0.1`, and self-written skills run only in a child-process sandbox.
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
 
@@ -71,8 +79,19 @@ size, so no structure grows without limit.
 
 ## Key Features
 
-### 🔄 Code Self-Modification
-Every 500 ticks, AEGIS rewrites one of its own `.py` source files (only files small enough to regenerate whole — see `CODE_MOD_MAX_FILE_CHARS`):
+### 🔄 Code Self-Modification — **opt-in, off by default**
+
+Autonomous source rewriting is **disabled unless you set `AEGIS_CODE_SELF_MOD_ENABLED=1`**.
+The reason is a real attack path, not caution theatre: untrusted external content
+(web fetches, agent feeds) flows into semantic memory and from there into LLM
+prompts — while the *same* LLM channel proposes whole-file rewrites that get
+written to disk and executed after restart. That is indirect prompt injection to
+arbitrary code execution, and no pattern/AST blocklist closes it fully. So it
+requires an explicit operator decision (audit finding C2). Parametric
+self-modification and LoRA weight training are unaffected and stay on.
+
+When enabled, every 500 ticks AEGIS rewrites one of its own `.py` source files
+(only files small enough to regenerate whole — see `CODE_MOD_MAX_FILE_CHARS`):
 1. Ethics core evaluates the **full** proposed change and system stability
 2. LLM analyzes the current code and proposes a specific improvement
 3. `code_modifier.py` validates syntax, then runs **AST-based** detection of dangerous calls/imports (`eval`, `exec`, `compile`, `__import__`, `os.system`, `subprocess`, `shutil.rmtree`, …) that cannot be fooled by spacing tricks, import aliases (`import os as o; o.kill(...)`), or indirect escape hatches (`importlib`, `builtins`)
@@ -145,7 +164,7 @@ deployment should add a container/seccomp sandbox with network egress blocked.
 ## Project Structure
 
 ```
-aegis/
+AEGIS/
 ├── main.py
 ├── requirements.txt           # core runtime
 ├── requirements-llm.txt        # hosted LLM providers (DeepSeek/Claude)
@@ -216,8 +235,8 @@ aegis/
 ## Installation
 
 ```bash
-git clone https://github.com/xamurapi/aegis.git
-cd aegis
+git clone https://github.com/xamurapi/AEGIS.git
+cd AEGIS
 
 # Install core dependencies (FastAPI runtime + dashboard)
 pip install -r requirements.txt
@@ -260,17 +279,31 @@ Status: ONLINE
 | `DEEPSEEK_API_KEY` | DeepSeek API key | *(disabled)* |
 | `ANTHROPIC_API_KEY` | Claude API key | *(disabled)* |
 | `LLM_PROVIDER` | `deepseek` / `claude` / `both` / `local` | `both` |
+| `CLAUDE_MODEL` | Claude model ID | `claude-sonnet-5` |
+| `LLM_TIMEOUT_SECONDS` | Per-call LLM timeout | `60` |
 | `LOCAL_MODEL_PATH` | Local model ID or path | `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` |
 | `LOCAL_MODEL_DEVICE` | `auto` / `cuda` / `cpu` | `cpu` |
+| `LOCAL_MODEL_DTYPE` | `float16` / `bfloat16` / `float32` | `float32` |
 | `LOCAL_MODEL_QUANTIZE` | `4bit` / `8bit` / empty | *(none)* |
+| **Self-modification** | | |
+| `AEGIS_CODE_SELF_MOD_ENABLED` | **Master switch for source self-rewriting** (`1` = on) | `0` *(off)* |
 | `CODE_MOD_EVERY_N_TICKS` | Code self-modification interval | `500` |
+| `CODE_MOD_MIN_TICK` | No source rewrite before this tick | `100` |
+| `CODE_MOD_MAX_PER_SESSION` | Hard cap on source rewrites per run | `10` |
 | `CODE_MOD_MAX_FILE_CHARS` | Max source file size eligible for rewrite | `4000` |
+| **LoRA training** | | |
 | `TRAIN_EVERY_N_TICKS` | LoRA training interval | `1000` |
+| `TRAIN_MIN_INTERVAL` | Min seconds between training runs (cooldown) | `3600` |
+| `TRAIN_MIN_DATASET_SIZE` | Min examples required to start training | `50` |
+| `TRAIN_VAL_LOSS_THRESHOLD` | Val-loss rise that triggers rollback | `0.5` |
+| `TRAIN_MAX_CHECKPOINTS` | Weight checkpoints kept on disk | `5` |
+| `LORA_R` / `LORA_ALPHA` / `LORA_DROPOUT` | LoRA rank / alpha / dropout | `16` / `32` / `0.05` |
 | **Higher-order systems** | | |
 | `WORLD_MODEL_EVERY_N_TICKS` | Observe cause→effect, build a causal chain | `5` |
 | `COGNITIVE_GRAPH_EVERY_N_TICKS` | Ingest recent memory into the graph | `8` |
 | `EVOLUTION_EVERY_N_TICKS` | Propose a mutation (judged by the next benchmark) | `100` |
 | `EVAL_EVERY_N_TICKS` | Held-out benchmark run (the fitness signal) | `50` |
+| `ENV_STEP_EVERY_N_TICKS` | Live environment step — one real task, real reward | `2` |
 | `SKILL_SYNTH_EVERY_N_TICKS` | Attempt to synthesize a skill for a failing task kind | `200` |
 | `SANDBOX_TIMEOUT` | Hard timeout for one sandboxed skill execution (s) | `3.0` |
 | **Security & limits** | | |
@@ -328,6 +361,18 @@ critical sandbox escape (proven RCE), an unauthenticated state leak over WebSock
 and two dead API endpoints — all four in files that were excluded from the coverage
 gate at the time. Those exclusions are gone. QA procedures and metrics live in
 [`docs/QA.md`](docs/QA.md).
+
+---
+
+## Documentation
+
+The engineering docs are written in Russian; this README is the English entry point.
+
+| Document | What is in it |
+|---|---|
+| [`docs/АУДИТ.md`](docs/АУДИТ.md) | All three audit rounds — every finding with file:line, risk, failure scenario and the fix, plus the "red before the fix" proof for each regression test |
+| [`docs/QA.md`](docs/QA.md) | Test levels, reproduction commands, coverage gate, mutation-testing methodology, test-isolation rules and the pre-merge checklist |
+| [`docs/СИСТЕМЫ.md`](docs/СИСТЕМЫ.md) | The five higher-order systems in detail — data structures, tick integration, persistence |
 
 ---
 
