@@ -13,6 +13,9 @@ This frees the sockets and makes the full suite run green in a single pass.
 """
 import sys
 import asyncio
+from pathlib import Path
+
+import pytest
 
 # Prefer the Selector loop on Windows — it is lighter than the Proactor loop for
 # the short, socket-free coroutines these tests run.
@@ -58,3 +61,57 @@ def pytest_sessionfinish(session, exitstatus):
     if _SESSION_LOOP is not None and not _SESSION_LOOP.is_closed():
         _SESSION_LOOP.close()
         _SESSION_LOOP = None
+
+
+# ── isolated persistent state ────────────────────────────────────────
+# Every store reads its directory from a module-level constant imported at
+# import time, so redirecting persistence means patching those constants — not
+# aegis.config, which was already read. Without this a Substrate built in a test
+# loads whatever the last run left on disk, which makes "two identical runs"
+# impossible to write and lets tests contaminate each other.
+
+_STATE_DIRS = (
+    ("aegis.layers.memory", "MEMORY_DIR", "memory"),
+    ("aegis.layers.world_model", "WORLD_MODEL_DIR", "world_model"),
+    ("aegis.layers.cognitive_graph", "COGNITIVE_GRAPH_DIR", "cognitive_graph"),
+    ("aegis.layers.evolution_engine", "EVOLUTION_DIR", "evolution"),
+    ("aegis.layers.goal_intelligence", "GOAL_INTEL_DIR", "goal_intelligence"),
+    ("aegis.layers.feedback_loop", "FEEDBACK_DIR", "feedback"),
+    ("aegis.layers.substrate", "CHECKPOINTS_DIR", "checkpoints"),
+    ("aegis.layers.substrate", "EVAL_DIR", "eval"),
+    ("aegis.layers.substrate", "CODE_BACKUPS_DIR", "code_backups"),
+    ("aegis.layers.dataset_builder", "WEIGHT_DATASETS_DIR", "datasets"),
+    ("aegis.telemetry.store", "TELEMETRY_DIR", "telemetry"),
+)
+
+
+@pytest.fixture
+def isolated_state(tmp_path, monkeypatch):
+    """Point every persistent store at a private directory.
+
+    Yields the root path so a test can inspect what was written.
+    """
+    import importlib
+
+    root = tmp_path / "state"
+    for module_name, constant, subdir in _STATE_DIRS:
+        module = importlib.import_module(module_name)
+        if not hasattr(module, constant):
+            continue
+        target = root / subdir
+        target.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(module, constant, target, raising=False)
+
+    # LLM lifetime stats and state backups take their paths at construction.
+    import aegis.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "TOKEN_STATS_FILE", root / "token_stats.json",
+                        raising=False)
+
+    import aegis.layers.substrate as substrate_mod
+    from aegis.layers.state_backup import StateBackup
+    backup_dir = root / "backups"
+    monkeypatch.setattr(substrate_mod, "StateBackup",
+                        lambda *a, **k: StateBackup(backup_dir=backup_dir),
+                        raising=False)
+
+    yield root

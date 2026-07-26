@@ -48,6 +48,16 @@ TARGETS = [
      "tests/test_sandbox_security.py tests/test_sandbox_mutation.py "
      "tests/test_audit_round2.py tests/test_audit_round3.py "
      "tests/test_bdd_safety_resilience.py"),
+    # Stage-0 foundations of the development spec. These are load-bearing for
+    # everything the later stages verify: if the clock, the safety contract or
+    # the state digest can be mutated without a test noticing, then every
+    # "before/after" comparison built on top of them is decoration.
+    ("aegis/safety/immutable.py", "tests/test_immutable_params.py"),
+    ("aegis/util/canonical.py",
+     "tests/test_canonical.py tests/test_determinism_e2e.py"),
+    ("aegis/clock.py", "tests/test_clock.py"),
+    ("aegis/telemetry/store.py", "tests/test_telemetry.py"),
+    ("aegis/layers/phases/context.py", "tests/test_tick_context.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",

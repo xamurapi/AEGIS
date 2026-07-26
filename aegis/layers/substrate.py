@@ -24,9 +24,15 @@ from aegis.config import (
     CAPACITY_EVERY_N_TICKS, CAPACITY_GROWTH_FACTOR, CAPACITY_SHRINK_FACTOR,
     CAPACITY_HEADROOM, CAPACITY_MAX_MULTIPLE,
 )
+from aegis.clock import CLOCK
 from aegis.event_bus import EventBus, Event, Layer
 from aegis.safety import immutable
 from aegis.util.canonical import digest_of
+from aegis.layers.phases import act, decide, evaluate, perceive, reflect
+from aegis.layers.phases.common import (
+    _CONCEPT_SEEDS, _LEARNING_SOURCES, _META_DOMAINS, _coerce_float, _coerce_int,
+)
+from aegis.layers.phases.context import TickContext
 from aegis.layers.memory import MemorySystem
 from aegis.layers.introspection import IntrospectionEngine
 from aegis.layers.self_modification import SelfModification
@@ -68,39 +74,14 @@ from aegis.eval.sandbox import run_skill
 from aegis.eval.evaluator import Evaluator
 from aegis.eval.environment import TaskEnvironment
 from aegis.llm import LLMEngine
-from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.substrate")
 
-# External learning sources — cycled in order, not random
-_LEARNING_SOURCES = ["wikipedia", "arxiv", "quotes"]
-
-# Meta-knowledge domains — cycled in order
-_META_DOMAINS = ["reasoning", "memory", "ethics", "planning", "creativity"]
-
-# Concept seeds — cycled in order
-_CONCEPT_SEEDS = ["pattern", "cycle", "adaptation", "learning", "stability"]
-
-
-# ── LLM-output coercion (audit M5) ───────────────────────────────────
-# Models routinely return "almost right" JSON — numbers as strings, an object
-# where a scalar was asked for, a scalar where an object was asked for. Using
-# those values raw (``parsed["chosen"] - 1``, ``knowledge.get(...)`` on a str)
-# raises inside a cognitive phase and drops the rest of the tick. These helpers
-# coerce defensively so a malformed field falls back instead of crashing.
-
-def _coerce_int(value, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _coerce_float(value, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+# The round-robin source lists and the LLM-output coercion helpers moved to
+# aegis/layers/phases/common.py when the cycle was split (spec §3.9); they are
+# re-exported here because they were part of this module's surface.
+__all__ = ["Substrate", "_LEARNING_SOURCES", "_META_DOMAINS", "_CONCEPT_SEEDS",
+           "_coerce_int", "_coerce_float"]
 
 
 class Substrate:
@@ -152,7 +133,6 @@ class Substrate:
         self.evolution = EvolutionEngine()
         self.goal_intelligence = GoalIntelligence()
         self.feedback_loop = FeedbackLoop()
-        self._pending_experiences: dict = {}  # phase-open experience ids by kind
 
         # Code self-modification
         aegis_pkg_dir = Path(__file__).parent.parent  # aegis/ package root
@@ -198,7 +178,10 @@ class Substrate:
         self.cycle_times: list[float] = []
         self.last_tick_duration = 0.0
         self.llm_thinking = False
-        self._regulation_directives: dict = {}
+        # Everything one pass through the cycle accumulates lives in the tick
+        # context; the phases read and write it instead of reaching for a
+        # scatter of _tick_* attributes on the substrate (spec §3.9).
+        self._ctx = TickContext(tick=0)
         self._ws_broadcast = None
         self._ws_has_clients = None  # callable -> bool, set by the API server
         self._weight_training_task: asyncio.Task | None = None  # detached LoRA run
@@ -210,12 +193,52 @@ class Substrate:
         self._concept_seed_idx = 0
         self._param_mod_idx = 0
 
-        # Per-tick metric accumulators (reset each tick)
-        self._tick_new_concepts = 0
-        self._tick_new_episodic = 0
-        self._tick_llm_insights = 0
-
         self._restore_checkpoint()
+
+    # ── per-tick state, kept reachable under its original names ──────
+    # These used to be plain attributes. They now live on the tick context, but
+    # phases, tests and the dashboard still refer to them by the old names, so
+    # they stay addressable exactly as before.
+
+    @property
+    def _tick_new_concepts(self) -> int:
+        return self._ctx.new_concepts
+
+    @_tick_new_concepts.setter
+    def _tick_new_concepts(self, value: int) -> None:
+        self._ctx.new_concepts = value
+
+    @property
+    def _tick_new_episodic(self) -> int:
+        return self._ctx.new_episodic
+
+    @_tick_new_episodic.setter
+    def _tick_new_episodic(self, value: int) -> None:
+        self._ctx.new_episodic = value
+
+    @property
+    def _tick_llm_insights(self) -> int:
+        return self._ctx.llm_insights
+
+    @_tick_llm_insights.setter
+    def _tick_llm_insights(self, value: int) -> None:
+        self._ctx.llm_insights = value
+
+    @property
+    def _regulation_directives(self) -> dict:
+        return self._ctx.regulation_directives
+
+    @_regulation_directives.setter
+    def _regulation_directives(self, value: dict) -> None:
+        self._ctx.regulation_directives = value
+
+    @property
+    def _pending_experiences(self) -> dict:
+        return self._ctx.pending_experiences
+
+    @_pending_experiences.setter
+    def _pending_experiences(self, value: dict) -> None:
+        self._ctx.pending_experiences = value
 
     def _restore_checkpoint(self):
         if self._checkpoint_path.exists():
@@ -387,584 +410,9 @@ class Substrate:
             base -= 0.1
         return max(0.1, min(1.0, base))
 
-    # ── PERCEIVE ─────────────────────────────────────────────────────
 
-    async def _perceive(self):
-        self.cycle_phase = "perceive"
-        perception = self.world.perceive()
 
-        # Sensor cortex
-        sensor_data = self.sensors.read_all()
-        perception["sensors"] = sensor_data
 
-        # Emotional perception — reward from REAL system metrics
-        reward = self._compute_reward()
-        context = {
-            "tick": self.tick_count,
-            "new_knowledge": self._tick_new_concepts > 0,
-            "error": self.health.consecutive_errors > 0,
-            "unexpected": self.health.consecutive_errors > 3,
-            "repetitive": self.emotions.mood_duration > 15,
-        }
-        self.emotions.update(reward, context)
-
-        # Update consciousness based on emotion
-        self.consciousness.update_mode(self.emotions.mood, self.emotions.energy, self.emotions.arousal)
-
-        # Archetype activation
-        self._update_archetypes()
-
-        self.memory.add_working({"phase": "perceive", "data": perception, "mood": self.emotions.mood})
-        await self.event_bus.publish(Event(
-            source=Layer.SUBSTRATE, target=Layer.MEMORY,
-            event_type="perception", payload=perception
-        ))
-
-    def _update_archetypes(self):
-        for arch in self.archetypes_list:
-            if arch.should_activate(self.emotions.mood, self.emotions.energy):
-                self.active_archetype = arch
-                break
-        else:
-            if self.archetypes_list:
-                self.active_archetype = self.archetypes_list[0]
-
-        if self.active_archetype:
-            action_desc = self.active_archetype.act(
-                self.consciousness.mode,
-                self.goals.get_current_focus().get("name", "idle") if self.goals.get_current_focus() else "idle"
-            )
-            self.active_archetype.log_experience(
-                self.tick_count, self.emotions.mood,
-                self.emotions.success_rate, action_desc
-            )
-
-        if self.tick_count % 10 == 0:
-            self.geopolitics.update_influence()
-
-    # ── EVALUATE ─────────────────────────────────────────────────────
-
-    async def _evaluate(self):
-        self.cycle_phase = "evaluate"
-
-        # Real system metrics for introspection
-        total_ticks = self.health.successful_ticks + self.health.failed_ticks
-        error_rate = self.health.error_count / max(total_ticks, 1) if total_ticks > 0 else 0
-        active_goals = [g for g in self.goals.goals if g.status == "active" and g.level != "axiom"]
-        mem_status = self.memory.status()
-
-        system_metrics = {
-            "memory_load": mem_status["working_memory_size"] / max(1, mem_status["working_memory_max"]),
-            "goal_pressure": len(active_goals) / 10.0,
-            "ethics_load": self.ethics.total_checked / max(1, self.tick_count),
-            "energy": self.emotions.energy,
-            "information_gain": self.goals.information_gain,
-            "error_rate": error_rate,
-            "llm_active": self.llm_thinking,
-            "tick": self.tick_count,
-        }
-        activations = self.introspection.inspect_activations("main", system_metrics)
-
-        # Goal progress with real metrics
-        goal_metrics = {
-            "new_concepts": self._tick_new_concepts,
-            "new_episodic": self._tick_new_episodic,
-            "error_rate": error_rate,
-            "energy": self.emotions.energy,
-            "llm_insights": self._tick_llm_insights,
-        }
-        self.goals.evaluate_progress(goal_metrics)
-        focus = self.goals.get_current_focus()
-
-        bias_report = None
-        if self.tick_count % 20 == 0 and self.introspection.decision_trace:
-            bias_report = self.introspection.detect_bias(self.introspection.decision_trace[-20:])
-
-        # Value system evaluation
-        focus_name = focus["name"] if focus else "idle"
-        self.values.evaluate_action(self.emotions.mood, self.emotions.success_rate, focus_name)
-
-        # Health check
-        health_report = self.health.check()
-        if health_report["status"] == "critical":
-            self.autobiography.log_event("health", f"Critical health: {health_report['critical']}", 0.9)
-
-        # Meta-regulation
-        reg = self.meta_regulation.regulate(
-            self.emotions.energy, health_report["status"],
-            self.health.consecutive_errors, self.consciousness.mode,
-        )
-        self._regulation_directives = reg["directives"]
-        if reg["directives"]["force_recharge"] > 0:
-            self.emotions.recharge(reg["directives"]["force_recharge"])
-        if reg["directives"]["reduce_sensors"]:
-            self.sensors.reduce_sensors(True)
-        else:
-            self.sensors.reduce_sensors(False)
-
-        # Meta-consciousness (every 25 ticks)
-        if self.tick_count % 25 == 0:
-            mc = self.meta_consciousness.evaluate(
-                self.consciousness.mode,
-                self.active_archetype.name if self.active_archetype else None,
-                self.emotions.mood, self.emotions.energy,
-                focus_name, self.archetypes_list,
-            )
-            if mc["fragmentation"] > 0.5:
-                self.autobiography.log_event("meta", f"High fragmentation: {mc['fragmentation']:.2f}", 0.7)
-
-        # LLM-powered state evaluation
-        llm_eval = None
-        if self._is_llm_tick() and not self._regulation_directives.get("skip_llm"):
-            self.llm_thinking = True
-            # RAG: pull concepts RELEVANT to the current focus, not just recent ones.
-            focus_query = (focus.get("name", "") + " " + focus.get("description", "")) if focus else ""
-            relevant = self.memory.retrieve(focus_query, k=6) if focus_query.strip() else []
-            relevant_concepts = [r["concept"] for r in relevant] or list(self.memory.semantic.keys())[-10:]
-            compact_state = {
-                "tick": self.tick_count,
-                "goals_active": len(active_goals),
-                "current_focus": focus,
-                "memory_total": mem_status["total_memories"],
-                "episodic_recent": [e["event"] for e in self.memory.episodic[-3:]],
-                "relevant_concepts": relevant_concepts,
-                "semantic_concepts": list(self.memory.semantic.keys())[-10:],
-                "version": self.self_mod.current_version,
-                "curiosity": round(self.goals.curiosity_level, 3),
-                "information_gain": round(self.goals.information_gain, 3),
-                "mood": self.emotions.mood,
-                "energy": round(self.emotions.energy, 3),
-                "consciousness_mode": self.consciousness.mode,
-                "active_archetype": self.active_archetype.name if self.active_archetype else None,
-            }
-            result = await self.llm.evaluate_state(compact_state)
-            if result.get("response"):
-                _, llm_warnings = self.self_preservation.filter_llm_response(result["response"])
-                if llm_warnings:
-                    self.autobiography.log_event("llm_danger", str(llm_warnings[:2]), 0.9)
-            if result["success"] and "parsed" in result:
-                llm_eval = result["parsed"]
-                insight = llm_eval.get("insight", "")
-                if insight:
-                    self.memory.add_episodic(
-                        f"LLM Insight: {insight}",
-                        emotional_valence=0.3, importance=0.8
-                    )
-                    self.autobiography.log_event("insight", insight[:100], 0.7)
-                    self._tick_llm_insights += 1
-                suggested = llm_eval.get("suggested_goals", [])
-                if not isinstance(suggested, list):
-                    suggested = []
-                for sg in suggested[:2]:
-                    # Skip non-string / empty entries (audit M5) — a model may
-                    # return numbers or objects here.
-                    if not isinstance(sg, str) or not sg.strip():
-                        continue
-                    from aegis.layers.goal_engine import Goal
-                    # Priority based on current system needs, not random
-                    priority = 0.5 + 0.1 * self.emotions.energy
-                    g = Goal(
-                        name=sg[:30].replace(" ", "_").lower(),
-                        level="tactic",
-                        description=sg,
-                        priority=priority,
-                    )
-                    g.reasoning = "Generated by LLM evaluation"
-                    self.goals.goals.append(g)
-
-                await self.event_bus.publish(Event(
-                    source=Layer.INTROSPECTION, target=None,
-                    event_type="llm_evaluation",
-                    payload={"assessment": llm_eval.get("assessment", "")[:100]}
-                ))
-
-        self.memory.add_working({
-            "phase": "evaluate",
-            "activations": activations,
-            "focus": focus,
-            "bias_report": bias_report,
-            "llm_eval": llm_eval,
-        })
-
-    # ── DECIDE ───────────────────────────────────────────────────────
-
-    async def _decide(self):
-        self.cycle_phase = "decide"
-        new_goals = self.goals.generate_goals({
-            "tick": self.tick_count,
-            "memory_size": self.memory.status()["total_memories"],
-        })
-        focus = self.goals.get_current_focus()
-        decision = focus["name"] if focus else "idle_exploration"
-        alternatives = ["optimize_memory", "self_inspect", "explore_topic", "rest"]
-
-        # Archetype-influenced decision
-        if self.active_archetype and self.consciousness.mode in self.active_archetype.strategies:
-            alternatives.append(f"archetype_{self.active_archetype.name}")
-
-        # Real confidence from system state
-        confidence = self._compute_confidence()
-        reasoning = f"Selected based on priority and progress. Tick #{self.tick_count}"
-
-        # Meta-goal generation (every 30 ticks)
-        if self.tick_count % 30 == 0:
-            total_ticks = self.health.successful_ticks + self.health.failed_ticks
-            meta_ctx = {
-                "memory_total": self.memory.status()["total_memories"],
-                "mood_valence": self.emotions.valence,
-                "learning_sessions": self.external_learning.learning_sessions,
-                "avg_tick_ms": self.last_tick_duration * 1000,
-                "tick": self.tick_count,
-                "error_rate": self.health.error_count / max(total_ticks, 1) if total_ticks > 0 else 0,
-                "active_agents": sum(1 for a in self.agent_system.agents if a.status in ("active", "deployed")),
-            }
-            new_meta = self.meta_goals.generate_goals(meta_ctx)
-            for mg in new_meta:
-                self.autobiography.log_event("meta_goal", mg["description"][:60], 0.5)
-
-        # ── System 4: value-driven selection ─────────────────────────
-        # Learned utility picks the objective BEFORE the decision is final.
-        # This used to run after ethics had already judged `decision`, so the
-        # choice was recorded as a number and steered nothing: the system
-        # learned a utility it never acted on. It runs ahead of the LLM block
-        # so a hosted model can still override, and it stands alone on the
-        # ticks where no LLM call is made. Guarded — motivation must never be
-        # able to abort a tick.
-        _tt = self.health.successful_ticks + self.health.failed_ticks
-        error_rate = self.health.error_count / max(_tt, 1) if _tt > 0 else 0.0
-        gi_ctx = {
-            "tick": self.tick_count,
-            "energy": self.emotions.energy,
-            "error_rate": error_rate,
-            "curiosity": self.goals.curiosity_level,
-        }
-        gi_choice = None
-        try:
-            gi_choice = self.goal_intelligence.choose([decision] + alternatives, gi_ctx)
-            if gi_choice and gi_choice.get("objective"):
-                decision = gi_choice["objective"]
-        except Exception:
-            logger.exception("Value-driven selection failed — keeping heuristic decision")
-
-        # LLM-powered decision making
-        if self._is_llm_tick() and not self._regulation_directives.get("skip_llm"):
-            options = [decision] + alternatives
-            result = await self.llm.make_decision(options, {
-                "focus": focus,
-                "tick": self.tick_count,
-                "goals_summary": {g.name: g.progress for g in self.goals.goals
-                                  if g.status == "active" and g.level != "axiom"},
-                "mood": self.emotions.mood,
-                "consciousness_mode": self.consciousness.mode,
-            })
-            if result["success"] and "parsed" in result and isinstance(result["parsed"], dict):
-                parsed = result["parsed"]
-                # Coerce defensively — "chosen"/"confidence" may arrive as
-                # strings or non-numbers (audit M5).
-                chosen_idx = _coerce_int(parsed.get("chosen", 1), 1) - 1
-                if 0 <= chosen_idx < len(options):
-                    decision = options[chosen_idx]
-                confidence = _coerce_float(parsed.get("confidence", confidence), confidence)
-                reasoning = str(parsed.get("reasoning", reasoning))
-
-                await self.event_bus.publish(Event(
-                    source=Layer.GOAL_ENGINE, target=None,
-                    event_type="llm_decision",
-                    payload={"decision": decision, "reasoning": reasoning[:100]}
-                ))
-
-        # ── System 1: known failure history costs confidence ─────────
-        # The World Model observed which causes tend to fail. That memory was
-        # written every tick and read by nothing, so a course of action with a
-        # proven failure history was proposed with the same confidence as an
-        # untried one. Confidence feeds both the introspection trace and the
-        # ethics gate below, so this is where the causal memory earns its keep.
-        try:
-            focus_for_risk = focus["name"] if focus else "idle_exploration"
-            risks = self.world_model.risks_for([decision, focus_for_risk])
-            if risks:
-                penalty = min(MAX_RISK_CONFIDENCE_PENALTY,
-                              sum(r["failure_rate"] for r in risks) / 10)
-                confidence = round(max(0.05, confidence * (1 - penalty)), 4)
-                reasoning += (f" | {len(risks)} known failure mode(s) for this course "
-                              f"of action lower confidence by {round(penalty * 100)}%")
-        except Exception:
-            logger.exception("Risk-aware confidence adjustment failed")
-
-        trace = self.introspection.trace_decision(
-            decision, alternatives, reasoning, confidence
-        )
-
-        eth_result = self.ethics.evaluate_action({
-            "type": decision,
-            "confidence": confidence,
-            "modifies_self": False,
-        })
-
-        self.memory.add_working({
-            "phase": "decide",
-            "decision": decision,
-            "reasoning": reasoning,
-            "ethical_score": eth_result["score"],
-            "ethical_status": eth_result["status"],
-        })
-
-        await self.event_bus.publish(Event(
-            source=Layer.GOAL_ENGINE, target=Layer.ETHICS_CORE,
-            event_type="decision", payload={"decision": decision, "ethics": eth_result}
-        ))
-
-        # ── Higher systems (5 & 1): experience opening and a causal chain for
-        #    the objective. Deterministic and cheap; guarded so a failure here
-        #    cannot abort the tick. (System 4 now runs before the decision is
-        #    final — see the value-driven selection block above.) ──
-        try:
-            focus_name = focus["name"] if focus else "idle_exploration"
-
-            # System 5: open an experience for this decision — it will be closed
-            # in REFLECT with the tick's realized reward and inferred cause.
-            self._pending_experiences["decide"] = self.feedback_loop.record_situation(
-                situation=f"focus={focus_name} mode={self.consciousness.mode} "
-                          f"energy={self.emotions.energy:.2f} err={error_rate:.2f}",
-                decision=decision,
-                context={"tick": self.tick_count,
-                         "value": gi_choice["expected_value"] if gi_choice else None},
-            )
-
-            # System 1: build a causal chain (objective -> constraints -> risks
-            # -> plan -> expected result) for the current focus.
-            if self.tick_count % max(1, WORLD_MODEL_EVERY_N_TICKS) == 0 and focus:
-                constraints = [g.name for g in self.goals.goals if g.level == "axiom"]
-                chain = self.world_model.build_chain(focus_name, constraints)
-                if chain["plan"]:
-                    self.autobiography.log_event(
-                        "world_model",
-                        f"Chain for {focus_name}: {len(chain['plan'])} steps, "
-                        f"conf={chain['confidence']}",
-                        0.4,
-                    )
-        except Exception:
-            logger.exception("Higher-systems DECIDE hook failed")
-
-    # ── ACT ──────────────────────────────────────────────────────────
-
-    async def _act(self):
-        self.cycle_phase = "act"
-        action_result = self.world.act({"type": "internal_computation"})
-
-        # Motor cortex
-        if self.tick_count % 10 == 0:
-            focus = self.goals.get_current_focus()
-            self.motor.execute(
-                "log",
-                payload={"message": f"Tick {self.tick_count}: focus={focus.get('name', 'none') if focus else 'none'}"},
-                archetype=self.active_archetype.name if self.active_archetype else None,
-                goal=focus.get("name") if focus else None,
-            )
-
-        # External learning (every 40 ticks) — round-robin sources and topics
-        if self.tick_count % 40 == 0 and not self._regulation_directives.get("skip_learning"):
-            source = _LEARNING_SOURCES[self._learning_source_idx % len(_LEARNING_SOURCES)]
-            self._learning_source_idx += 1
-
-            # ── System 2: the graph chooses what to learn next ────────
-            # The cognitive graph was ingested every 8 ticks and read by
-            # nothing, so the topic came off a flat recency slice of semantic
-            # memory — the exact "recency list" the graph exists to replace.
-            # Now the next topic is the concept most connected to the current
-            # focus, and recency is only the fallback.
-            topic = ""
-            try:
-                learn_focus = self.goals.get_current_focus()
-                focus_name = learn_focus["name"] if learn_focus else "idle_exploration"
-                for hit in self.cognitive_graph.related(focus_name):
-                    if hit["type"] == "concept":
-                        topic = hit["node"]
-                        break
-            except Exception:
-                logger.exception("Graph-guided topic selection failed — falling back to recency")
-
-            if not topic:
-                topics = list(self.memory.semantic.keys())[-10:]
-                topic = topics[self.tick_count % max(1, len(topics))] if topics else "artificial intelligence"
-
-            learn_result = await self.external_learning.learn_from_source(source, topic)
-            if learn_result.get("success"):
-                for concept in learn_result.get("concepts", [])[:3]:
-                    self.memory.add_semantic(concept[:50], {
-                        "type": "external_learning",
-                        "source": source,
-                        "confidence": 0.6,
-                    })
-                    self._tick_new_concepts += 1
-                self.autobiography.log_event("learning", f"Learned from {source}: {topic[:40]}", 0.5)
-                self.goals.advance_progress("expand_knowledge", 0.02 * len(learn_result.get("concepts", [])))
-                self.motor.execute("log", payload={
-                    "message": f"Learning: {len(learn_result.get('concepts', []))} concepts from {source} ({topic[:30]})"
-                })
-
-        # Agent system
-        if not self._regulation_directives.get("skip_learning"):
-            agent_results = await self.agent_system.run_due_agents()
-            for ar in agent_results:
-                self.autobiography.log_event(
-                    "agent_fetch",
-                    f"{ar['agent']} [{ar['source']}]: {ar['items']} items",
-                    0.4,
-                )
-                self.motor.execute("log", payload={
-                    "message": f"Agent {ar['agent']}: fetched {ar['items']} items from {ar['source']}"
-                })
-            new_knowledge = self.agent_system.get_recent_knowledge(5)
-            for kn in new_knowledge:
-                item = kn.get("data", {})
-                title = item.get("title", "")[:50]
-                summary = item.get("summary", "")[:100]
-                if title and title not in self.memory.semantic:
-                    self.memory.add_semantic(title, {
-                        "type": f"agent_{kn.get('source', 'unknown')}",
-                        "summary": summary,
-                        "agent": kn.get("agent", ""),
-                        "confidence": 0.55,
-                    })
-                    self._tick_new_concepts += 1
-
-        # Agent evolution (every 100 ticks)
-        if self.tick_count % 100 == 0:
-            evo = self.agent_system.evolve()
-            if evo["retired"]:
-                self.autobiography.log_event("agents", f"Retired {len(evo['retired'])} agents", 0.4)
-                self.motor.execute("alert", payload={"level": "warning", "message": f"Evolution: retired {len(evo['retired'])} agents"})
-            if evo.get("created"):
-                self.autobiography.log_event("agents", f"Created {len(evo['created'])} replacement agents", 0.5)
-                self.motor.execute("log", payload={"message": f"Evolution: spawned {len(evo['created'])} new agents"})
-
-        # LLM-driven curiosity exploration (every 5th LLM tick instead of random 40%)
-        if self._is_llm_tick() and not self._regulation_directives.get("skip_llm") and self.tick_count % (LLM_THINK_EVERY_N_TICKS * 5) == 0:
-            known = list(self.memory.semantic.keys())
-            result = await self.llm.generate_curiosity(known)
-            if result["success"] and "parsed" in result:
-                parsed = result["parsed"]
-                topic = parsed.get("topic", "")
-                question = parsed.get("question", "")
-                if topic:
-                    self.memory.add_semantic(topic[:50], {
-                        "type": "curiosity_exploration",
-                        "question": question,
-                        "connection": parsed.get("connection", ""),
-                        "confidence": 0.6,
-                    })
-                    self.memory.add_episodic(
-                        f"Explored topic: {topic}. Question: {question}",
-                        emotional_valence=0.4, importance=0.7
-                    )
-                    self._tick_new_concepts += 1
-                    self.goals.information_gain += 0.3
-                    self.goals.advance_progress("expand_knowledge", 0.05)
-                    self.autobiography.log_event("curiosity", f"Explored: {topic[:60]}", 0.5)
-
-                    await self.event_bus.publish(Event(
-                        source=Layer.GOAL_ENGINE, target=None,
-                        event_type="llm_curiosity",
-                        payload={"topic": topic[:80]}
-                    ))
-
-        # ── Parametric self-modification (LLM-driven instead of random) ──
-        if self.tick_count % 15 == 0 and self._is_llm_tick() and not self._regulation_directives.get("skip_llm"):
-            await self._llm_parametric_modification()
-
-        # ── Code self-modification (opt-in only — audit C2) ──
-        if (CODE_SELF_MOD_ENABLED
-                and self.tick_count % CODE_MOD_EVERY_N_TICKS == 0
-                and self.tick_count >= CODE_MOD_MIN_TICK
-                and self._code_mod_count_session < CODE_MOD_MAX_PER_SESSION
-                and self._is_llm_tick()
-                and not self._regulation_directives.get("skip_llm")
-                and not self._regulation_directives.get("skip_learning")):
-            await self._code_self_modification()
-
-        # Weight modification — LoRA fine-tuning every N ticks.
-        # Spawned as a DETACHED background task: a full training run takes
-        # minutes+, and awaiting it here would suspend the whole PERCEIVE..
-        # REFLECT cycle (no ticks, no dashboard/WS updates) until it finished.
-        # The cognitive loop keeps running while training proceeds in an
-        # executor thread; the training_in_progress flag + task handle prevent
-        # overlapping runs.
-        training_busy = (self.weight_modifier.training_in_progress
-                         or (self._weight_training_task is not None
-                             and not self._weight_training_task.done()))
-        if (self.tick_count % TRAIN_EVERY_N_TICKS == 0
-                and self.tick_count > 0
-                and not self._regulation_directives.get("skip_learning")
-                and not training_busy):
-            eth_weight = self.ethics.evaluate_weight_modification({
-                "dataset_size": len(self.memory.semantic),
-                "energy": self.emotions.energy,
-                "health_status": self.health.check().get("status", "ok"),
-                "consecutive_failures": self.weight_modifier.total_rollbacks,
-            })
-            if eth_weight["status"] != "blocked":
-                self.autobiography.log_event(
-                    "weight_training", "Starting LoRA fine-tuning cycle (background)", 0.8
-                )
-                self.motor.execute("alert", payload={
-                    "level": "info", "message": "Weight training: started (background)",
-                })
-                self._weight_training_task = asyncio.create_task(self._weight_training_cycle())
-
-        # ── Grounding: act in the task environment for REAL reward (point 5) ──
-        if self.tick_count % max(1, ENV_STEP_EVERY_N_TICKS) == 0:
-            step = await asyncio.get_running_loop().run_in_executor(None, self.environment.step)
-            if step.get("task"):
-                self.goals.advance_progress("expand_knowledge", 0.01 if step["solved"] else 0.0)
-                # System 1: the environment is real cause->effect data. Record
-                # "attempting kind K" -> "solved/failed" so the World Model
-                # learns which task kinds the current skills actually handle.
-                try:
-                    self.world_model.observe(
-                        f"attempt:{step['kind']}",
-                        "solved" if step["solved"] else "failed",
-                        success=bool(step["solved"]),
-                    )
-                    if step["solved"] and step.get("winning_skill"):
-                        self.world_model.observe(
-                            f"skill:{step['winning_skill']}", f"solves:{step['kind']}", success=True)
-                except Exception:
-                    logger.exception("World-model observe failed")
-                if step["solved"]:
-                    self.autobiography.log_event(
-                        "env_solved", f"{step['task']} via {step['winning_skill']}", 0.4)
-                else:
-                    self.autobiography.log_event(
-                        "env_failed", f"{step['task']} ({step['kind']}) — no skill solved it", 0.5)
-
-        # ── System 3: Evolution Engine — propose a parameter mutation (version
-        #    B). Applied through the SAME safety pipeline as any self-mod, then
-        #    judged when the next benchmark lands (see _run_benchmark). ──
-        if (self.tick_count % max(1, EVOLUTION_EVERY_N_TICKS) == 0
-                and self.tick_count > 0
-                and self.evolution.candidate is None
-                and not self._regulation_directives.get("skip_learning")):
-            await self._evolution_step()
-
-        # ── Periodic held-out benchmark (the fitness graph, point 2) ──
-        if (self.tick_count % max(1, EVAL_EVERY_N_TICKS) == 0
-                and (self._eval_task is None or self._eval_task.done())):
-            # Pass the tick at which the benchmark STARTS so a candidate proposed
-            # after this point is not judged by a benchmark that never saw it
-            # (audit M3).
-            self._eval_task = asyncio.create_task(self._run_benchmark(self.tick_count))
-
-        # ── Skill synthesis: close a failing kind, learn a coding solution, or
-        #    simplify an already-solved kind (points 3, 4 + coding + versioning) ──
-        if (self.tick_count % max(1, SKILL_SYNTH_EVERY_N_TICKS) == 0
-                and self.tick_count > 0
-                and self.llm.enabled
-                and not self._regulation_directives.get("skip_learning")
-                and (self._skill_synth_task is None or self._skill_synth_task.done())):
-            self._skill_synth_task = asyncio.create_task(self._learning_cycle())
-
-        self.memory.add_working({"phase": "act", "result": action_result})
 
     async def _run_benchmark(self, started_tick: int | None = None):
         """Run the held-out benchmark off the tick loop and update the reward signal."""
@@ -1431,159 +879,45 @@ class Substrate:
             )
             logger.warning(f"Code mod failed: {mod_result}")
 
-    # ── REFLECT ──────────────────────────────────────────────────────
+
+    # ── COGNITIVE CYCLE ──────────────────────────────────────────────
+    # The phase bodies live in aegis/layers/phases/ (spec §3.9). These
+    # delegating wrappers keep the substrate's own surface intact: the phases
+    # are still reachable as `_perceive()` .. `_reflect()`, so callers and the
+    # existing suite do not have to know the cycle was split up.
+
+    async def _perceive(self):
+        await perceive.run(self, self._ctx)
+
+    def _update_archetypes(self):
+        perceive.update_archetypes(self)
+
+    async def _evaluate(self):
+        await evaluate.run(self, self._ctx)
+
+    async def _decide(self):
+        await decide.run(self, self._ctx)
+
+    async def _act(self):
+        await act.run(self, self._ctx)
 
     async def _reflect(self):
-        self.cycle_phase = "reflect"
+        await reflect.run(self, self._ctx)
 
-        # Meta-reflection (every 20 ticks)
-        if self.tick_count % 20 == 0:
-            total_goals = len(self.goals.goals)
-            completed = sum(1 for g in self.goals.goals if g.status == "completed")
-            total_ticks = self.health.successful_ticks + self.health.failed_ticks
-            error_rate = self.health.error_count / max(total_ticks, 1) if total_ticks > 0 else 0
-            recent = [e["event"] for e in self.memory.episodic[-8:]]
-            mr = self.meta_reflection.reflect(
-                self.tick_count, self.emotions.energy, self.emotions.mood,
-                self.emotions.valence, error_rate, completed, total_goals,
-                self.consciousness.mode, recent,
-            )
-            for insight in mr.get("insights", [])[:2]:
-                self.memory.add_episodic(f"MetaInsight: {insight[:80]}", emotional_valence=0.2, importance=0.75)
+    async def _run_phase(self, name: str, runner):
+        """Run one phase and record what it cost.
 
-        # LLM-powered reflection
-        llm_reflection = None
-        if self._is_llm_tick() and not self._regulation_directives.get("skip_llm"):
-            recent_events = [e["event"] for e in self.memory.episodic[-5:]]
-            episode = {
-                "tick": self.tick_count,
-                "recent_events": recent_events,
-                "goals_completed": sum(1 for g in self.goals.goals if g.status == "completed"),
-                "information_gain": round(self.goals.information_gain, 3),
-                "version": self.self_mod.current_version,
-                "mood": self.emotions.mood,
-                "consciousness_mode": self.consciousness.mode,
-            }
-            result = await self.llm.reflect(episode)
-            if result["success"] and "parsed" in result and isinstance(result["parsed"], dict):
-                llm_reflection = result["parsed"]
-                learning = str(llm_reflection.get("learning", "") or "")
-                if learning:
-                    self.memory.add_episodic(
-                        f"Reflection: {learning}",
-                        emotional_valence=0.2, importance=0.85
-                    )
-                    self.autobiography.log_event("reflection", learning[:100], 0.6)
-                    self._tick_llm_insights += 1
-                # "knowledge" may be a string or missing instead of an object
-                # (audit M5) — guard before calling .get on it.
-                knowledge = llm_reflection.get("knowledge", {})
-                if isinstance(knowledge, dict) and isinstance(knowledge.get("concept"), str) \
-                        and knowledge["concept"].strip():
-                    self.memory.add_semantic(knowledge["concept"], {
-                        "definition": str(knowledge.get("definition", "")),
-                        "type": "learned_concept",
-                        "source": "self_reflection",
-                        "confidence": 0.75,
-                    })
-                    self.memory.update_meta(
-                        knowledge["concept"], True, 0.75
-                    )
-                    self._tick_new_concepts += 1
-
-                await self.event_bus.publish(Event(
-                    source=Layer.INTROSPECTION, target=None,
-                    event_type="llm_reflection",
-                    payload={"learning": learning[:100]}
-                ))
-
-            self.llm_thinking = False
-
-        # Dream generation (every 50 ticks when energy is low or reflective)
-        if self.tick_count % 50 == 0 and not self._regulation_directives.get("skip_dreams") and \
-                (self.emotions.energy < 0.4 or self.consciousness.mode == "reflective"):
-            recent = [e["event"] for e in self.memory.episodic[-10:]]
-            concepts = list(self.memory.semantic.keys())[-15:]
-            dream = self.dreams.generate_dream(self.emotions.mood, recent, concepts)
-            self.autobiography.log_event("dream", dream["narrative"][:80], 0.4)
-            self.memory.add_episodic(f"Dream: {dream['narrative'][:80]}", emotional_valence=0.1, importance=0.5)
-
-        # Energy recharge on rest ticks
-        if self.tick_count % 20 == 0:
-            self.emotions.recharge(0.05)
-
-        # Event summary with computed importance
-        event_summary = f"Tick {self.tick_count}: cycle completed"
-        if llm_reflection:
-            # Coerce — "learning" may be a non-string (audit M5).
-            _learned = str(llm_reflection.get("learning", "") or "")
-            event_summary += f" | Learned: {_learned[:60]}"
-        importance = self._compute_importance()
-        # Valence from actual emotional state
-        valence = self.emotions.valence - 0.5  # center around 0
-        self.memory.add_episodic(event_summary, emotional_valence=valence, importance=importance)
-        self._tick_new_episodic += 1
-
-        # Meta-knowledge update — round-robin through domains
-        if self.tick_count % 10 == 0:
-            domain = _META_DOMAINS[self._meta_domain_idx % len(_META_DOMAINS)]
-            self._meta_domain_idx += 1
-            # Confidence based on actual success in that domain
-            domain_confidence = 0.5 + 0.3 * self.emotions.success_rate + 0.2 * self.emotions.energy
-            self.memory.update_meta(domain, True, min(0.95, domain_confidence))
-
-        # Concept seeding — round-robin
-        if self.tick_count % 25 == 0:
-            concept = _CONCEPT_SEEDS[self._concept_seed_idx % len(_CONCEPT_SEEDS)]
-            self._concept_seed_idx += 1
-            self.memory.add_semantic(f"{concept}_{self.tick_count}", {
-                "type": concept, "tick": self.tick_count,
-                "confidence": 0.5 + 0.3 * self.emotions.success_rate,
-            })
-
-        if self.tick_count % 30 == 0:
-            self.memory.apply_forgetting()
-
-        # ── Higher systems (5, 4, 2): close the experience loop, credit the
-        #    realized reward to the chosen objective's value, and grow the
-        #    cognitive graph from this tick's memory. Guarded — never aborts. ──
+        Timing lives here rather than in each phase so every phase is measured
+        the same way, and so a phase cannot forget to report itself.
+        """
+        started = CLOCK.monotonic()
         try:
-            realized = self._compute_reward()
-            exp_id = self._pending_experiences.pop("decide", None)
-            if exp_id is not None:
-                # Success = this tick produced knowledge/insight and stayed healthy.
-                success = (self._tick_new_concepts > 0 or self._tick_llm_insights > 0) \
-                    and self.health.consecutive_errors == 0
-                experience = self.feedback_loop.record_result(
-                    exp_id, success=success, metric=realized,
-                    expected="knowledge gain / healthy tick",
-                )
-                # System 4: credit realized reward to the chosen objective.
-                self.goal_intelligence.reward(realized)
-                # System 1: the decision's outcome is causal data too.
-                if experience is not None:
-                    self.world_model.observe(
-                        f"decision:{experience['decision'][:40]}",
-                        "productive" if success else "unproductive",
-                        success=success,
-                    )
-
-            # System 2: ingest recent memory into the typed cognitive graph.
-            if self.tick_count % max(1, COGNITIVE_GRAPH_EVERY_N_TICKS) == 0:
-                self.cognitive_graph.ingest_memory(self.memory)
-        except Exception:
-            logger.exception("Higher-systems REFLECT hook failed")
-
-        if self.tick_count % CHECKPOINT_EVERY_N_TICKS == 0:
-            self._save_checkpoint()
-            if self.tick_count % (CHECKPOINT_EVERY_N_TICKS * 5) == 0:
-                self.state_backup.save_state(self.full_status(), "scheduled")
-
-        await self.event_bus.publish(Event(
-            source=Layer.SUBSTRATE, target=None,
-            event_type="tick_complete",
-            payload={"tick": self.tick_count}
-        ))
+            await runner()
+        finally:
+            elapsed_ms = (CLOCK.monotonic() - started) * 1000
+            self._ctx.record_duration(name, elapsed_ms)
+            self.health.record_phase(name, elapsed_ms,
+                                     external=self._ctx.did_external(name))
 
     # ── TICK / RUN / STOP ────────────────────────────────────────────
 
@@ -1591,10 +925,9 @@ class Substrate:
         tick_start = CLOCK.now()
         self.tick_count += 1
 
-        # Reset per-tick accumulators
-        self._tick_new_concepts = 0
-        self._tick_new_episodic = 0
-        self._tick_llm_insights = 0
+        # A fresh context per tick — this is what replaces resetting a handful
+        # of accumulators by hand and forgetting one when a new field appears.
+        self._ctx = TickContext(tick=self.tick_count)
 
         # Self-preservation vital signs. Must not be able to kill the loop, so
         # it is guarded independently of the cognitive phases below.
@@ -1611,11 +944,11 @@ class Substrate:
             self.autobiography.log_event("error", f"vital_signs: {str(e)[:80]}", 0.7)
 
         try:
-            await self._perceive()
-            await self._evaluate()
-            await self._decide()
-            await self._act()
-            await self._reflect()
+            await self._run_phase("perceive", self._perceive)
+            await self._run_phase("evaluate", self._evaluate)
+            await self._run_phase("decide", self._decide)
+            await self._run_phase("act", self._act)
+            await self._run_phase("reflect", self._reflect)
             if self.tick_count % max(1, CAPACITY_EVERY_N_TICKS) == 0:
                 self.regulate_capacity()
             self.health.record_tick((CLOCK.now() - tick_start) * 1000, success=True)

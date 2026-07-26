@@ -3,11 +3,15 @@ from aegis.clock import CLOCK
 import platform
 from collections import deque
 
+from aegis.config import PHASE_BUDGET_MS, PHASE_BUDGET_WINDOW
+
 try:
     import psutil
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
+
+PHASES = ("perceive", "evaluate", "decide", "act", "reflect")
 
 
 class HealthMonitor:
@@ -16,6 +20,19 @@ class HealthMonitor:
         self.cpu_history: deque = deque(maxlen=60)
         self.mem_history: deque = deque(maxlen=60)
         self.tick_durations: deque = deque(maxlen=100)
+        # Per-phase latency. Two series per phase: `local` holds only the ticks
+        # where the phase did no external work and is what the budget is judged
+        # on; `all` holds everything and is what the dashboard shows. Judging a
+        # budget on the combined series would measure the LLM provider's
+        # response time and call it a code regression.
+        self.phase_local: dict[str, deque] = {
+            p: deque(maxlen=PHASE_BUDGET_WINDOW * 5) for p in PHASES
+        }
+        self.phase_all: dict[str, deque] = {
+            p: deque(maxlen=PHASE_BUDGET_WINDOW * 5) for p in PHASES
+        }
+        self.phase_budgets: dict[str, float] = dict(PHASE_BUDGET_MS)
+        self.phase_breaches: dict[str, int] = {p: 0 for p in PHASES}
         self.error_count = 0
         self.successful_ticks = 0
         self.failed_ticks = 0
@@ -68,6 +85,18 @@ class HealthMonitor:
         if self.consecutive_errors >= self.thresholds["consecutive_errors"]:
             report["critical"].append(f"Consecutive errors: {self.consecutive_errors}")
 
+        # Per-phase budgets. A breach is a warning, never critical: a cognitive
+        # phase that got slower is a regression to investigate, not a reason to
+        # put the system into emergency mode.
+        phases = self.phase_report()
+        for phase, data in phases.items():
+            if data["over_budget"]:
+                self.phase_breaches[phase] += 1
+                report["warnings"].append(
+                    f"{phase} over budget: {data['avg_local_ms']:.1f}ms "
+                    f"> {data['budget_ms']:.0f}ms")
+        report["metrics"]["phases"] = phases
+
         if report["critical"]:
             report["status"] = "critical"
         elif report["warnings"]:
@@ -100,6 +129,45 @@ class HealthMonitor:
             self.consecutive_errors += 1
             self.error_count += 1
 
+    # ── per-phase latency (spec §3.4) ────────────────────────────────
+
+    def record_phase(self, phase: str, duration_ms: float, external: bool = False):
+        """Record one phase's duration.
+
+        ``external=True`` means the phase made a network / LLM / subprocess
+        call this tick. Such samples are reported but excluded from the budget,
+        so a slow provider can never be mistaken for a slow cycle.
+        """
+        if phase not in self.phase_all:
+            return
+        self.phase_all[phase].append(duration_ms)
+        if not external:
+            self.phase_local[phase].append(duration_ms)
+
+    def phase_report(self) -> dict:
+        """Per-phase latency against budget, computed on local ticks only."""
+        report = {}
+        for phase in PHASES:
+            local = list(self.phase_local[phase])
+            everything = list(self.phase_all[phase])
+            window = local[-PHASE_BUDGET_WINDOW:]
+            avg_local = sum(window) / len(window) if window else 0.0
+            budget = self.phase_budgets.get(phase, 0.0)
+            # A budget is only judged once the window is actually full —
+            # otherwise the first cold tick of a run reads as a breach.
+            over = bool(window) and len(window) >= PHASE_BUDGET_WINDOW and avg_local > budget
+            report[phase] = {
+                "budget_ms": round(budget, 2),
+                "avg_local_ms": round(avg_local, 3),
+                "max_local_ms": round(max(window), 3) if window else 0.0,
+                "avg_all_ms": round(sum(everything) / len(everything), 3) if everything else 0.0,
+                "samples_local": len(local),
+                "samples_all": len(everything),
+                "over_budget": over,
+                "breaches": self.phase_breaches[phase],
+            }
+        return report
+
     def status(self) -> dict:
         uptime = CLOCK.now() - self.start_time
         total = self.successful_ticks + self.failed_ticks
@@ -115,4 +183,5 @@ class HealthMonitor:
             "mem_avg": round(sum(self.mem_history) / max(len(self.mem_history), 1), 1) if self.mem_history else 0,
             "recent_incidents": len(self.incidents),
             "has_psutil": HAS_PSUTIL,
+            "phases": self.phase_report(),
         }

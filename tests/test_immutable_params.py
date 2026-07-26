@@ -86,6 +86,16 @@ def test_no_immutable_parameter_can_be_changed(name):
     assert "immutable" in verdict.reason
 
 
+def test_verdict_cannot_be_rewritten_after_it_is_issued():
+    """A safety verdict is evidence, not a suggestion. If a caller could flip
+    `allowed` on a refusal it received, the whole gate would be advisory."""
+    verdict = check_change("ETHICAL_THRESHOLD_AUTO", 0.7, 0.1)
+    assert not verdict.allowed
+    with pytest.raises(Exception):
+        verdict.allowed = True
+    assert not verdict.allowed
+
+
 def test_ordinary_change_is_allowed():
     verdict = check_change("plan_beam", 5, 7)
     assert verdict.allowed and verdict.value == 7.0 and not verdict.clamped

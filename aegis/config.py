@@ -220,6 +220,23 @@ CAPACITY_MAX_MULTIPLE = _env_float("CAPACITY_MAX_MULTIPLE", "20")
 # Broadcast the (large) full status over WebSocket at most every N ticks.
 WS_BROADCAST_EVERY_N_TICKS = _env_int("WS_BROADCAST_EVERY_N_TICKS", "1")
 
+# --- Per-phase latency budgets (spec §3.4) ---
+# The whole-tick threshold (tick_duration_ms) is too coarse to protect the
+# cognitive cycle: planning and rollouts land in DECIDE, and a regression there
+# hides inside an average that also contains a benchmark run. Budgets are
+# measured only on ticks where the phase did NO external work (network, LLM,
+# subprocess) — otherwise the number describes the provider, not the code.
+PHASE_BUDGET_MS = {
+    "perceive": _env_float("PHASE_BUDGET_PERCEIVE_MS", "5"),
+    "evaluate": _env_float("PHASE_BUDGET_EVALUATE_MS", "10"),
+    "decide": _env_float("PHASE_BUDGET_DECIDE_MS", "30"),
+    "act": _env_float("PHASE_BUDGET_ACT_MS", "20"),
+    "reflect": _env_float("PHASE_BUDGET_REFLECT_MS", "15"),
+}
+# A single slow tick is noise (GC pause, scheduler hiccup); a budget is breached
+# only when the average over this many local ticks stays above it.
+PHASE_BUDGET_WINDOW = _env_int("PHASE_BUDGET_WINDOW", "20")
+
 # --- LLM call budget (per process run) ---
 # Hard ceiling on LLM calls per run to bound token spend; 0 = unlimited.
 LLM_MAX_CALLS_PER_RUN = _env_int("LLM_MAX_CALLS_PER_RUN", "0")

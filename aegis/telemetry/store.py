@@ -58,11 +58,20 @@ class Series:
         return self.values[-1] if self.values else None
 
     def mean(self) -> float | None:
-        """Count-weighted mean, so downsampled buckets carry their real weight."""
+        """Count-weighted mean, so downsampled buckets carry their real weight.
+
+        With no usable weights — a series read from an older schema, or one
+        built by hand — this falls back to the plain mean. Falling back on the
+        denominator alone (the obvious version) leaves a numerator of zero and
+        reports every such series as 0.0.
+        """
         if not self.values:
             return None
-        total_n = sum(self.counts) or len(self.values)
-        return sum(v * n for v, n in zip(self.values, self.counts)) / total_n
+        weights = self.counts if len(self.counts) == len(self.values) else []
+        total_n = sum(weights)
+        if total_n <= 0:
+            return sum(self.values) / len(self.values)
+        return sum(v * n for v, n in zip(self.values, weights)) / total_n
 
     def rows(self) -> list[dict]:
         return [
