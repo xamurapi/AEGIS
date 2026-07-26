@@ -7,11 +7,11 @@ reward flows into emotions and goals, so the agent's internal state is now
 driven by verifiable outcomes instead of self-report. Task order is round-robin
 (deterministic), consistent with the deterministic core cycle.
 """
-import time
 from collections import deque
 
 from aegis.eval.benchmark import Task, DEFAULT_BENCHMARK
 from aegis.eval.solver import MultiAgentSolver
+from aegis.clock import CLOCK
 
 
 class TaskEnvironment:
@@ -40,7 +40,7 @@ class TaskEnvironment:
         self.total_steps += 1
         self.total_solved += int(res.solved)
         self.last_step = {
-            "time": time.time(),
+            "time": CLOCK.now(),
             "task": task.id,
             "kind": task.kind,
             "solved": res.solved,

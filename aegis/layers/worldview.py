@@ -1,5 +1,5 @@
 """Worldview & Value System — beliefs, axioms, and adaptive values."""
-import time
+from aegis.clock import CLOCK
 
 
 class Value:
@@ -10,7 +10,7 @@ class Value:
         self.reinforcements: list[dict] = []
 
     def reinforce(self, context: str, alignment: float):
-        self.reinforcements.append({"context": context, "alignment": round(alignment, 3), "time": time.time()})
+        self.reinforcements.append({"context": context, "alignment": round(alignment, 3), "time": CLOCK.now()})
         self.priority = min(1.0, max(0.0, self.priority + 0.05 * (alignment - 0.5)))
         if len(self.reinforcements) > 100:
             self.reinforcements = self.reinforcements[-100:]

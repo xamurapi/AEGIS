@@ -1,4 +1,4 @@
-import time
+from aegis.clock import CLOCK
 import json
 import asyncio
 import logging
@@ -156,7 +156,7 @@ class LLMEngine:
             "lifetime_deepseek_tokens": self.lifetime_deepseek_tokens,
             "lifetime_claude_tokens": self.lifetime_claude_tokens,
             "lifetime_local_tokens": self.lifetime_local_tokens,
-            "last_updated": time.time(),
+            "last_updated": CLOCK.now(),
         }
         try:
             atomic_write_text(TOKEN_STATS_FILE, json.dumps(data))
@@ -227,7 +227,7 @@ class LLMEngine:
         if len(full_prompt) > 4000:
             full_prompt = full_prompt[-4000:]
 
-        t0 = time.time()
+        t0 = CLOCK.now()
         # Bound the local generate() so a stuck decode can't wedge the caller
         # forever (audit H3). The executor thread may keep running, but the
         # coroutine returns and the tick loop stays responsive.
@@ -237,7 +237,7 @@ class LLMEngine:
             ),
             timeout=LLM_TIMEOUT_SECONDS,
         )
-        elapsed = time.time() - t0
+        elapsed = CLOCK.now() - t0
 
         # Estimate tokens (rough: 1 token ~ 4 chars)
         tin = len(full_prompt) // 4
@@ -252,14 +252,14 @@ class LLMEngine:
         return {"content": content, "tokens_in": tin, "tokens_out": tout, "latency_ms": round(elapsed * 1000)}
 
     async def _call_deepseek(self, messages: list[dict]) -> dict:
-        t0 = time.time()
+        t0 = CLOCK.now()
         response = await self.deepseek_client.chat.completions.create(
             model=self.deepseek.model,
             messages=messages,
             max_tokens=LLM_MAX_TOKENS,
             temperature=LLM_TEMPERATURE,
         )
-        elapsed = time.time() - t0
+        elapsed = CLOCK.now() - t0
         content = response.choices[0].message.content or ""
         usage = response.usage
         tin = usage.prompt_tokens if usage else 0
@@ -284,7 +284,7 @@ class LLMEngine:
         if not user_messages:
             user_messages = [{"role": "user", "content": "Think."}]
 
-        t0 = time.time()
+        t0 = CLOCK.now()
         response = await self.claude_client.messages.create(
             model=self.claude.model,
             system=system_text,
@@ -292,7 +292,7 @@ class LLMEngine:
             max_tokens=LLM_MAX_TOKENS,
             temperature=LLM_TEMPERATURE,
         )
-        elapsed = time.time() - t0
+        elapsed = CLOCK.now() - t0
         content = response.content[0].text if response.content else ""
         tin = response.usage.input_tokens if response.usage else 0
         tout = response.usage.output_tokens if response.usage else 0
@@ -307,7 +307,7 @@ class LLMEngine:
         if LLM_MAX_CALLS_PER_RUN and self._calls_this_run >= LLM_MAX_CALLS_PER_RUN:
             return f"LLM call budget exhausted ({LLM_MAX_CALLS_PER_RUN} calls/run)"
         if LLM_MIN_INTERVAL_SECONDS:
-            elapsed = time.time() - self._last_call_ts
+            elapsed = CLOCK.now() - self._last_call_ts
             if self._last_call_ts > 0 and elapsed < LLM_MIN_INTERVAL_SECONDS:
                 return f"LLM rate limit: {LLM_MIN_INTERVAL_SECONDS - elapsed:.1f}s until next call allowed"
         return None
@@ -322,7 +322,7 @@ class LLMEngine:
             self.budget_blocks += 1
             return {"success": False, "error": block, "response": "", "provider": provider, "budget_blocked": True}
         self._calls_this_run += 1
-        self._last_call_ts = time.time()
+        self._last_call_ts = CLOCK.now()
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if context:
@@ -359,7 +359,7 @@ class LLMEngine:
             self._save_lifetime_stats()
 
             record = {
-                "time": time.time(),
+                "time": CLOCK.now(),
                 "provider": provider,
                 "prompt_preview": prompt[:100],
                 "response_preview": result["content"][:200],

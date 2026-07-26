@@ -1,12 +1,12 @@
 """Self-Preservation — prevents system self-destruction, code integrity checks, emergency recovery."""
 import ast
-import time
 import hashlib
 import os
 import json
 import gc
 from pathlib import Path
 from collections import deque
+from aegis.clock import CLOCK
 
 
 # Critical modules that must never be removed or emptied
@@ -136,7 +136,7 @@ class SelfPreservation:
     def check_vital_signs(self, substrate) -> dict:
         """Comprehensive vital signs check — called every tick."""
         report = {
-            "time": time.time(),
+            "time": CLOCK.now(),
             "status": "alive",
             "threats": [],
             "actions_taken": [],
@@ -240,7 +240,7 @@ class SelfPreservation:
 
         # Log the check
         self.modification_log.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "target": target_path,
             "safe": report["safe"],
             "trust_score": round(report["trust_score"], 3),
@@ -249,7 +249,7 @@ class SelfPreservation:
 
         if not report["safe"]:
             self.blocked_modifications.append({
-                "time": time.time(),
+                "time": CLOCK.now(),
                 "target": target_path,
                 "reasons": report["critical"],
             })
@@ -284,7 +284,7 @@ class SelfPreservation:
                     result["issues"].append(f"READ ERROR: {rel_path}: {e}")
 
         self.integrity_checks.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "status": result["status"],
             "issues_count": len(result["issues"]),
         })
@@ -314,7 +314,7 @@ class SelfPreservation:
         """Emergency lockdown — blocks all self-modifications."""
         self.lockdown_active = True
         self.modification_log.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "event": "LOCKDOWN ACTIVATED",
             "reason": "Manual or automatic safety trigger",
         })
@@ -348,7 +348,7 @@ class SelfPreservation:
             return True
         # Log attempted self-shutdown
         self.modification_log.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "event": "SELF-SHUTDOWN BLOCKED",
             "reason": reason,
         })

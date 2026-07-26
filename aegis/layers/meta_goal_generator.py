@@ -3,8 +3,8 @@
 Deterministic: goal text rotates through each domain's fixed list and priority is
 a fixed spread derived from a counter — no ``random`` (zero-randomness guarantee).
 """
-import time
 from collections import deque
+from aegis.clock import CLOCK
 
 
 # Templates for self-improvement goals
@@ -130,7 +130,7 @@ class MetaGoalGenerator:
                             "domain": domain,
                             "description": goal_text,
                             "priority": priority,
-                            "created_at": time.time(),
+                            "created_at": CLOCK.now(),
                             "status": "pending",
                         }
                         new_goals.append(goal)

@@ -4,7 +4,7 @@ Fully deterministic: default topic / quote selection rotates through fixed lists
 via a round-robin counter instead of ``random`` — no RNG anywhere (see the
 project-wide "zero randomness" guarantee).
 """
-import time
+from aegis.clock import CLOCK
 from collections import deque
 
 try:
@@ -82,9 +82,9 @@ class ExternalLearning:
             if result.get("success"):
                 self.source_stats[source] = self.source_stats.get(source, 0) + 1
                 self.total_concepts += len(result.get("concepts", []))
-                self.SOURCES[source]["last_fetch"] = time.time()
+                self.SOURCES[source]["last_fetch"] = CLOCK.now()
                 self.learned_items.append({
-                    "time": time.time(),
+                    "time": CLOCK.now(),
                     "source": source,
                     "topic": topic,
                     "concepts_count": len(result.get("concepts", [])),

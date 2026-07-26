@@ -7,6 +7,7 @@ forever (unlike fine-tuning a model on its own text, which drifts/collapses).
 """
 import json
 import time
+import hashlib
 import logging
 import threading
 from dataclasses import dataclass, field, asdict
@@ -139,6 +140,27 @@ class SkillLibrary:
         # dict mid-iteration.
         with self._lock:
             return [s for s in self.skills.values() if kind in s.kinds]
+
+    def snapshot(self) -> list[dict]:
+        """Behaviour-defining view of the library, taken under the lock.
+
+        Name, claimed kinds, a hash of the code and the success counters — that
+        is everything about the library that changes what the solver does. The
+        code itself is hashed rather than copied so the snapshot stays small
+        enough to embed in a state digest or ship to an evaluation worker.
+        """
+        with self._lock:
+            return sorted(
+                ({"name": s.name,
+                  "kinds": sorted(s.kinds),
+                  "func": s.func,
+                  "code_hash": hashlib.blake2b(
+                      s.code.encode("utf-8"), digest_size=8).hexdigest(),
+                  "attempts": s.attempts,
+                  "successes": s.successes}
+                 for s in self.skills.values()),
+                key=lambda row: row["name"],
+            )
 
     def add(self, skill: Skill) -> tuple[bool, str]:
         safe, reasons = check_safe(skill.code)

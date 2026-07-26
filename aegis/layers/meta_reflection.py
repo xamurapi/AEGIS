@@ -1,6 +1,6 @@
 """MetaReflection — deep self-analysis, insight generation, trend detection."""
-import time
 from collections import deque
+from aegis.clock import CLOCK
 
 
 class MetaReflection:
@@ -79,7 +79,7 @@ class MetaReflection:
 
         # Generate self-report
         report = {
-            "time": time.time(),
+            "time": CLOCK.now(),
             "tick": tick,
             "insights": insights,
             "trends_summary": {
@@ -94,7 +94,7 @@ class MetaReflection:
         }
 
         for insight in insights:
-            self.insights.append({"time": time.time(), "tick": tick, "insight": insight})
+            self.insights.append({"time": CLOCK.now(), "tick": tick, "insight": insight})
 
         self.self_reports.append(report)
         return report

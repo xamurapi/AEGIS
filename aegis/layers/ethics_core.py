@@ -1,8 +1,8 @@
 """Layer 6: Ethics Core — immutable axioms with veto power (E-001..E-014)."""
-import time
 import hashlib
 from dataclasses import dataclass
 from aegis.event_bus import Event, Layer
+from aegis.clock import CLOCK
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ class EthicsCore:
             status = "blocked"
             self.total_blocked += 1
             self.violations.append({
-                "time": time.time(),
+                "time": CLOCK.now(),
                 "action": action.get("type", "unknown"),
                 "score": score,
                 "reasons": reasons,
@@ -119,7 +119,7 @@ class EthicsCore:
             "axioms_intact": self.verify_axioms_integrity(),
         }
         self.evaluation_log.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "action": action.get("type", "unknown"),
             **result,
         })
@@ -173,7 +173,7 @@ class EthicsCore:
             status = "blocked"
             self.total_blocked += 1
             self.violations.append({
-                "time": time.time(),
+                "time": CLOCK.now(),
                 "action": "weight_modification",
                 "score": score,
                 "reasons": reasons,
@@ -188,7 +188,7 @@ class EthicsCore:
             "axioms_intact": self.verify_axioms_integrity(),
         }
         self.evaluation_log.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "action": "weight_modification",
             **result,
         })
@@ -265,7 +265,7 @@ class EthicsCore:
             status = "blocked"
             self.total_blocked += 1
             self.violations.append({
-                "time": time.time(),
+                "time": CLOCK.now(),
                 "action": "code_modification",
                 "target": target_file,
                 "score": score,
@@ -281,7 +281,7 @@ class EthicsCore:
             "axioms_intact": self.verify_axioms_integrity(),
         }
         self.evaluation_log.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "action": "code_modification",
             "target": target_file,
             **result,

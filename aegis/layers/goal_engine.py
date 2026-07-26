@@ -4,9 +4,9 @@ All goal generation, progress, and abandonment is deterministic —
 driven by actual system state (memory size, tick count, energy, error rate).
 No random selection or random progress.
 """
-import time
 import math
 import itertools
+from aegis.clock import CLOCK
 
 
 class Goal:
@@ -22,11 +22,11 @@ class Goal:
         self.description = description
         self.priority = priority
         self.parent = parent
-        self.created = time.time()
+        self.created = CLOCK.now()
         self.progress = 0.0
         self.status = "active"  # active, completed, abandoned
         self.reasoning = ""
-        self.last_progress_time = time.time()  # track when last progress happened
+        self.last_progress_time = CLOCK.now()  # track when last progress happened
 
     def to_dict(self) -> dict:
         return {
@@ -80,7 +80,7 @@ class GoalEngine:
         self._tactic_counter = 0
 
     def generate_goals(self, state: dict) -> list[Goal]:
-        now = time.time()
+        now = CLOCK.now()
         if now - self._last_goal_gen < 10:
             return []
 
@@ -152,13 +152,13 @@ class GoalEngine:
         for g in self.goals:
             if g.name == goal_name and g.status == "active":
                 g.progress = min(1.0, g.progress + amount)
-                g.last_progress_time = time.time()
+                g.last_progress_time = CLOCK.now()
                 if g.progress >= 1.0:
                     g.progress = 1.0
                     g.status = "completed"
                     self.information_gain += amount * 2
                     self.goal_log.append({
-                        "time": time.time(),
+                        "time": CLOCK.now(),
                         "action": "completed",
                         "goal": g.to_dict(),
                     })
@@ -180,7 +180,7 @@ class GoalEngine:
         error_rate = m.get("error_rate", 0)
         llm_insights = m.get("llm_insights", 0)
 
-        now = time.time()
+        now = CLOCK.now()
 
         for g in self.goals:
             if g.status != "active" or g.level == "axiom":

@@ -6,13 +6,13 @@ each runs in its own sandbox and proposes an answer. The task's own verifier
 is genuine division of labor plus verification — no single skill is trusted, and
 the selection is objective, not a vote of confidence.
 """
-import time
 from collections import deque
 from dataclasses import dataclass
 
 from aegis.eval.benchmark import Task
 from aegis.eval.skill_library import SkillLibrary
 from aegis.eval.sandbox import run_skill
+from aegis.clock import CLOCK
 
 
 @dataclass
@@ -32,7 +32,7 @@ class MultiAgentSolver:
         self.timeout = timeout
 
     def solve(self, task: Task) -> SolveResult:
-        t0 = time.time()
+        t0 = CLOCK.now()
         skills = self.library.for_kind(task.kind)
         candidates = 0
         for skill in skills:
@@ -43,24 +43,24 @@ class MultiAgentSolver:
             if ok:
                 return SolveResult(
                     task.id, task.kind, True, out.get("result"),
-                    skill.name, candidates, round((time.time() - t0) * 1000, 1),
+                    skill.name, candidates, round((CLOCK.now() - t0) * 1000, 1),
                 )
         return SolveResult(
             task.id, task.kind, False, None, None, candidates,
-            round((time.time() - t0) * 1000, 1),
+            round((CLOCK.now() - t0) * 1000, 1),
         )
 
     def solve_composite(self, task) -> SolveResult:
         """Solve a composite task by threading a string through its pipeline of
         primitive skills (each kind takes {"s": str} and returns a string)."""
-        t0 = time.time()
+        t0 = CLOCK.now()
         current = task.payload.get("s")
         steps = 0
         for kind in task.pipeline:
             skills = self.library.for_kind(kind)
             if not skills:
                 return SolveResult(task.id, "compose", False, None, None, steps,
-                                   round((time.time() - t0) * 1000, 1))
+                                   round((CLOCK.now() - t0) * 1000, 1))
             produced = None
             for skill in skills:
                 out = run_skill(skill.code, skill.func, {"s": current}, timeout=self.timeout)
@@ -69,12 +69,12 @@ class MultiAgentSolver:
                     break
             if produced is None:
                 return SolveResult(task.id, "compose", False, None, None, steps,
-                                   round((time.time() - t0) * 1000, 1))
+                                   round((CLOCK.now() - t0) * 1000, 1))
             current = produced
             steps += 1
         solved = task.verify(current)
         return SolveResult(task.id, "compose", solved, current if solved else None,
-                           "+".join(task.pipeline), steps, round((time.time() - t0) * 1000, 1))
+                           "+".join(task.pipeline), steps, round((CLOCK.now() - t0) * 1000, 1))
 
     def auto_compose(self, start: str, target: str, kinds, max_depth: int = 3):
         """BFS search for a pipeline of transform skills mapping start -> target.

@@ -11,11 +11,11 @@ chain refinement is optional and driven by the Substrate.
 """
 import json
 import re
-import time
 import logging
 from pathlib import Path
 
 from aegis.config import WORLD_MODEL_DIR
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.world_model")
 
@@ -130,12 +130,12 @@ class WorldModel:
         cause = cause[:80]
         effect = effect[:80]
         link = self.links.setdefault(cause, {}).setdefault(effect, {
-            "observations": 0, "successes": 0, "updated": time.time(),
+            "observations": 0, "successes": 0, "updated": CLOCK.now(),
         })
         link["observations"] += 1
         if success:
             link["successes"] += 1
-        link["updated"] = time.time()
+        link["updated"] = CLOCK.now()
         self.total_observations += 1
         self._index_cause(cause)
         self._prune(protect=(cause, effect))
@@ -244,7 +244,7 @@ class WorldModel:
             "expected_result": steps[0]["expected"] if steps else "unknown — no causal data yet",
             "confidence": round(sum(s["confidence"] for s in steps) / len(steps), 3) if steps else 0.0,
             "source": "world_model",
-            "created": time.time(),
+            "created": CLOCK.now(),
         }
         self.chains.append(chain)
         if len(self.chains) > MAX_CHAINS:
@@ -281,7 +281,7 @@ class WorldModel:
             "expected_result": str(parsed.get("expected_result", ""))[:200],
             "confidence": _as_confidence(parsed.get("confidence", 0.5)),
             "source": "llm",
-            "created": time.time(),
+            "created": CLOCK.now(),
         }
         self.chains.append(chain)
         if len(self.chains) > MAX_CHAINS:

@@ -1,5 +1,5 @@
 """Consciousness — mode switching based on emotional state and energy (instinctive/heuristic/reflective)."""
-import time
+from aegis.clock import CLOCK
 
 
 class ConsciousnessState:
@@ -9,7 +9,7 @@ class ConsciousnessState:
         self.mode_durations: dict[str, float] = {
             "survival": 0, "instinctive": 0, "heuristic": 0, "reflective": 0,
         }
-        self._mode_start = time.time()
+        self._mode_start = CLOCK.now()
 
     def update_mode(self, mood: str, energy: float, arousal: float = 0.5) -> str:
         old_mode = self.mode
@@ -26,7 +26,7 @@ class ConsciousnessState:
         else:
             self.mode = "heuristic"
 
-        now = time.time()
+        now = CLOCK.now()
         elapsed = now - self._mode_start
         if old_mode in self.mode_durations:
             self.mode_durations[old_mode] += elapsed

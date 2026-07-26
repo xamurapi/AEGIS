@@ -8,7 +8,6 @@ Code self-modification is integrated via CodeModifier + LLM proposals.
 """
 import asyncio
 import json
-import time
 import logging
 from pathlib import Path
 
@@ -26,6 +25,8 @@ from aegis.config import (
     CAPACITY_HEADROOM, CAPACITY_MAX_MULTIPLE,
 )
 from aegis.event_bus import EventBus, Event, Layer
+from aegis.safety import immutable
+from aegis.util.canonical import digest_of
 from aegis.layers.memory import MemorySystem
 from aegis.layers.introspection import IntrospectionEngine
 from aegis.layers.self_modification import SelfModification
@@ -67,6 +68,7 @@ from aegis.eval.sandbox import run_skill
 from aegis.eval.evaluator import Evaluator
 from aegis.eval.environment import TaskEnvironment
 from aegis.llm import LLMEngine
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.substrate")
 
@@ -190,7 +192,7 @@ class Substrate:
         self.event_bus.set_veto(self.ethics.veto_check)
 
         self.tick_count = 0
-        self.start_time = time.time()
+        self.start_time = CLOCK.now()
         self.running = False
         self.cycle_phase = "idle"
         self.cycle_times: list[float] = []
@@ -256,8 +258,8 @@ class Substrate:
         data = {
             "tick_count": self.tick_count,
             "version": self.self_mod.current_version,
-            "timestamp": time.time(),
-            "uptime": time.time() - self.start_time,
+            "timestamp": CLOCK.now(),
+            "uptime": CLOCK.now() - self.start_time,
             "mood": self.emotions.mood,
             "consciousness_mode": self.consciousness.mode,
             "energy": self.emotions.energy,
@@ -1586,7 +1588,7 @@ class Substrate:
     # ── TICK / RUN / STOP ────────────────────────────────────────────
 
     async def tick(self):
-        tick_start = time.time()
+        tick_start = CLOCK.now()
         self.tick_count += 1
 
         # Reset per-tick accumulators
@@ -1616,9 +1618,9 @@ class Substrate:
             await self._reflect()
             if self.tick_count % max(1, CAPACITY_EVERY_N_TICKS) == 0:
                 self.regulate_capacity()
-            self.health.record_tick((time.time() - tick_start) * 1000, success=True)
+            self.health.record_tick((CLOCK.now() - tick_start) * 1000, success=True)
         except Exception as e:
-            self.health.record_tick((time.time() - tick_start) * 1000, success=False)
+            self.health.record_tick((CLOCK.now() - tick_start) * 1000, success=False)
             self.autobiography.log_event("error", str(e)[:100], 0.8)
         finally:
             # _evaluate sets llm_thinking=True; if a later phase raises before
@@ -1626,7 +1628,7 @@ class Substrate:
             # LLM tick, skewing status/introspection. The cycle is over here.
             self.llm_thinking = False
 
-        self.last_tick_duration = time.time() - tick_start
+        self.last_tick_duration = CLOCK.now() - tick_start
         self.cycle_times.append(self.last_tick_duration)
         if len(self.cycle_times) > 100:
             self.cycle_times = self.cycle_times[-100:]
@@ -1647,7 +1649,7 @@ class Substrate:
 
     async def run(self):
         self.running = True
-        self.start_time = time.time()
+        self.start_time = CLOCK.now()
         while self.running:
             try:
                 if not self.ethics.kill_switch_active:
@@ -1692,7 +1694,7 @@ class Substrate:
                     pass
 
     def full_status(self) -> dict:
-        uptime = time.time() - self.start_time
+        uptime = CLOCK.now() - self.start_time
         avg_cycle = sum(self.cycle_times) / max(1, len(self.cycle_times))
         return {
             "substrate": {
@@ -1754,6 +1756,96 @@ class Substrate:
             "event_history": self.event_bus.get_history(30),
             "llm": self.llm.status(),
         }
+
+    def state_snapshot(self) -> dict:
+        """Everything that determines future behaviour — and nothing else.
+
+        Deliberately assembled by hand rather than derived from
+        ``full_status()``: that report is full of wall-clock timings, uptime and
+        latencies, which differ between two identical runs and would make the
+        digest useless. What belongs here is what a restart would have to
+        restore to keep behaving the same way.
+        """
+        return {
+            "tick": self.tick_count,
+            "version": self.self_mod.current_version,
+            "parameters": dict(self.self_mod.parameters),
+            "emotions": {
+                "mood": self.emotions.mood,
+                "energy": self.emotions.energy,
+                "valence": self.emotions.valence,
+                "arousal": self.emotions.arousal,
+                "success_rate": self.emotions.success_rate,
+            },
+            "consciousness": self.consciousness.mode,
+            "archetype": self.active_archetype.name if self.active_archetype else None,
+            "goals": sorted(
+                ({"name": g.name, "level": g.level, "status": g.status,
+                  "progress": g.progress, "priority": g.priority}
+                 for g in self.goals.goals),
+                key=lambda g: (g["level"], g["name"], g["status"]),
+            ),
+            "curiosity": self.goals.curiosity_level,
+            "information_gain": self.goals.information_gain,
+            "memory": {
+                "semantic": sorted(self.memory.semantic),
+                "episodic": [e.get("event", "") for e in self.memory.episodic],
+                "procedural": sorted(p.get("name", "") for p in self.memory.procedural),
+                "meta": self.memory.meta,
+            },
+            "world_model": {
+                cause: {effect: {"observations": link["observations"],
+                                 "successes": link["successes"]}
+                        for effect, link in sorted(effects.items())}
+                for cause, effects in sorted(self.world_model.links.items())
+            },
+            "cognitive_graph": {
+                "nodes": sorted(self.cognitive_graph.nodes),
+                "edges": {src: sorted(dsts) for src, dsts
+                          in sorted(self.cognitive_graph.edges.items())},
+            },
+            "evolution": {
+                "generation": self.evolution.generation,
+                "accepted": self.evolution.accepted,
+                "rejected": self.evolution.rejected,
+                "champion": (self.evolution.champion or {}).get("genome"),
+                "champion_fitness": (self.evolution.champion or {}).get("fitness"),
+                "candidate_param": (self.evolution.candidate or {}).get("mutated_param"),
+            },
+            "goal_intelligence": {
+                obj: {"utility": entry["utility"], "drive": entry["drive"],
+                      "attempts": entry["attempts"]}
+                for obj, entry in sorted(self.goal_intelligence.values.items())
+            },
+            "feedback": {
+                "resolved": self.feedback_loop.resolved,
+                "successes": self.feedback_loop.successes,
+                "failures": self.feedback_loop.failures,
+            },
+            "skills": self.skill_library.snapshot(),
+            "benchmark": self._last_benchmark_score,
+            "ethics": {
+                "kill_switch": self.ethics.kill_switch_active,
+                "violations": len(self.ethics.violations),
+            },
+            "capacity": {
+                "world_model_max_links": self.world_model.max_links,
+                "cognitive_graph_max_nodes": self.cognitive_graph.max_nodes,
+            },
+            # The safety contract is part of the state: quietly widening the
+            # untouchable set and claiming nothing changed is exactly the
+            # failure this digest exists to catch.
+            "safety_contract": immutable.digest(),
+        }
+
+    def state_digest(self) -> str:
+        """Stable digest of ``state_snapshot()`` (spec M9.4).
+
+        Two runs of the deterministic core from the same starting state must
+        produce the same digest; that equality is the determinism guarantee,
+        checked by ``tests/test_determinism_e2e.py``.
+        """
+        return digest_of(self.state_snapshot())
 
     @staticmethod
     def _format_uptime(seconds: float) -> str:

@@ -12,11 +12,11 @@ observations to the WorldModel, turning every action into training signal.
 Deterministic; LLM only used (optionally, by the Substrate) to phrase the cause.
 """
 import json
-import time
 import logging
 from pathlib import Path
 
 from aegis.config import FEEDBACK_DIR
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.feedback_loop")
 
@@ -91,7 +91,7 @@ class FeedbackLoop:
             "situation": situation[:300],
             "decision": decision[:200],
             "context": {k: context[k] for k in list(context or {})[:10]},
-            "opened": time.time(),
+            "opened": CLOCK.now(),
         }
         # Bound outstanding experiences — drop the oldest unresolved ones.
         if len(self._open) > MAX_OPEN:
@@ -113,8 +113,8 @@ class FeedbackLoop:
             "metric": round(float(metric), 4),
             "cause": (cause or self._infer_cause(success, metric))[:300],
             "expected": expected[:200],
-            "resolved": time.time(),
-            "latency_s": round(time.time() - situation["opened"], 2),
+            "resolved": CLOCK.now(),
+            "latency_s": round(CLOCK.now() - situation["opened"], 2),
         }
         self.resolved += 1
         if success:

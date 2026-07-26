@@ -5,10 +5,10 @@ computed from age, importance, and access count — no random threshold.
 """
 import json
 import math
-import time
 import logging
 from pathlib import Path
 from aegis.config import MEMORY_DIR, MAX_WORKING_MEMORY, MEMORY_DECAY_RATE
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.memory")
 
@@ -62,7 +62,7 @@ class MemorySystem:
             logger.warning("Failed to save memory state to %s", self._persistence_path, exc_info=True)
 
     def add_working(self, item: dict):
-        item["timestamp"] = time.time()
+        item["timestamp"] = CLOCK.now()
         self.working.append(item)
         if len(self.working) > MAX_WORKING_MEMORY:
             self.working = self.working[-MAX_WORKING_MEMORY:]
@@ -70,11 +70,11 @@ class MemorySystem:
     def add_episodic(self, event: str, emotional_valence: float = 0.0, importance: float = 0.5):
         entry = {
             "event": event,
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "valence": emotional_valence,
             "importance": importance,
             "access_count": 0,
-            "last_access": time.time(),
+            "last_access": CLOCK.now(),
         }
         self.episodic.append(entry)
         # Soft RAM cap: drop the oldest episodic entries on runaway growth.
@@ -85,11 +85,11 @@ class MemorySystem:
         # Preserve the original creation time when re-learning a known concept —
         # an update must not masquerade as a brand-new concept.
         existing = self.semantic.get(concept)
-        created = existing.get("created", time.time()) if isinstance(existing, dict) else time.time()
+        created = existing.get("created", CLOCK.now()) if isinstance(existing, dict) else CLOCK.now()
         self.semantic[concept] = {
             "relations": relations,
             "created": created,
-            "updated": time.time(),
+            "updated": CLOCK.now(),
             "confidence": relations.get("confidence", 0.8),
         }
         # Soft RAM cap: prune the least-recently-updated concepts on overflow.
@@ -108,7 +108,7 @@ class MemorySystem:
         self.procedural.append({
             "name": name,
             "procedure": procedure,
-            "created": time.time(),
+            "created": CLOCK.now(),
             "version": 1,
             "success_rate": 1.0,
         })
@@ -117,7 +117,7 @@ class MemorySystem:
         self.meta[domain] = {
             "knows": knows,
             "confidence": confidence,
-            "updated": time.time(),
+            "updated": CLOCK.now(),
         }
 
     @staticmethod
@@ -170,14 +170,14 @@ class MemorySystem:
             event = ep.get("event", "")
             if not query or query.lower() in event.lower():
                 ep["access_count"] = ep.get("access_count", 0) + 1
-                ep["last_access"] = time.time()
+                ep["last_access"] = CLOCK.now()
                 results.append(ep)
                 if len(results) >= limit:
                     break
         return results
 
     def apply_forgetting(self):
-        now = time.time()
+        now = CLOCK.now()
         surviving = []
         forgotten = 0
         for ep in self.episodic:

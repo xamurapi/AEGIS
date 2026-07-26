@@ -6,6 +6,7 @@ import shutil
 import logging
 from pathlib import Path
 from collections import deque
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.state_backup")
 
@@ -25,7 +26,7 @@ class StateBackup:
 
     def save_state(self, state: dict, backup_type: str = "scheduled") -> dict:
         """Save compressed state snapshot."""
-        ts = time.time()
+        ts = CLOCK.now()
         # Nanosecond stamp so two backups of the same type in the same second
         # don't collide and overwrite each other.
         filename = f"aegis_{backup_type}_{time.time_ns()}.json.gz"

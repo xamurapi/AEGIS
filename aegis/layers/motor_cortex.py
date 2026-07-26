@@ -1,5 +1,5 @@
 """MotorCortex — action execution system (console output, voice synthesis, device control)."""
-import time
+from aegis.clock import CLOCK
 import queue
 import threading
 from collections import deque
@@ -82,7 +82,7 @@ class MotorCortex:
         """Execute an action based on type and context."""
         payload = payload or {}
         result = {
-            "time": time.time(),
+            "time": CLOCK.now(),
             "type": action_type,
             "archetype": archetype,
             "goal": goal,

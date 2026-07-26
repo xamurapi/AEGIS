@@ -1,6 +1,5 @@
 """Weight Modifier — LoRA fine-tuning of local LLM with checkpointing and rollback."""
 import json
-import time
 import shutil
 import asyncio
 import logging
@@ -16,6 +15,7 @@ from aegis.config import (
     TRAIN_LEARNING_RATE, TRAIN_MIN_INTERVAL_SECONDS,
     TRAIN_MIN_DATASET_SIZE, TRAIN_VAL_LOSS_THRESHOLD,
 )
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.weight_modifier")
 
@@ -70,7 +70,7 @@ class WeightModifier:
         """Check if training is allowed right now."""
         if self.training_in_progress:
             return False, "Training already in progress"
-        elapsed = time.time() - self.last_train_time
+        elapsed = CLOCK.now() - self.last_train_time
         if elapsed < TRAIN_MIN_INTERVAL_SECONDS and self.last_train_time > 0:
             remaining = int(TRAIN_MIN_INTERVAL_SECONDS - elapsed)
             return False, f"Cooldown: {remaining}s remaining (min interval: {TRAIN_MIN_INTERVAL_SECONDS}s)"
@@ -265,7 +265,7 @@ class WeightModifier:
         lora_info = self._prepare_lora()
 
         # Checkpoint path
-        timestamp = int(time.time())
+        timestamp = int(CLOCK.now())
         checkpoint_dir = WEIGHT_CHECKPOINTS_DIR / f"lora_{timestamp}"
 
         # Progress callback
@@ -336,7 +336,7 @@ class WeightModifier:
             # Apply the cooldown to degraded runs too. If last_train_time were
             # only set on success, a degraded run would leave the cooldown clear
             # and could retrain immediately — an unbounded degradation loop.
-            self.last_train_time = time.time()
+            self.last_train_time = CLOCK.now()
             self._train_progress["status"] = "rolled_back"
             # Reload base model to undo LoRA. Drop the degraded model first so
             # its (V)RAM is released before the fresh copy loads.
@@ -346,7 +346,7 @@ class WeightModifier:
             self.load_model()
 
             record = {
-                "timestamp": time.time(),
+                "timestamp": CLOCK.now(),
                 "dataset_dir": str(dataset_dir),
                 "status": "rolled_back",
                 "train_loss": train_result.training_loss,
@@ -379,12 +379,12 @@ class WeightModifier:
 
         # Update state
         self.current_checkpoint = str(checkpoint_dir)
-        self.last_train_time = time.time()
+        self.last_train_time = CLOCK.now()
         self.total_trainings += 1
         self._train_progress["status"] = "completed"
 
         record = {
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "dataset_dir": str(dataset_dir),
             "checkpoint": str(checkpoint_dir),
             "status": "applied",

@@ -1,5 +1,5 @@
 """Autobiography — narrative self-history with impact scoring."""
-import time
+from aegis.clock import CLOCK
 
 
 class Autobiographer:
@@ -9,7 +9,7 @@ class Autobiographer:
 
     def log_event(self, category: str, summary: str, impact: float):
         entry = {
-            "time": time.time(),
+            "time": CLOCK.now(),
             "category": category,
             "summary": summary,
             "impact": round(min(max(impact, 0.0), 1.0), 3),

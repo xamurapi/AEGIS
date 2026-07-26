@@ -4,6 +4,7 @@ Deterministic: agent ids are a monotonic counter, topic selection rotates
 through each blueprint's fixed list, and next-run staggering is a fixed spread —
 no ``random`` anywhere (project-wide "zero randomness" guarantee).
 """
+from aegis.clock import CLOCK
 import time
 import asyncio
 import itertools
@@ -45,7 +46,7 @@ class SpiderAgent:
         return self.successes / max(self.runs, 1)
 
     def is_due(self) -> bool:
-        return time.time() >= self.next_run and self.status == "active"
+        return CLOCK.now() >= self.next_run and self.status == "active"
 
     def to_dict(self) -> dict:
         return {
@@ -142,12 +143,12 @@ class AgentSystem:
             agent = self._create(bp["name"], bp["source_type"], bp["task"], topic, bp["interval"])
             agent.status = "active"
             # Stagger start times deterministically across a 5..30s window.
-            agent.next_run = time.time() + 5 + (self._stagger % 26)
+            agent.next_run = CLOCK.now() + 5 + (self._stagger % 26)
             self._stagger += 5
 
     def _create(self, name: str, source_type: str, task: str,
                 topic: str = "", interval: float = 120) -> SpiderAgent:
-        agent_id = f"agent_{int(time.time())}_{next(self._id_seq):04d}"
+        agent_id = f"agent_{int(CLOCK.now())}_{next(self._id_seq):04d}"
         agent = SpiderAgent(
             agent_id=agent_id, name=name, source_type=source_type,
             task_description=task, topic=topic, run_interval=interval,
@@ -155,7 +156,7 @@ class AgentSystem:
         self.agents.append(agent)
         self.total_generated += 1
         self.generation_log.append({
-            "time": time.time(), "event": "created",
+            "time": CLOCK.now(), "event": "created",
             "agent_id": agent_id, "name": name, "source_type": source_type,
         })
         return agent
@@ -165,7 +166,7 @@ class AgentSystem:
         """Public API to create and activate a new agent."""
         agent = self._create(name, source_type, task, topic)
         agent.status = "active"
-        agent.next_run = time.time() + 5
+        agent.next_run = CLOCK.now() + 5
         return agent
 
     # ── Execution ─────────────────────────────────────────────
@@ -185,8 +186,8 @@ class AgentSystem:
             try:
                 data = await self._execute_agent(agent)
                 agent.runs += 1
-                agent.last_run = time.time()
-                agent.next_run = time.time() + agent.run_interval
+                agent.last_run = CLOCK.now()
+                agent.next_run = CLOCK.now() + agent.run_interval
 
                 if data:
                     agent.successes += 1
@@ -196,7 +197,7 @@ class AgentSystem:
                     self.total_data_items += len(data)
                     for item in data:
                         self.collected_knowledge.append({
-                            "time": time.time(),
+                            "time": CLOCK.now(),
                             "agent": agent.name,
                             "source": agent.source_type,
                             "data": item,
@@ -206,7 +207,7 @@ class AgentSystem:
                         "items": len(data), "success": True,
                     })
                     self.generation_log.append({
-                        "time": time.time(), "event": "fetched",
+                        "time": CLOCK.now(), "event": "fetched",
                         "agent_id": agent.agent_id, "name": agent.name,
                         "items": len(data),
                     })
@@ -217,8 +218,8 @@ class AgentSystem:
             except Exception as e:
                 agent.runs += 1
                 agent.failures += 1
-                agent.last_run = time.time()
-                agent.next_run = time.time() + agent.run_interval * 2
+                agent.last_run = CLOCK.now()
+                agent.next_run = CLOCK.now() + agent.run_interval * 2
                 agent.last_error = str(e)[:200]
                 if agent.failures >= 10 and agent.success_rate() < 0.2:
                     agent.status = "failed"
@@ -388,7 +389,7 @@ class AgentSystem:
                             bp["source_type"], bp["task"], topic, bp["interval"],
                         )
                         new.status = "active"
-                        new.next_run = time.time() + 10
+                        new.next_run = CLOCK.now() + 10
                         created.append(new.name)
                         break
 

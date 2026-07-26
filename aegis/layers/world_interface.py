@@ -3,8 +3,8 @@
 All sensor data comes from real system metrics (psutil, os, time).
 No random simulation — actual hardware readings.
 """
+from aegis.clock import CLOCK
 import os
-import time
 import platform
 
 try:
@@ -16,7 +16,7 @@ except ImportError:
 
 class WorldInterface:
     def __init__(self):
-        self.start_time = time.time()
+        self.start_time = CLOCK.now()
         self.actions_log: list[dict] = []
         self.sensors: dict[str, float] = {}
         self.permissions: dict[str, bool] = {
@@ -31,8 +31,8 @@ class WorldInterface:
 
     def perceive(self) -> dict:
         # Real process uptime measured from construction, NOT the time-of-day
-        # that ``time.time() % 86400`` produced (which reset every midnight).
-        uptime_hours = (time.time() - self.start_time) / 3600
+        # that ``CLOCK.now() % 86400`` produced (which reset every midnight).
+        uptime_hours = (CLOCK.now() - self.start_time) / 3600
         if HAS_PSUTIL:
             cpu = psutil.cpu_percent(interval=0)
             mem = psutil.virtual_memory()
@@ -55,7 +55,7 @@ class WorldInterface:
             }
         else:
             # Deterministic fallback — derive from time, not random
-            t = time.time()
+            t = CLOCK.now()
             self.sensors = {
                 "cpu_load": 20 + 10 * (t % 60) / 60,  # slowly oscillating
                 "memory_usage_pct": 40 + 5 * ((t % 300) / 300),
@@ -70,14 +70,14 @@ class WorldInterface:
             "platform": platform.system(),
             "python_version": platform.python_version(),
             "hostname": platform.node(),
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
         }
         return {**self.sensors, **self._environment_cache}
 
     def act(self, action: dict) -> dict:
         action_type = action.get("type", "unknown")
         record = {
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "action_type": action_type,
             "details": action,
             "result": "pending",

@@ -11,11 +11,11 @@ worth the system's attention right now, given drives and past payoff.
 Deterministic: utilities are running averages of real reward.
 """
 import json
-import time
 import logging
 from pathlib import Path
 
 from aegis.config import GOAL_INTEL_DIR
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.goal_intelligence")
 
@@ -92,7 +92,7 @@ class GoalIntelligence:
         entry = self.values.get(objective)
         if entry is None:
             drive = self._classify_drive(objective)
-            entry = {"utility": 0.5, "drive": drive, "attempts": 0, "updated": time.time()}
+            entry = {"utility": 0.5, "drive": drive, "attempts": 0, "updated": CLOCK.now()}
             self.values[objective] = entry
             self._prune()
         return entry
@@ -139,7 +139,7 @@ class GoalIntelligence:
             "expected_value": best_value,
             "alternatives": [{"objective": o, "value": v} for v, o in scored[1:4]],
             "tick": (context or {}).get("tick"),
-            "time": time.time(),
+            "time": CLOCK.now(),
         }
         self._last_choice = choice
         self.decisions.append(choice)
@@ -157,7 +157,7 @@ class GoalIntelligence:
         realized = max(0.0, min(1.0, realized))
         entry["utility"] += LEARNING_RATE * (realized - entry["utility"])
         entry["utility"] = max(0.0, min(1.0, entry["utility"]))
-        entry["updated"] = time.time()
+        entry["updated"] = CLOCK.now()
         self.total_reward += realized
 
     # ── status ───────────────────────────────────────────────────────

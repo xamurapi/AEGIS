@@ -6,7 +6,6 @@ history over time and persists it. This score is the external ground truth the
 whole system optimizes toward; ``Substrate._compute_reward`` reads it.
 """
 import json
-import time
 import logging
 from collections import deque
 from pathlib import Path
@@ -17,6 +16,7 @@ from aegis.eval.coding import CodingTask, CODING_BENCHMARK, verify_solution
 from aegis.eval.composite import CompositeTask, COMPOSITE_BENCHMARK
 from aegis.eval.autocompose import AutoComposeTask, AUTOCOMPOSE_BENCHMARK
 from aegis.eval.solver import MultiAgentSolver
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.evaluator")
 
@@ -107,7 +107,7 @@ class Evaluator:
         grand_total = total + coding_total + composite_total + auto_total
         score = grand_passed / grand_total if grand_total else 0.0
         report = {
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "score": round(score, 4),
             "passed": grand_passed,
             "total": grand_total,

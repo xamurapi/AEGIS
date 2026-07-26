@@ -3,9 +3,9 @@
 Sandbox testing is real — validates parameter bounds, checks for degradation
 using actual metric history, and never uses random outcomes.
 """
-import time
 import copy
 import logging
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.self_modification")
 
@@ -66,7 +66,7 @@ class SelfModification:
     def propose_modification(self, mod_type: str, target: str, new_value: float) -> dict:
         proposal = {
             "id": f"mod_{len(self.modifications):04d}",
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "type": mod_type,  # parametric, architectural, meta
             "target": target,
             "old_value": self.parameters.get(target, None),
@@ -152,7 +152,7 @@ class SelfModification:
 
         result = {
             "proposal_id": proposal["id"],
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "passed": passed,
             "metric_change": round(metric_change, 4),
             "degradation": round(max(0, -metric_change), 4),
@@ -182,7 +182,7 @@ class SelfModification:
             # accepted modification. Keep the audit trail without mutating state.
             proposal["status"] = "rejected_degradation"
             self._cap(self.rollbacks, {
-                "timestamp": time.time(),
+                "timestamp": CLOCK.now(),
                 "proposal_id": proposal["id"],
                 "reason": "degradation_exceeded_threshold",
             })
@@ -226,7 +226,7 @@ class SelfModification:
     def _rollback(self, proposal: dict):
         self.parameters = copy.deepcopy(self._stable_checkpoint)
         self._cap(self.rollbacks, {
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "proposal_id": proposal["id"],
             "reason": "degradation_exceeded_threshold",
         })
@@ -248,7 +248,7 @@ class SelfModification:
 
         record = {
             "id": f"wmod_{self.weight_mod_total:04d}",
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "status": "building_dataset",
         }
         self.weight_mod_total += 1
@@ -347,8 +347,8 @@ class SelfModification:
         if result.get("success"):
             self.weight_mod_rollbacks += 1
             self._cap(self.weight_modifications, {
-                "id": f"wmod_rollback_{int(time.time())}",
-                "timestamp": time.time(),
+                "id": f"wmod_rollback_{int(CLOCK.now())}",
+                "timestamp": CLOCK.now(),
                 "status": "manual_rollback",
                 "target": checkpoint_path or "base_model",
             })

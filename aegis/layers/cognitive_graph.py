@@ -9,12 +9,12 @@ use CONNECTED knowledge instead of flat recency lists. Deterministic and
 dependency-free.
 """
 import json
-import time
 import logging
 from collections import deque
 from pathlib import Path
 
 from aegis.config import COGNITIVE_GRAPH_DIR
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.cognitive_graph")
 
@@ -100,7 +100,7 @@ class CognitiveGraph:
         node_id = node_id[:120]
         if node_type not in NODE_TYPES:
             node_type = "concept"
-        now = time.time()
+        now = CLOCK.now()
         if node_id in self.nodes:
             self.nodes[node_id]["updated"] = now
             if meta:
@@ -122,12 +122,12 @@ class CognitiveGraph:
         if existing:
             # Reinforce: repeated observations strengthen the connection.
             existing["weight"] = min(1.0, existing["weight"] + 0.1)
-            existing["updated"] = time.time()
+            existing["updated"] = CLOCK.now()
         else:
             self.edges[src][dst] = {
                 "relation": relation,
                 "weight": max(0.0, min(1.0, weight)),
-                "updated": time.time(),
+                "updated": CLOCK.now(),
             }
             self._in_degree[dst] = self._in_degree.get(dst, 0) + 1
 

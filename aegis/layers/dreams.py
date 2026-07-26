@@ -4,8 +4,8 @@ Dream content is deterministically derived from mood, memory, and semantic
 context — no random selection.  Motifs and themes are chosen by mood-weighted
 scoring, and fragments are picked by recency and importance.
 """
-import time
 import hashlib
+from aegis.clock import CLOCK
 
 
 MOTIFS = [
@@ -75,7 +75,7 @@ class DreamEngine:
         self.dream_count = 0
 
     def generate_dream(self, mood: str, recent_events: list[str], semantic_concepts: list[str]) -> dict:
-        seed = self.dream_count * 1000 + int(time.time()) % 10000
+        seed = self.dream_count * 1000 + int(CLOCK.now()) % 10000
 
         # Pick motif and theme based on mood weights
         motif_weights = MOOD_MOTIF_WEIGHTS.get(mood, MOOD_MOTIF_WEIGHTS["neutral"])
@@ -102,7 +102,7 @@ class DreamEngine:
 
         dream = {
             "id": self.dream_count + 1,
-            "time": time.time(),
+            "time": CLOCK.now(),
             "motif": motif,
             "theme": theme,
             "symbols": symbols,

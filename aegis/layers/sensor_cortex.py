@@ -3,6 +3,7 @@
 All readings come from actual system data (psutil) or deterministic
 time-based functions. No random values.
 """
+from aegis.clock import CLOCK
 import time
 import math
 from collections import deque
@@ -30,7 +31,7 @@ class SensorCortex:
         }
         self.readings: deque = deque(maxlen=100)
         self.heavy_sensors_disabled = False
-        self._start_time = time.time()
+        self._start_time = CLOCK.now()
 
     def read_all(self) -> dict[str, float]:
         """Read all enabled sensors and return their values."""
@@ -47,7 +48,7 @@ class SensorCortex:
 
             values[name] = round(sensor["value"], 3)
 
-        self.readings.append({"time": time.time(), "values": values})
+        self.readings.append({"time": CLOCK.now(), "values": values})
         return values
 
     def _read_real(self, name: str) -> float:
@@ -58,12 +59,12 @@ class SensorCortex:
         elif name == "time_of_day":
             return time.localtime().tm_hour + time.localtime().tm_min / 60
         elif name == "system_uptime":
-            return time.time() - self._start_time
+            return CLOCK.now() - self._start_time
         return 0.0
 
     def _read_derived(self, name: str) -> float:
         """Deterministic sensor readings derived from time (no random)."""
-        t = time.time()
+        t = CLOCK.now()
 
         if name == "temperature":
             # Smooth oscillation: 22C base + sine wave (period 10 min)

@@ -10,11 +10,11 @@ only when an external, verifiable metric says it is an improvement. Fitness
 comes from the Evaluator's held-out benchmark, never from self-report.
 """
 import json
-import time
 import logging
 from pathlib import Path
 
 from aegis.config import EVOLUTION_DIR
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.evolution")
 
@@ -86,7 +86,7 @@ class EvolutionEngine:
             "genome": {k: float(v) for k, v in genome.items()},
             "fitness": float(fitness),
             "generation": self.generation,
-            "created": time.time(),
+            "created": CLOCK.now(),
         }
 
     def propose_mutation(self, tick: int) -> dict | None:
@@ -125,7 +125,7 @@ class EvolutionEngine:
             "old_value": old_value,
             "new_value": new_value,
             "proposed_at_tick": tick,
-            "created": time.time(),
+            "created": CLOCK.now(),
         }
         return {"param": param, "old_value": old_value, "new_value": new_value}
 
@@ -148,7 +148,7 @@ class EvolutionEngine:
             "new_value": cand["new_value"],
             "champion_fitness": self.champion["fitness"],
             "candidate_fitness": float(fitness),
-            "time": time.time(),
+            "time": CLOCK.now(),
         }
         if fitness > self.champion["fitness"] + FITNESS_EPSILON:
             self.accepted += 1
@@ -157,7 +157,7 @@ class EvolutionEngine:
                 "genome": cand["genome"],
                 "fitness": float(fitness),
                 "generation": self.generation,
-                "created": time.time(),
+                "created": CLOCK.now(),
             }
             result = {"decision": "accepted", "param": cand["mutated_param"],
                       "revert_to": None}

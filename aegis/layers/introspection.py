@@ -3,7 +3,7 @@
 All metrics are computed from real system state — no random activations.
 """
 import math
-import time
+from aegis.clock import CLOCK
 
 
 class IntrospectionEngine:
@@ -17,7 +17,7 @@ class IntrospectionEngine:
     def trace_decision(self, decision: str, alternatives: list[str],
                        reasoning: str, confidence: float) -> dict:
         trace = {
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "decision": decision,
             "alternatives": alternatives,
             "reasoning": reasoning,
@@ -94,7 +94,7 @@ class IntrospectionEngine:
             })
 
         report = {
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "samples_analyzed": len(decisions),
             "biases_found": len(biases),
             "biases": biases,

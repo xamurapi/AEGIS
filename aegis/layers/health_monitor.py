@@ -1,5 +1,5 @@
 """Health Monitor — system resource monitoring and emergency prevention."""
-import time
+from aegis.clock import CLOCK
 import platform
 from collections import deque
 
@@ -12,7 +12,7 @@ except ImportError:
 
 class HealthMonitor:
     def __init__(self):
-        self.start_time = time.time()
+        self.start_time = CLOCK.now()
         self.cpu_history: deque = deque(maxlen=60)
         self.mem_history: deque = deque(maxlen=60)
         self.tick_durations: deque = deque(maxlen=100)
@@ -74,7 +74,7 @@ class HealthMonitor:
             report["status"] = "warning"
 
         if report["status"] == "critical":
-            self.incidents.append({"time": time.time(), "issues": report["critical"]})
+            self.incidents.append({"time": CLOCK.now(), "issues": report["critical"]})
             if len(self.incidents) > 50:
                 self.incidents = self.incidents[-50:]
 
@@ -101,7 +101,7 @@ class HealthMonitor:
             self.error_count += 1
 
     def status(self) -> dict:
-        uptime = time.time() - self.start_time
+        uptime = CLOCK.now() - self.start_time
         total = self.successful_ticks + self.failed_ticks
         return {
             "uptime_seconds": round(uptime, 1),

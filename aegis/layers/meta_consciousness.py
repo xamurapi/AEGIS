@@ -1,6 +1,6 @@
 """MetaConsciousness — analyzes fragmentation, coherence and integration of the system's 'personality'."""
-import time
 from collections import deque
+from aegis.clock import CLOCK
 
 
 class MetaConsciousness:
@@ -64,7 +64,7 @@ class MetaConsciousness:
             self.recommendations.append("System is well-integrated — continue current strategy")
 
         result = {
-            "time": time.time(),
+            "time": CLOCK.now(),
             "fragmentation": round(self.fragmentation_score, 3),
             "coherence": round(self.coherence_score, 3),
             "conflicts": conflicts,
@@ -78,7 +78,7 @@ class MetaConsciousness:
     def log_integration_event(self, event_type: str, description: str):
         """Log when archetypes merge, conflicts resolve, etc."""
         self.integration_events.append({
-            "time": time.time(),
+            "time": CLOCK.now(),
             "type": event_type,
             "description": description,
         })

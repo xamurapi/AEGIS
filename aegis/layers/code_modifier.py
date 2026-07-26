@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 from aegis._atomic import atomic_write_text
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.code_modifier")
 
@@ -129,7 +130,7 @@ class CodeModifier:
             "failed_mods": self.failed_mods,
             "blocked_mods": self.blocked_mods,
             "modifications": self.modifications[-50:],
-            "last_updated": time.time(),
+            "last_updated": CLOCK.now(),
         }
         try:
             atomic_write_text(self._stats_path, json.dumps(data, indent=1))
@@ -324,7 +325,7 @@ class CodeModifier:
 
         record = {
             "id": f"cmod_{self.total_mods:04d}",
-            "timestamp": time.time(),
+            "timestamp": CLOCK.now(),
             "file": relative_path,
             "description": description,
             "author": author,
@@ -424,7 +425,7 @@ class CodeModifier:
             self.rollback_stack.append({
                 "file": relative_path,
                 "original": original,
-                "timestamp": time.time(),
+                "timestamp": CLOCK.now(),
                 "mod_id": record["id"],
             })
             # Keep rollback stack manageable
@@ -466,8 +467,8 @@ class CodeModifier:
                 path.unlink()
 
             self.modifications.append({
-                "id": f"cmod_rollback_{int(time.time())}",
-                "timestamp": time.time(),
+                "id": f"cmod_rollback_{int(CLOCK.now())}",
+                "timestamp": CLOCK.now(),
                 "file": entry["file"],
                 "description": f"Rollback of {entry['mod_id']}",
                 "status": "rolled_back",

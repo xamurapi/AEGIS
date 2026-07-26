@@ -41,9 +41,22 @@ EVOLUTION_DIR = DATA_DIR / "evolution"
 GOAL_INTEL_DIR = DATA_DIR / "goal_intelligence"
 FEEDBACK_DIR = DATA_DIR / "feedback"
 
+# --- Telemetry: metric time-series on disk (spec M9.2) ---
+# Every contour publishes here. The discovery engine reads these series as its
+# primary data source, so they are storage, not just dashboard decoration.
+TELEMETRY_DIR = DATA_DIR / "telemetry"
+# Flush the write buffer at least this often (seconds) and whenever this many
+# rows are pending — bounded latency AND bounded memory.
+TELEMETRY_FLUSH_SECONDS = _env_float("TELEMETRY_FLUSH_SECONDS", "10")
+TELEMETRY_FLUSH_ROWS = _env_int("TELEMETRY_FLUSH_ROWS", "200")
+# Rows kept per metric. Beyond twice this, the OLDER half is downsampled
+# (averaged into buckets) rather than deleted: the shape of long history is
+# what the discovery engine needs, and truncation would destroy exactly that.
+TELEMETRY_MAX_ROWS = _env_int("TELEMETRY_MAX_ROWS", "200000")
+
 for d in [DATA_DIR, CHECKPOINTS_DIR, LOGS_DIR, MEMORY_DIR,
           WORLD_MODEL_DIR, COGNITIVE_GRAPH_DIR, EVOLUTION_DIR,
-          GOAL_INTEL_DIR, FEEDBACK_DIR]:
+          GOAL_INTEL_DIR, FEEDBACK_DIR, TELEMETRY_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 TICK_INTERVAL = 3.0

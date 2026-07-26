@@ -6,10 +6,10 @@ dataset, and no RNG is used (zero-randomness guarantee).
 """
 import json
 import logging
-import time
 import hashlib
 from pathlib import Path
 from aegis.config import WEIGHT_DATASETS_DIR, TRAIN_MAX_SAMPLES, TRAIN_VAL_SPLIT
+from aegis.clock import CLOCK
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ class DatasetBuilder:
         train_samples = samples[val_size:]
 
         # Save to disk
-        timestamp = int(time.time())
+        timestamp = int(CLOCK.now())
         dataset_dir = WEIGHT_DATASETS_DIR / f"dataset_{timestamp}"
         dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -208,7 +208,7 @@ class DatasetBuilder:
             src = s.get("source", "unknown")
             source_counts[src] = source_counts.get(src, 0) + 1
 
-        self.last_build_time = time.time()
+        self.last_build_time = CLOCK.now()
         self.builds_total += 1
         self.last_dataset_size = len(samples)
         self.last_dataset_path = str(dataset_dir)

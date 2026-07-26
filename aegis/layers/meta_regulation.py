@@ -1,6 +1,6 @@
 """MetaRegulation — energy management, energy-saving and emergency modes."""
-import time
 from collections import deque
+from aegis.clock import CLOCK
 
 
 class MetaRegulator:
@@ -67,7 +67,7 @@ class MetaRegulator:
 
         if old_mode != self.mode:
             self.mode_history.append({
-                "time": time.time(),
+                "time": CLOCK.now(),
                 "from": old_mode,
                 "to": self.mode,
                 "energy": round(energy, 3),
