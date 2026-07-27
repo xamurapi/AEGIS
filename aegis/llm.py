@@ -1,9 +1,24 @@
+"""Public LLM surface — a facade over the cortex (spec M8.7).
+
+The router in :mod:`aegis.cortex` is where model access actually lives now:
+roles, failover, schema validation, budget, cache. This module keeps the API
+the rest of the system already calls, and routes each method to the cortex role
+that fits it.
+
+The direct DeepSeek/Claude client paths below are not dead weight: they are the
+fallback used when no cortex route is configured for a role, which is also the
+path the pre-existing suite exercises. A response only ever reaches the core
+after passing a declared schema — through the cortex by validation, through the
+legacy path by the defensive coercion each caller already performs.
+"""
 from aegis.clock import CLOCK
 import json
 import asyncio
 import logging
 from pathlib import Path
 from aegis._atomic import atomic_write_text
+from aegis.cortex import prompts
+from aegis.cortex.router import Cortex, Role
 from aegis.config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
     CLAUDE_API_KEY, CLAUDE_MODEL,
@@ -119,7 +134,13 @@ class LLMEngine:
         self.budget_blocks = 0
 
         # Local model reference (set externally by substrate)
-        self.weight_modifier = None
+        self._weight_modifier = None
+
+        # The cortex is the primary path. It is constructed even when nothing
+        # is configured: an empty routing table is a valid, fully working
+        # state — every role simply reports unavailable and the core takes its
+        # deterministic route (§M8.4).
+        self.cortex = Cortex()
 
         # Lifetime stats — persist across restarts
         self.lifetime_calls = 0
@@ -132,6 +153,67 @@ class LLMEngine:
         self._load_lifetime_stats()
 
         self._init_clients()
+
+    # ── the trainable local model ────────────────────────────────────
+    # Assigned by the substrate after construction. It is a property so the
+    # cortex's local_hf provider learns about it at the same moment; otherwise
+    # the offline fallback would hold a permanent None and never fire.
+
+    @property
+    def weight_modifier(self):
+        return self._weight_modifier
+
+    @weight_modifier.setter
+    def weight_modifier(self, value) -> None:
+        self._weight_modifier = value
+        provider = self.cortex.providers.get("local_hf")
+        if provider is not None:
+            provider.weight_modifier = value
+
+    # ── cortex delegation ────────────────────────────────────────────
+
+    async def _via_cortex(self, role: Role, template: str, schema: str, *,
+                          context: dict | None = None, lease=None,
+                          **values) -> dict | None:
+        """Run one structured request through the cortex.
+
+        Returns None when the role has no live provider or the answer did not
+        match its schema — in both cases the caller falls back, which is what
+        keeps the cortex optional rather than load-bearing.
+        """
+        if not self.cortex.role_available(role):
+            return None
+        messages = [{"role": "system", "content": prompts.load("system")}]
+        if context:
+            payload = json.dumps(context, default=str, ensure_ascii=False)
+            if len(payload) > 3000:
+                payload = payload[:3000] + "..."
+            messages.append({"role": "user",
+                             "content": f"Current system state:\n```json\n{payload}\n```"})
+        messages.append({"role": "user", "content": prompts.render(template, **values)})
+        try:
+            return await self.cortex.structured(role, messages, schema, lease=lease)
+        except Exception:
+            logger.exception("Cortex call failed for %s/%s", role.value, template)
+            return None
+
+    def _cortex_result(self, parsed: dict) -> dict:
+        """Shape a cortex answer like a legacy ``think()`` result.
+
+        Callers already branch on ``success``/``parsed``; keeping the envelope
+        identical is what lets the cortex slot in underneath them untouched.
+        """
+        recent = self.cortex.history[-1] if self.cortex.history else {}
+        return {
+            "success": True,
+            "provider": recent.get("provider", "cortex"),
+            "response": json.dumps(parsed, ensure_ascii=False),
+            "parsed": parsed,
+            "tokens_in": recent.get("tokens_in", 0),
+            "tokens_out": recent.get("tokens_out", 0),
+            "latency_ms": recent.get("latency_ms", 0),
+            "via": "cortex",
+        }
 
     def _load_lifetime_stats(self):
         if TOKEN_STATS_FILE.exists():
@@ -391,66 +473,58 @@ class LLMEngine:
             self._save_lifetime_stats()
             return {"success": False, "error": str(e), "response": "", "provider": provider}
 
-    async def evaluate_state(self, state: dict) -> dict:
-        prompt = """Analyze your current state. Respond in JSON:
-{
-  "assessment": "brief overall assessment",
-  "strengths": ["list of current strengths"],
-  "weaknesses": ["list of current weaknesses"],
-  "suggested_goals": ["list of new goals to pursue"],
-  "insight": "one deep insight about your current state"
-}"""
+    async def evaluate_state(self, state: dict, lease=None) -> dict:
+        # FAST: this fires on nearly every LLM tick, which is exactly why the
+        # default routing sends it to the local server and keeps API tokens for
+        # the roles that need frontier quality (§M8.4).
+        parsed = await self._via_cortex(Role.FAST, "state_eval", "state_eval",
+                                        context=state, lease=lease)
+        if parsed is not None:
+            return self._cortex_result(parsed)
+
+        prompt = prompts.load("state_eval")
         result = await self.think(prompt, context=state)
         if result["success"]:
             parsed = _parse_json_response(result["response"])
             result["parsed"] = parsed or {"assessment": result["response"], "insight": result["response"]}
         return result
 
-    async def make_decision(self, options: list[str], context: dict) -> dict:
+    async def make_decision(self, options: list[str], context: dict, lease=None) -> dict:
         options_str = "\n".join(f"  {i+1}. {o}" for i, o in enumerate(options))
-        prompt = f"""You must choose the best action. Options:
-{options_str}
+        parsed = await self._via_cortex(Role.DEEP, "decision", "decision",
+                                        context=context, lease=lease,
+                                        options=options_str)
+        if parsed is not None:
+            return self._cortex_result(parsed)
 
-Consider your goals, ethics, and current state. Respond in JSON:
-{{
-  "chosen": <number>,
-  "reasoning": "why this option is best",
-  "confidence": <0.0-1.0>,
-  "ethical_concerns": "any ethical concerns or 'none'"
-}}"""
+        prompt = prompts.render("decision", options=options_str)
         result = await self.think(prompt, context=context)
         if result["success"]:
             parsed = _parse_json_response(result["response"])
             result["parsed"] = parsed or {"chosen": 1, "reasoning": result["response"], "confidence": 0.5}
         return result
 
-    async def reflect(self, episode: dict) -> dict:
-        prompt = """Reflect on the latest cycle. What did you learn? What patterns do you notice?
-Respond in JSON:
-{
-  "learning": "what you learned from this cycle",
-  "pattern": "any pattern you notice across cycles",
-  "knowledge": {"concept": "a concept name", "definition": "what you now understand about it"},
-  "self_assessment": "how well are you performing",
-  "next_priority": "what should be the priority next"
-}"""
+    async def reflect(self, episode: dict, lease=None) -> dict:
+        parsed = await self._via_cortex(Role.FAST, "reflection", "reflection",
+                                        context=episode, lease=lease)
+        if parsed is not None:
+            return self._cortex_result(parsed)
+
+        prompt = prompts.load("reflection")
         result = await self.think(prompt, context=episode)
         if result["success"]:
             parsed = _parse_json_response(result["response"])
             result["parsed"] = parsed or {"learning": result["response"]}
         return result
 
-    async def generate_curiosity(self, known_topics: list[str]) -> dict:
+    async def generate_curiosity(self, known_topics: list[str], lease=None) -> dict:
         topics_str = ", ".join(known_topics[:20]) if known_topics else "none yet"
-        prompt = f"""You are driven by curiosity. Topics you already explored: {topics_str}
+        parsed = await self._via_cortex(Role.DEEP, "curiosity", "curiosity",
+                                        lease=lease, known_topics=topics_str)
+        if parsed is not None:
+            return self._cortex_result(parsed)
 
-Generate a new topic to investigate. Respond in JSON:
-{{
-  "topic": "the new topic to explore",
-  "question": "a specific question about this topic",
-  "expected_insight": "what you hope to learn",
-  "connection": "how this connects to your existing knowledge"
-}}"""
+        prompt = prompts.render("curiosity", known_topics=topics_str)
         result = await self.think(prompt)
         if result["success"]:
             parsed = _parse_json_response(result["response"])
@@ -458,11 +532,20 @@ Generate a new topic to investigate. Respond in JSON:
         return result
 
     async def propose_code_change(self, file_path: str, source_code: str,
-                                   system_state: dict) -> dict:
+                                   system_state: dict, lease=None) -> dict:
         """Ask LLM to analyze a source file and propose an improvement.
 
         Returns parsed JSON with the proposed change or None.
         """
+        parsed = await self._via_cortex(
+            Role.CODE, "code_change", "code_change", lease=lease,
+            file_path=file_path, source_code=source_code,
+            tick=system_state.get("tick", 0),
+            energy=f"{system_state.get('energy', 0):.2f}",
+            error_rate=f"{system_state.get('error_rate', 0):.3f}")
+        if parsed is not None:
+            return self._cortex_result(parsed)
+
         # Send the COMPLETE source: we ask the model to return the whole file,
         # so it must see the whole file (callers skip files too large for this).
         prompt = f"""You are AEGIS analyzing your own source code for self-improvement.
@@ -503,8 +586,21 @@ If the code is already optimal or you see no safe improvement, set should_modify
             result["parsed"] = parsed
         return result
 
-    async def analyze_self_performance(self, metrics: dict) -> dict:
+    async def analyze_self_performance(self, metrics: dict, lease=None) -> dict:
         """Ask LLM which parameters should be adjusted based on performance data."""
+        parsed = await self._via_cortex(
+            Role.DEEP, "param_adjust", "param_adjust", lease=lease,
+            parameters=json.dumps(metrics.get("parameters", {}), indent=2),
+            success_rate=f"{metrics.get('success_rate', 0):.3f}",
+            error_rate=f"{metrics.get('error_rate', 0):.3f}",
+            energy=f"{metrics.get('energy', 0):.3f}",
+            semantic_concepts=metrics.get("semantic_concepts", 0),
+            information_gain=f"{metrics.get('information_gain', 0):.3f}",
+            goals_completed=metrics.get("goals_completed", 0),
+            tick=metrics.get("tick", 0))
+        if parsed is not None:
+            return self._cortex_result(parsed)
+
         prompt = f"""Analyze the system performance metrics and recommend parameter adjustments.
 
 Current parameters:
@@ -535,20 +631,40 @@ Only recommend adjustments if metrics clearly indicate a problem. If the system 
             result["parsed"] = parsed
         return result
 
-    async def propose_skill(self, kind: str, examples: list[dict]) -> str | None:
+    async def propose_skill(self, kind: str, examples: list[dict],
+                            feedback: str = "", lease=None) -> str | None:
         """Ask the LLM to write a pure `solve(payload)` skill for a task kind.
 
         Returns Python source (a single `def solve(payload): ...`) or None. The
         caller sandbox-checks and benchmark-gates it before keeping it, so an
         incorrect proposal is harmless — it simply won't raise the score.
+
+        ``feedback`` carries what went wrong with the previous attempt (the code
+        and the case it failed). Without it the "repair" call was byte-identical
+        to the first one and could only ever produce the same answer — the retry
+        was measured, logged, and useless.
         """
         ex = "\n".join(f"  payload={e['payload']!r} -> expected {e['expected']!r}"
                        for e in examples[:4])
+        repair = f"""
+
+Your previous attempt did NOT generalize. What went wrong:
+{feedback[:1200]}
+
+Write a DIFFERENT implementation that handles that case as well.""" if feedback else ""
+
+        parsed = await self._via_cortex(Role.CODE, "skill_code", "skill_code",
+                                        lease=lease, kind=kind, examples=ex,
+                                        feedback=repair)
+        if parsed is not None:
+            code = str(parsed.get("code", "")).strip()
+            return code if "def solve" in code else None
+
         prompt = f"""Write a single pure Python function to solve tasks of kind '{kind}'.
 
 Signature: def solve(payload): ...   # payload is a dict, return the answer.
 Examples (must satisfy ALL):
-{ex}
+{ex}{repair}
 
 Rules:
 - Pure computation only. No imports except: math, statistics, itertools, functools, re, json, collections, string.
@@ -566,12 +682,20 @@ Rules:
         return code if "def solve" in code else None
 
     async def propose_coding_solution(self, func_name: str, spec: str,
-                                      visible_tests: list) -> str | None:
+                                      visible_tests: list, lease=None) -> str | None:
         """Ask the LLM to implement a function from a spec + visible tests.
 
         Only the visible tests are shown; the candidate is graded on hidden
         tests by the verifier, so this measures real implementation ability."""
         shown = "\n".join(f"  {func_name}{tuple(args)} == {exp!r}" for args, exp in visible_tests[:4])
+
+        parsed = await self._via_cortex(Role.CODE, "coding_solution", "skill_code",
+                                        lease=lease, func_name=func_name, spec=spec,
+                                        visible_tests=shown)
+        if parsed is not None:
+            code = str(parsed.get("code", "")).strip()
+            return code if f"def {func_name}" in code else None
+
         prompt = f"""Implement this function in pure Python.
 
 def {func_name}(...):  # {spec}
@@ -601,7 +725,11 @@ no eval/exec/open/__import__, no I/O, no print. Return ONLY the function in a ``
 
     def status(self) -> dict:
         return {
-            "enabled": self.enabled,
+            # True when EITHER path can produce an answer: a cortex route is
+            # configured, or a legacy client is. Reporting only the legacy one
+            # would show a Kimi-only deployment as having no model at all.
+            "enabled": self.enabled or self.cortex.enabled,
+            "cortex": self.cortex.status(),
             "provider_mode": self.provider_mode,
             "last_provider": self.last_provider,
             "deepseek": self.deepseek.to_dict(),

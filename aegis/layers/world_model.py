@@ -1,307 +1,335 @@
-"""System 1: World Model — causal model of actions and consequences (WM-001..WM-005).
+"""System 1: the world model — now with prediction (spec M1).
 
-Learns cause→effect links from REAL observed outcomes (environment steps,
-decisions, training runs) and predicts likely consequences of actions.
-Builds structured causal chains for objectives:
+    модель мира → прогноз → решение
 
-    objective → constraints → risks → plan → expected result
+The development text's first complaint is that the system had no real
+understanding of its world. It had a frequency table of causes and effects,
+read once a tick to shade a confidence number; nothing it produced was ever
+written down in advance, so nothing could be checked afterwards.
 
-The core is deterministic (Laplace-smoothed frequency estimates); LLM-assisted
-chain refinement is optional and driven by the Substrate.
+This facade keeps that table — as :class:`~aegis.layers.world.causal.CausalLinks`,
+byte-for-byte the same behaviour, same file on disk — and puts a predictive
+model on top of it:
+
+* :class:`~aegis.layers.world.state.StateEncoder` turns the tick into a
+  discrete state;
+* :class:`~aegis.layers.world.transition.TransitionModel` learns where each
+  action leads from there;
+* :class:`~aegis.layers.world.outcome.OutcomeModel` learns what it is worth;
+* :class:`~aegis.layers.world.prediction.PredictionScorer` records the forecast
+  before the action and scores it after, which is what makes "the model is
+  good" a checkable claim rather than an opinion;
+* :class:`~aegis.layers.world.simulate.Simulator` looks ahead over all of it,
+  deterministically, so the planner (M2) can compare plans instead of guessing.
+
+Every legacy method keeps its name and signature. The old class is still
+importable as ``WorldModel``, because thirty call sites and the dashboard use
+that name and none of them should have to care that it grew a second half.
 """
-import json
-import re
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
-from aegis.config import WORLD_MODEL_DIR
+import aegis.config as cfg
 from aegis.clock import CLOCK
+from aegis.layers.world.causal import (
+    MAX_CHAINS, MAX_LINKS, MIN_OBSERVATIONS_FOR_PREDICTION, CausalLinks,
+)
+from aegis.layers.world.outcome import OutcomeModel, OutcomePrediction
+from aegis.layers.world.prediction import Prediction, PredictionScorer
+from aegis.layers.world.simulate import RolloutResult, Simulator
+from aegis.layers.world.state import StateEncoder, StateKey, collect_state_inputs
+from aegis.layers.world.transition import TransitionModel
+from aegis.store.migrations import read_store, write_store
 
 logger = logging.getLogger("aegis.world_model")
 
-MAX_LINKS = 2000          # baseline floor; the live cap is self.max_links
-MAX_CHAINS = 50
-MIN_OBSERVATIONS_FOR_PREDICTION = 2
 
-# Retention. Pruning used to sort on observation count alone, so a rare but
-# decisive failure was dropped before a frequent coin-flip link — backwards for
-# a memory of what goes wrong. A link is now kept for how much it TELLS us:
-# how far its success rate sits from 50/50 (decisiveness), how much evidence
-# backs that (saturating), and a deliberate bias toward remembering failure.
-EVIDENCE_SATURATION = 10.0   # observations beyond this add no further weight
-FAILURE_RETENTION_BIAS = 1.5  # a known failure outranks an equally decisive win
+class PredictiveWorldModel:
+    """Causal links plus a model that predicts, and knows how wrong it is."""
 
-_TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
+    def __init__(self, store_path: Path | None = None, telemetry=None):
+        self._store_path = Path(store_path) if store_path is not None \
+            else (cfg.WORLD_MODEL_DIR / "model.json")
+        self._directory = self._store_path.parent
+        self.telemetry = telemetry
 
+        # The legacy half, on the legacy file. Untouched.
+        self.causal = CausalLinks(store_path=self._store_path)
 
-class WorldModel:
-    def __init__(self, store_path: Path | None = None):
-        # links[cause][effect] = {observations, successes, updated}
-        self.links: dict[str, dict[str, dict]] = {}
-        self.chains: list[dict] = []
-        self.total_observations = 0
-        # Live capacity. A module constant could only ever be a guess; this is
-        # the floor, and Substrate.regulate_capacity() raises it while ticks are
-        # cheap and gives it back when they are not.
-        self.max_links = MAX_LINKS
-        # Derived index: token -> causes containing it. Not persisted (the
-        # on-disk format is unchanged); rebuilt on load, like the cognitive
-        # graph's in-degree index. Without it every risk lookup walked the whole
-        # cause table, and risks_for now runs on every tick.
-        self._cause_index: dict[str, set[str]] = {}
-        self._store_path = store_path or (WORLD_MODEL_DIR / "model.json")
-        self._load()
+        # The predictive half.
+        self.encoder = StateEncoder()
+        self.transitions = TransitionModel()
+        self.outcomes = OutcomeModel()
+        self.scorer = PredictionScorer(
+            store_path=self._directory / "predictions.jsonl")
+        self.simulator = Simulator(self.transitions, self.outcomes)
 
-    # ── persistence ──────────────────────────────────────────────────
+        #: Ticks on which the model had a usable estimate for what it chose —
+        #: the coverage metric of §M1.8.
+        self._covered = 0
+        self._decisions = 0
+        self._load_predictive()
 
-    def _load(self):
-        if self._store_path.exists():
-            try:
-                data = json.loads(self._store_path.read_text(encoding="utf-8"))
-                self.links = data.get("links", {})
-                self.chains = data.get("chains", [])
-                self.total_observations = data.get("total_observations", 0)
-            except Exception:
-                logger.warning("Failed to load world model from %s — starting empty",
-                               self._store_path, exc_info=True)
-        self._rebuild_index()
+    # ── legacy surface (unchanged behaviour) ─────────────────────────
+    # Delegation rather than inheritance: the causal table is a separate thing
+    # with its own file and its own retention rule, and keeping that boundary
+    # visible is what stops the two halves from quietly entangling.
 
-    # ── cause index ──────────────────────────────────────────────────
+    @property
+    def links(self) -> dict:
+        return self.causal.links
 
-    @staticmethod
-    def _tokens(text: str) -> set[str]:
-        """Tokens of a cause/query string, lowercased and punctuation-split.
+    @links.setter
+    def links(self, value: dict) -> None:
+        self.causal.links = value
+        self.causal._rebuild_index()
 
-        Matching is by token, not by raw substring: a query for ``rest`` no
-        longer matches ``forest_fire``. Identifiers like ``expand_knowledge``
-        still match ``expand`` because ``_`` is a separator.
-        """
-        return {t for t in _TOKEN_SPLIT.split(text.lower()) if t}
+    @property
+    def chains(self) -> list:
+        return self.causal.chains
 
-    def _rebuild_index(self):
-        self._cause_index = {}
-        for cause in self.links:
-            self._index_cause(cause)
+    @chains.setter
+    def chains(self, value: list) -> None:
+        self.causal.chains = value
 
-    def _index_cause(self, cause: str):
-        for token in self._tokens(cause):
-            self._cause_index.setdefault(token, set()).add(cause)
+    @property
+    def total_observations(self) -> int:
+        return self.causal.total_observations
 
-    def _deindex_cause(self, cause: str):
-        for token in self._tokens(cause):
-            bucket = self._cause_index.get(token)
-            if bucket is not None:
-                bucket.discard(cause)
-                if not bucket:
-                    del self._cause_index[token]
+    @total_observations.setter
+    def total_observations(self, value: int) -> None:
+        self.causal.total_observations = value
 
-    def _candidate_causes(self, tokens: list[str]) -> list[tuple[str, dict]]:
-        """Causes worth examining for these query tokens.
+    @property
+    def max_links(self) -> int:
+        return self.causal.max_links
 
-        Sorted so the result order never depends on set iteration order — the
-        zero-randomness guarantee covers this path too.
-        """
-        query = {t for raw in tokens if raw for t in self._tokens(raw)}
-        if not query:
-            return list(self.links.items())
-        causes: set[str] = set()
-        for token in query:
-            causes |= self._cause_index.get(token, set())
-        return [(c, self.links[c]) for c in sorted(causes) if c in self.links]
+    @max_links.setter
+    def max_links(self, value: int) -> None:
+        self.causal.max_links = value
 
-    def save(self):
-        data = {
-            "links": self.links,
-            "chains": self.chains[-MAX_CHAINS:],
-            "total_observations": self.total_observations,
-        }
-        try:
-            payload = json.dumps(data, ensure_ascii=False)
-            tmp = self._store_path.with_suffix(".json.tmp")
-            tmp.write_text(payload, encoding="utf-8")
-            tmp.replace(self._store_path)
-        except Exception:
-            logger.warning("Failed to save world model to %s", self._store_path, exc_info=True)
+    def _retention_score(self, link: dict) -> float:
+        return self.causal._retention_score(link)
+
+    def observe(self, cause: str, effect: str, success: bool = True) -> None:
+        self.causal.observe(cause, effect, success)
+
+    def predict(self, cause: str, k: int = 5) -> list[dict]:
+        return self.causal.predict(cause, k)
+
+    def explain(self, effect: str, k: int = 5) -> list[dict]:
+        return self.causal.explain(effect, k)
+
+    def risks_for(self, tokens: list[str], k: int = 5) -> list[dict]:
+        return self.causal.risks_for(tokens, k)
+
+    def build_chain(self, objective: str, constraints: list[str] | None = None) -> dict:
+        return self.causal.build_chain(objective, constraints)
+
+    def refine_chain(self, parsed: dict) -> dict | None:
+        return self.causal.refine_chain(parsed)
+
+    # ── state ────────────────────────────────────────────────────────
+
+    def encode(self, inputs) -> StateKey:
+        return self.encoder.encode(inputs)
+
+    def encode_substrate(self, substrate) -> StateKey:
+        return self.encoder.encode(collect_state_inputs(substrate))
 
     # ── learning ─────────────────────────────────────────────────────
 
-    def observe(self, cause: str, effect: str, success: bool = True):
-        """Record one observed cause→effect transition with its outcome."""
-        cause = cause[:80]
-        effect = effect[:80]
-        link = self.links.setdefault(cause, {}).setdefault(effect, {
-            "observations": 0, "successes": 0, "updated": CLOCK.now(),
-        })
-        link["observations"] += 1
-        if success:
-            link["successes"] += 1
-        link["updated"] = CLOCK.now()
-        self.total_observations += 1
-        self._index_cause(cause)
-        self._prune(protect=(cause, effect))
+    def observe_transition(self, state, action: str, next_state) -> None:
+        self.transitions.observe(state, action, next_state)
 
-    @staticmethod
-    def _strength(link: dict) -> float:
-        """Laplace-smoothed success probability of the link."""
-        return (link["successes"] + 1) / (link["observations"] + 2)
+    def observe_outcome(self, state, action: str, success: bool,
+                        reward: float = 0.0, cost: float = 0.0) -> None:
+        self.outcomes.observe(state, action, success, reward, cost)
 
-    def _retention_score(self, link: dict) -> float:
-        """How much this link tells us. Higher survives pruning longer."""
-        strength = self._strength(link)
-        decisiveness = abs(strength - 0.5) * 2
-        evidence = min(1.0, link["observations"] / EVIDENCE_SATURATION)
-        bias = FAILURE_RETENTION_BIAS if strength < 0.5 else 1.0
-        return decisiveness * evidence * bias
+    # ── prediction ───────────────────────────────────────────────────
 
-    def _prune(self, protect: tuple[str, str] | None = None):
-        total_links = sum(len(v) for v in self.links.values())
-        if total_links <= self.max_links:
-            return
-        # Drop the least informative links first — NOT simply the least
-        # observed. `protect` shields the link just recorded: otherwise a fresh
-        # observation, which necessarily has the least evidence, could be
-        # evicted by the very prune it triggered and nothing new could ever be
-        # learned once the model was full.
-        flat = [(c, e, l) for c, effects in self.links.items() for e, l in effects.items()
-                if (c, e) != protect]
-        flat.sort(key=lambda x: (self._retention_score(x[2]), x[2]["updated"]))
-        for cause, effect, _ in flat[:total_links - self.max_links]:
-            del self.links[cause][effect]
-            if not self.links[cause]:
-                del self.links[cause]
-                self._deindex_cause(cause)
+    def predict_outcome(self, state, action: str) -> OutcomePrediction:
+        """What to expect from an action. Never fails on an unseen pair."""
+        return self.outcomes.predict(state, action)
 
-    # ── inference ────────────────────────────────────────────────────
+    def predict_next(self, state, action: str, k: int = 3) -> list[tuple[str, float]]:
+        return self.transitions.top_next(state, action, k)
 
-    def predict(self, cause: str, k: int = 5) -> list[dict]:
-        """Predict the most likely effects of a cause, by observed strength."""
-        effects = self.links.get(cause[:80], {})
-        ranked = sorted(
-            ({"effect": e, "strength": round(self._strength(l), 3),
-              "observations": l["observations"]}
-             for e, l in effects.items()
-             if l["observations"] >= MIN_OBSERVATIONS_FOR_PREDICTION),
-            key=lambda x: x["strength"], reverse=True,
-        )
-        return ranked[:k]
+    def knows(self, state, action: str) -> float:
+        """0..1 — how much the model actually knows about this pair.
 
-    def explain(self, effect: str, k: int = 5) -> list[dict]:
-        """Find the most likely causes of an observed effect."""
-        effect = effect[:80]
-        causes = []
-        for cause, effects in self.links.items():
-            link = effects.get(effect)
-            if link and link["observations"] >= MIN_OBSERVATIONS_FOR_PREDICTION:
-                causes.append({"cause": cause, "strength": round(self._strength(link), 3),
-                               "observations": link["observations"]})
-        causes.sort(key=lambda x: x["strength"], reverse=True)
-        return causes[:k]
-
-    def risks_for(self, tokens: list[str], k: int = 5) -> list[dict]:
-        """Weak links (low success rate) whose cause matches any token — the
-        model's memory of what tends to FAIL around this topic."""
-        risks = []
-        for cause, effects in self._candidate_causes(tokens):
-            for effect, link in effects.items():
-                s = self._strength(link)
-                if s < 0.5 and link["observations"] >= MIN_OBSERVATIONS_FOR_PREDICTION:
-                    risks.append({"cause": cause, "effect": effect,
-                                  "failure_rate": round(1 - s, 3),
-                                  "observations": link["observations"]})
-        risks.sort(key=lambda x: x["failure_rate"], reverse=True)
-        return risks[:k]
-
-    # ── causal chains ────────────────────────────────────────────────
-
-    def build_chain(self, objective: str, constraints: list[str] | None = None) -> dict:
-        """Build a deterministic causal chain for an objective:
-        objective → constraints → risks → plan → expected result.
-
-        Plan steps come from the strongest known links matching the objective;
-        risks from the weakest. An LLM refinement can later replace the plan
-        via refine_chain() — the deterministic version keeps the system
-        functional without any LLM.
+        Both halves have to be known for the answer to be useful: knowing where
+        an action leads without knowing what it is worth is not knowledge a
+        planner can act on, so the weaker of the two is what counts.
         """
-        tokens = [t for t in objective.lower().split() if len(t) > 2]
-        risks = self.risks_for(tokens)
+        return min(self.transitions.knows(state, action),
+                   self.outcomes.knows(state, action))
 
-        # Plan: strongest links whose cause matches the objective.
-        steps = []
-        for cause, effects in self._candidate_causes(tokens):
-            for effect, link in effects.items():
-                s = self._strength(link)
-                if s >= 0.5 and link["observations"] >= MIN_OBSERVATIONS_FOR_PREDICTION:
-                    steps.append({"action": cause, "expected": effect,
-                                  "confidence": round(s, 3)})
-        steps.sort(key=lambda x: x["confidence"], reverse=True)
-        steps = steps[:5]
+    def make_prediction(self, state, action: str, tick: int,
+                        horizon: int = 1) -> Prediction:
+        """Write down a forecast, before the action is taken."""
+        state_key = state.key() if isinstance(state, StateKey) else str(state)
+        outcome = self.outcomes.predict(state_key, action)
+        known = self.knows(state_key, action)
+        successors = self.transitions.top_next(state_key, action, cfg.WM_BRANCH)
+        # Everything the forecast did NOT list still has to carry a probability,
+        # or landing outside the top-k would score as an impossible event and
+        # the surprise metric would measure the log floor instead of the model.
+        listed_mass = sum(p for _, p in successors)
+        known_states = max(len(self.transitions.states()), len(successors))
+        prediction = Prediction(
+            id=self.scorer.next_id(tick),
+            tick=int(tick),
+            state=state_key,
+            action=str(action),
+            p_success=outcome.p_success,
+            expected_reward=outcome.expected_reward,
+            reward_sd=outcome.reward_sd,
+            predicted_next=successors,
+            other_mass=max(0.0, 1.0 - listed_mass),
+            other_states=max(1, known_states - len(successors)),
+            predicted_effects=self.causal.predict(str(action), k=3),
+            # Confidence is not the success probability: it is how much the
+            # model trusts its own estimate. Thin evidence or a wide reward
+            # spread both mean "do not lean on this number".
+            confidence=round(known * (1.0 - min(1.0, outcome.reward_sd)), 4),
+            horizon=int(horizon),
+        )
+        self._decisions += 1
+        if known >= 0.5:
+            self._covered += 1
+        return self.scorer.open(prediction)
 
-        chain = {
-            "objective": objective[:200],
-            "constraints": list(constraints or [])[:5],
-            "risks": risks,
-            "plan": steps,
-            "expected_result": steps[0]["expected"] if steps else "unknown — no causal data yet",
-            "confidence": round(sum(s["confidence"] for s in steps) / len(steps), 3) if steps else 0.0,
-            "source": "world_model",
-            "created": CLOCK.now(),
+    def score_prediction(self, prediction_id: str, success: bool, reward: float,
+                         actual_next) -> object:
+        """Close a forecast against what happened."""
+        successor = actual_next.key() if isinstance(actual_next, StateKey) \
+            else str(actual_next)
+        return self.scorer.score(prediction_id, success, reward, successor)
+
+    # ── simulation ───────────────────────────────────────────────────
+
+    def rollout(self, state, actions: list[str], depth: int | None = None,
+                beam: int | None = None) -> RolloutResult:
+        return self.simulator.rollout(state, actions, depth, beam)
+
+    def best_sequence(self, state, actions: list[str], depth: int | None = None,
+                      beam: int | None = None,
+                      discount: float | None = None) -> list[str]:
+        return self.simulator.best_sequence(state, actions, depth, beam, discount)
+
+    def evaluate_sequence(self, state, sequence: list[str]) -> float:
+        return self.simulator.evaluate(state, sequence)
+
+    # ── model quality ────────────────────────────────────────────────
+
+    def calibration(self) -> dict:
+        report = self.scorer.calibration()
+        report["coverage"] = self.coverage()
+        return report
+
+    def surprise(self) -> float:
+        return self.scorer.surprise()
+
+    def coverage(self) -> float:
+        """Fraction of decisions the model actually had an estimate for."""
+        return round(self._covered / self._decisions, 4) if self._decisions else 0.0
+
+    def apply_genome(self, genome: dict) -> None:
+        """Adopt the evolved parameters that shape this model (Appendix C)."""
+        mapping = {
+            "wm_smoothing": (("transitions", "smoothing"), ("outcomes", "smoothing")),
+            "wm_half_life": (("transitions", "half_life"), ("outcomes", "half_life")),
+            "explore_bonus": (("simulator", "explore_bonus"),),
+            "plan_discount": (("simulator", "discount"),),
         }
-        self.chains.append(chain)
-        if len(self.chains) > MAX_CHAINS:
-            self.chains = self.chains[-MAX_CHAINS:]
-        return chain
+        for gene, targets in mapping.items():
+            if gene not in (genome or {}):
+                continue
+            for attribute, field_name in targets:
+                try:
+                    setattr(getattr(self, attribute), field_name,
+                            type(getattr(getattr(self, attribute), field_name))(genome[gene]))
+                except (TypeError, ValueError):
+                    logger.debug("Ignoring unusable genome value for %s", gene)
 
-    def refine_chain(self, parsed: dict) -> dict | None:
-        """Accept an LLM-proposed chain (already JSON-parsed), validate its
-        shape, and store it. Returns the stored chain or None if malformed."""
-        if not isinstance(parsed, dict) or not parsed.get("objective"):
-            return None
+    # ── persistence ──────────────────────────────────────────────────
 
-        def _as_list(value) -> list:
-            """An LLM may answer with a dict, a bare string or a number where a
-            list was asked for. Slicing those either explodes (dict) or silently
-            iterates characters (str), so coerce the shape first (audit R3-8)."""
-            return value if isinstance(value, list) else []
+    def _path(self, name: str) -> Path:
+        return self._directory / name
 
-        def _as_confidence(value) -> float:
-            try:
-                return max(0.0, min(1.0, float(value)))
-            except (TypeError, ValueError):
-                return 0.5
+    def _load_predictive(self) -> None:
+        self.transitions.load(read_store(self._path("transitions.json"),
+                                         store="wm_transitions"))
+        self.outcomes.load(read_store(self._path("outcomes.json"),
+                                      store="wm_outcomes"))
+        calibration = read_store(self._path("calibration.json"),
+                                 store="wm_calibration")
+        self.scorer.load_state(calibration.get("scorer") or {})
+        try:
+            self._covered = int(calibration.get("covered", 0))
+            self._decisions = int(calibration.get("decisions", 0))
+        except (TypeError, ValueError):
+            self._covered, self._decisions = 0, 0
 
-        chain = {
-            "objective": str(parsed.get("objective"))[:200],
-            "constraints": [str(c)[:120] for c in _as_list(parsed.get("constraints"))[:5]],
-            "risks": [r if isinstance(r, dict) else
-                      {"cause": str(r)[:120], "effect": "", "failure_rate": 0.5, "observations": 0}
-                      for r in _as_list(parsed.get("risks"))[:5]],
-            "plan": [s if isinstance(s, dict) else
-                     {"action": str(s)[:160], "expected": "", "confidence": 0.5}
-                     for s in _as_list(parsed.get("plan"))[:7]],
-            "expected_result": str(parsed.get("expected_result", ""))[:200],
-            "confidence": _as_confidence(parsed.get("confidence", 0.5)),
-            "source": "llm",
-            "created": CLOCK.now(),
-        }
-        self.chains.append(chain)
-        if len(self.chains) > MAX_CHAINS:
-            self.chains = self.chains[-MAX_CHAINS:]
-        return chain
+    def save(self) -> None:
+        """Persist both halves. Never raises — a tick must survive a full disk."""
+        try:
+            self.causal.save()
+        except Exception:
+            logger.warning("Failed to save the causal links", exc_info=True)
+        write_store(self._path("transitions.json"), self.transitions.to_dict())
+        write_store(self._path("outcomes.json"), self.outcomes.to_dict())
+        write_store(self._path("calibration.json"), {
+            "scorer": self.scorer.state_dict(),
+            "covered": self._covered,
+            "decisions": self._decisions,
+        })
 
-    # ── status ───────────────────────────────────────────────────────
+    # ── reporting ────────────────────────────────────────────────────
+
+    def publish_metrics(self, tick: int) -> None:
+        if self.telemetry is None:
+            return
+        from aegis.telemetry import metrics as M
+        try:
+            report = self.scorer.calibration()
+            for name, value in (
+                (M.WM_BRIER, report["brier"]),
+                (M.WM_ECE, report["ece"]),
+                (M.WM_REWARD_MAE, report["reward_mae"]),
+                (M.WM_NLL_NEXT, report["nll_next"]),
+                (M.WM_SURPRISE, report["surprise"]),
+            ):
+                if value is not None:
+                    self.telemetry.record(name, value, tick)
+            self.telemetry.record(M.WM_COVERAGE, self.coverage(), tick)
+            self.telemetry.record(M.WM_STATES, len(self.transitions.states()), tick)
+            self.telemetry.record(M.WM_TRANSITIONS, len(self.transitions.pairs), tick)
+            self.telemetry.record(M.WM_ROLLOUT_MS, self.simulator.last_elapsed_ms, tick)
+        except Exception:
+            logger.exception("World-model metric publication failed")
 
     def status(self) -> dict:
-        flat = [(c, e, self._strength(l), l["observations"])
-                for c, effects in self.links.items() for e, l in effects.items()]
-        flat.sort(key=lambda x: (x[3], x[2]), reverse=True)
-        return {
-            "causes": len(self.links),
-            "links": sum(len(v) for v in self.links.values()),
-            "total_observations": self.total_observations,
-            "chains_built": len(self.chains),
-            "strongest_links": [
-                {"cause": c, "effect": e, "strength": round(s, 3), "observations": n}
-                for c, e, s, n in flat[:5]
-            ],
-            "latest_chain": self.chains[-1] if self.chains else None,
-        }
+        """The legacy report, plus the predictive half."""
+        report = self.causal.status()
+        report.update({
+            "predictive": {
+                "transitions": self.transitions.status(),
+                "outcomes": self.outcomes.status(),
+                "simulator": self.simulator.status(),
+                "calibration": self.calibration(),
+                "decisions": self._decisions,
+            },
+        })
+        return report
+
+
+#: The name thirty call sites, the dashboard and the existing suite already
+#: use. It now resolves to the model that also predicts.
+WorldModel = PredictiveWorldModel
+
+__all__ = ["MAX_CHAINS", "MAX_LINKS", "MIN_OBSERVATIONS_FOR_PREDICTION",
+           "CausalLinks", "PredictiveWorldModel", "WorldModel"]

@@ -27,12 +27,19 @@ from aegis.config import (
 from aegis.clock import CLOCK
 from aegis.event_bus import EventBus, Event, Layer
 from aegis.safety import immutable
+from aegis.store.migrations import read_store, write_store
+from aegis.telemetry import metrics as M
+from aegis.telemetry.store import Telemetry
 from aegis.util.canonical import digest_of
 from aegis.layers.phases import act, decide, evaluate, perceive, reflect
 from aegis.layers.phases.common import (
     _CONCEPT_SEEDS, _LEARNING_SOURCES, _META_DOMAINS, _coerce_float, _coerce_int,
 )
 from aegis.layers.phases.context import TickContext
+from aegis.layers.actions import ActionSpace
+from aegis.layers.motivation import (
+    Candidate, PriorityScheduler, ResourceCost, ResourceManager, ROITracker,
+)
 from aegis.layers.memory import MemorySystem
 from aegis.layers.introspection import IntrospectionEngine
 from aegis.layers.self_modification import SelfModification
@@ -169,6 +176,31 @@ class Substrate:
             base_fitness = self._last_benchmark_score if self._last_benchmark_score is not None else 0.0
             self.evolution.register_champion(dict(self.self_mod.parameters), base_fitness)
 
+        # Metric time-series (spec M9.2). Every contour publishes here; this is
+        # the only history the system has of itself, and the discovery engine
+        # (M7) has no other data source, so it is wired into the cycle rather
+        # than offered as an optional extra.
+        self.telemetry = Telemetry()
+        # The cortex keeps its own counters; it needs the same series everyone
+        # else writes to, or its cost would be the one thing with no history.
+        self.llm.cortex.telemetry = self.telemetry
+        self.world_model.telemetry = self.telemetry
+
+        # ── Motivation with teeth (spec M4) ──────────────────────────
+        # The chain the development text asks for is goal → value → priority →
+        # resource → action. Value and goals already existed; these are the two
+        # links that were missing, and the resource link is the one that makes
+        # the rest binding: an action that cannot get a lease does not run.
+        self.resources = ResourceManager(telemetry=self.telemetry)
+        self.roi = ROITracker(telemetry=self.telemetry)
+        self.priority = PriorityScheduler(
+            resources=self.resources, goal_intelligence=self.goal_intelligence,
+            roi=self.roi)
+        self.actions = ActionSpace()
+        # From here on every cortex call needs a lease. This replaces hoping
+        # that LLM_MAX_CALLS_PER_RUN was set generously enough.
+        self.llm.cortex.resources = self.resources
+
         self.event_bus.set_veto(self.ethics.veto_check)
 
         self.tick_count = 0
@@ -182,6 +214,10 @@ class Substrate:
         # context; the phases read and write it instead of reaching for a
         # scatter of _tick_* attributes on the substrate (spec §3.9).
         self._ctx = TickContext(tick=0)
+        # A forecast made last tick, waiting for this tick's state to reveal
+        # where the action actually led (spec M1.6). Lives on the substrate
+        # rather than the context because it deliberately spans two of them.
+        self._pending_prediction: dict | None = None
         self._ws_broadcast = None
         self._ws_has_clients = None  # callable -> bool, set by the API server
         self._weight_training_task: asyncio.Task | None = None  # detached LoRA run
@@ -243,9 +279,18 @@ class Substrate:
     def _restore_checkpoint(self):
         if self._checkpoint_path.exists():
             try:
-                data = json.loads(self._checkpoint_path.read_text(encoding="utf-8"))
-                self.tick_count = data.get("tick_count", 0)
-                self.self_mod.current_version = data.get("version", "1.0.0")
+                # Versioned read: a pre-spec checkpoint has no schema_version and
+                # is treated as v1; one written by a newer build is refused
+                # rather than half-read (spec §3.2, Appendix I).
+                data = read_store(self._checkpoint_path, store="checkpoint")
+                # An unreadable or future-versioned file yields empty state, and
+                # empty state must LEAVE the runtime alone rather than overwrite
+                # a live tick counter with zero. Only keys that are actually
+                # present are restored.
+                if "tick_count" in data:
+                    self.tick_count = data["tick_count"]
+                if "version" in data:
+                    self.self_mod.current_version = data["version"]
                 # Restore the tunable parameters (audit H1) — otherwise every
                 # benchmark-verified Evolution win is lost on restart while the
                 # persisted champion genome still records the evolved values,
@@ -290,20 +335,31 @@ class Substrate:
             # restart (audit H1).
             "parameters": dict(self.self_mod.parameters),
         }
-        # Atomic write — a crash mid-write must not corrupt the checkpoint and
-        # silently reset tick_count/version to defaults on next boot.
-        tmp = self._checkpoint_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(self._checkpoint_path)
+        # Atomic, versioned write — a crash mid-write must not corrupt the
+        # checkpoint and silently reset tick_count/version to defaults on next
+        # boot, and the stamp lets a later build migrate this file (§3.2).
+        write_store(self._checkpoint_path, data)
         self.memory.save()
 
-        # Persist the five higher-order systems alongside the checkpoint.
+        # Persist the higher-order systems alongside the checkpoint.
         for system in (self.world_model, self.cognitive_graph, self.evolution,
-                       self.goal_intelligence, self.feedback_loop):
+                       self.goal_intelligence, self.feedback_loop,
+                       self.resources, self.roi):
             try:
                 system.save()
             except Exception:
                 logger.exception("Failed to persist %s", type(system).__name__)
+
+        # Buffered metrics and cached model responses land on disk with the
+        # checkpoint, so a restart never loses more history than it loses state.
+        try:
+            self.telemetry.flush()
+        except Exception:
+            logger.exception("Failed to flush telemetry")
+        try:
+            self.llm.cortex.save()
+        except Exception:
+            logger.exception("Failed to persist the cortex cache")
 
     def regulate_capacity(self):
         """Size the learned structures by measured cost, not by a guess.
@@ -340,6 +396,88 @@ class Substrate:
             except Exception:
                 logger.exception("Capacity regulation failed for %s.%s",
                                  type(structure).__name__, attr)
+
+    # ── motivation: priority → resource → action (spec M4.6) ─────────
+
+    def acquire(self, action: str, priority: float | None = None):
+        """Reserve the resources one action needs, or return None.
+
+        None means the action does not happen this tick. That is the whole
+        point of the resource link: a motivated action that cannot be paid for
+        is deferred, not quietly executed anyway.
+        """
+        spec = self.actions.by_name.get(action)
+        if spec is None:
+            logger.warning("Unknown action %r requested a lease", action)
+            return None
+        if priority is None:
+            priority = self.priority.priority(
+                Candidate(objective=action, drive=spec.drive,
+                          cost=spec.cost, safety_critical=spec.safety_critical),
+                self._ctx)
+        lease = self.resources.reserve(
+            spec.reservation_cost(), action, priority,
+            safety_critical=spec.safety_critical)
+        if lease is None:
+            self.actions.note_blocked("resources")
+        else:
+            self.actions.mark_run(spec, self.tick_count)
+        return lease
+
+    def settle(self, lease, actual: ResourceCost | None = None,
+               value: float = 0.0) -> None:
+        """Close a lease with what was really spent, and score its return.
+
+        Committing the real usage rather than the estimate is what keeps the
+        budget honest in both directions: an action that reserved generously
+        and used little hands the difference back.
+        """
+        if lease is None:
+            return
+        spec = self.actions.by_name.get(lease.purpose)
+        spent = actual if actual is not None else (lease.committed or lease.cost)
+        self.resources.commit(lease, spent)
+        if spec is not None:
+            try:
+                self.roi.record(lease.purpose, spent, value, drive=spec.drive)
+            except Exception:
+                logger.exception("ROI accounting failed for %s", lease.purpose)
+
+    def _publish_tick_metrics(self, tick_ms: float) -> None:
+        """Write this tick's observations into the time series.
+
+        Called from ``tick()`` under its own guard: a telemetry failure is a
+        lost data point, never a lost tick. Values here are the ones every tick
+        produces; each contour publishes its own metrics from its own phase.
+        """
+        try:
+            tel, tick = self.telemetry, self.tick_count
+            tel.record(M.TICK_DURATION_MS, tick_ms, tick)
+            for phase, ms in sorted(self._ctx.durations_ms.items()):
+                tel.record(M.TICK_PHASE_MS, ms, tick, tags={"phase": phase})
+            tel.record(M.REWARD_VALUE, self._compute_reward(), tick)
+            tel.record(M.REWARD_ENV_ROLLING, self.environment.rolling_reward(), tick)
+            if self._last_benchmark_score is not None:
+                tel.record(M.BENCH_SCORE, self._last_benchmark_score, tick)
+            for kind, counts in sorted(
+                    (self.evaluator.last_report or {}).get("per_kind", {}).items()):
+                total = counts.get("total", 0)
+                if total:
+                    tel.record(M.BENCH_PER_KIND, counts.get("passed", 0) / total,
+                               tick, tags={"kind": kind})
+            tel.record(M.MEM_SEMANTIC, len(self.memory.semantic), tick)
+            tel.record(M.MEM_EPISODIC, len(self.memory.episodic), tick)
+            tel.record(M.GRAPH_NODES, len(self.cognitive_graph.nodes), tick)
+            tel.record(M.HEALTH_STATUS_CODE,
+                       M.health_code(self.health.last_status), tick)
+            tel.record(M.HEALTH_CONSECUTIVE_ERRORS,
+                       self.health.consecutive_errors, tick)
+            self.llm.cortex.publish_metrics(tick)
+            self.resources.publish_metrics(tick)
+            self.roi.publish_metrics(tick)
+            self.world_model.publish_metrics(tick)
+        except Exception:
+            logger.exception("Telemetry publication failed")
 
     def _is_llm_tick(self) -> bool:
         return self.llm.enabled and self.tick_count % LLM_THINK_EVERY_N_TICKS == 0
@@ -536,8 +674,8 @@ class Substrate:
                     self.autobiography.log_event("skill_rejected", f"{kind}: {msg[:60]}", 0.5)
                     break
 
-                after = await asyncio.get_running_loop().run_in_executor(
-                    None, self.evaluator.pass_rate_on, holdout)
+                after, failed_case = await asyncio.get_running_loop().run_in_executor(
+                    None, self._score_holdout, holdout)
                 if after > before:
                     self.skill_library.save()
                     self.autobiography.log_event(
@@ -548,10 +686,15 @@ class Substrate:
                     kept = True
                     break
 
-                # No generalization — discard and try one repair from a failing case.
+                # No generalization — discard and try one repair from a failing
+                # case. The failing case is fed back; re-asking with the exact
+                # same prompt (the previous behaviour) could only return the
+                # same code, so the "repair attempt" never repaired anything.
                 self.skill_library.remove(name)
                 if attempt == 0 and train_examples:
-                    code = await self.llm.propose_skill(kind, train_examples)
+                    code = await self.llm.propose_skill(
+                        kind, train_examples,
+                        feedback=self._repair_feedback(code, failed_case))
                 else:
                     code = None
 
@@ -560,6 +703,47 @@ class Substrate:
                     "skill_discarded", f"{kind}: no generalizing improvement ({before:.2f})", 0.5)
         except Exception:
             logger.exception("Skill synthesis failed")
+
+    def _score_holdout(self, holdout) -> tuple[float, dict | None]:
+        """Held-out pass-rate PLUS the first case that failed.
+
+        ``Evaluator.pass_rate_on`` only returns the ratio, which is enough to
+        accept or reject a candidate but not enough to repair it. Naming the
+        failing case is what turns the retry into an actual second attempt.
+        """
+        if not holdout:
+            return 0.0, None
+        passed = 0
+        first_failure: dict | None = None
+        for task in holdout:
+            result = self.evaluator.solver.solve(task)
+            if result.solved:
+                passed += 1
+            elif first_failure is None:
+                first_failure = {
+                    "payload": task.payload,
+                    "expected": task.expected,
+                    # last_answer, not answer: on failure `answer` is None by
+                    # definition, and "you answered None" tells a repair
+                    # attempt nothing about what went wrong.
+                    "got": result.last_answer,
+                }
+        return passed / len(holdout), first_failure
+
+    @staticmethod
+    def _repair_feedback(code: str | None, failed_case: dict | None) -> str:
+        """Human-readable description of why the last candidate was discarded."""
+        parts = []
+        if code:
+            parts.append(f"Previous implementation:\n{code[:800]}")
+        if failed_case:
+            parts.append(
+                f"It failed on a held-out case: payload={failed_case['payload']!r} "
+                f"expected {failed_case['expected']!r}, got {failed_case['got']!r}."
+            )
+        else:
+            parts.append("It did not improve the held-out pass rate.")
+        return "\n".join(parts)
 
     async def _learning_cycle(self):
         """Pick the most useful learning action this round, in priority order:
@@ -687,8 +871,12 @@ class Substrate:
             logger.exception("Background weight-training cycle failed")
             self.autobiography.log_event("weight_training", f"Training cycle error: {str(e)[:80]}", 0.6)
 
-    async def _llm_parametric_modification(self):
-        """Use LLM to analyze performance and propose parameter adjustments."""
+    async def _llm_parametric_modification(self, lease=None) -> bool:
+        """Use LLM to analyze performance and propose parameter adjustments.
+
+        Returns whether any adjustment was actually applied — that is the value
+        the lease bought, and it is what the ROI tracker scores.
+        """
         total_ticks = self.health.successful_ticks + self.health.failed_ticks
         error_rate = self.health.error_count / max(total_ticks, 1) if total_ticks > 0 else 0
 
@@ -703,10 +891,11 @@ class Substrate:
             "tick": self.tick_count,
         }
 
-        result = await self.llm.analyze_self_performance(metrics)
+        result = await self.llm.analyze_self_performance(metrics, lease=lease)
         if not result.get("success") or not result.get("parsed"):
-            return
+            return False
 
+        applied_any = False
         adjustments = result["parsed"].get("adjustments", [])
         for adj in adjustments[:2]:  # max 2 adjustments per cycle
             param = adj.get("parameter", "")
@@ -723,6 +912,17 @@ class Substrate:
                 new_val = old_val * (1 - magnitude)
             else:
                 continue
+
+            # The untouchable set is asked BEFORE anything else (Appendix B).
+            # Parametric self-modification is one of the seven contours that can
+            # change the running system, so it owes this check like the rest.
+            verdict = immutable.check_change(f"parametric/{param}", old_val, new_val)
+            if not verdict.allowed:
+                self.autobiography.log_event(
+                    "mod_blocked", f"Immutable parameter refused: {verdict.reason}", 0.8)
+                continue
+            if verdict.clamped and verdict.value is not None:
+                new_val = verdict.value
 
             proposal = self.self_mod.propose_modification("parametric", param, new_val)
 
@@ -748,11 +948,13 @@ class Substrate:
             result = self.self_mod.apply_modification(proposal, sandbox)
 
             if result.get("applied"):
+                applied_any = True
                 self.autobiography.log_event(
                     "self_mod",
                     f"Parameter {param}: {old_val:.6f} -> {new_val:.6f} (LLM: {adj.get('reason', '')[:50]})",
                     0.7,
                 )
+        return applied_any
 
     async def _code_self_modification(self):
         """Use LLM to analyze and modify own source code."""
@@ -928,6 +1130,9 @@ class Substrate:
         # A fresh context per tick — this is what replaces resetting a handful
         # of accumulators by hand and forgetting one when a new field appears.
         self._ctx = TickContext(tick=self.tick_count)
+        # Refill the per-tick allowance and slide the hourly windows before any
+        # phase can ask to spend from them.
+        self.resources.begin_tick(self.tick_count)
 
         # Self-preservation vital signs. Must not be able to kill the loop, so
         # it is guarded independently of the cognitive phases below.
@@ -960,8 +1165,13 @@ class Substrate:
             # _reflect clears it, the flag would stay stuck True until the next
             # LLM tick, skewing status/introspection. The cycle is over here.
             self.llm_thinking = False
+            # Settle anything still holding a reservation. A phase that took a
+            # lease and then failed would otherwise keep it forever, and the
+            # budget would leak away one crash at a time.
+            self.resources.finalize_tick()
 
         self.last_tick_duration = CLOCK.now() - tick_start
+        self._publish_tick_metrics(self.last_tick_duration * 1000)
         self.cycle_times.append(self.last_tick_duration)
         if len(self.cycle_times) > 100:
             self.cycle_times = self.cycle_times[-100:]
@@ -1084,6 +1294,11 @@ class Substrate:
                 "world_model_baseline": WM_MAX_LINKS,
                 "cognitive_graph_baseline": CG_MAX_NODES,
             },
+            "telemetry": self.telemetry.status(),
+            "resources": self.resources.status(),
+            "roi": self.roi.status(),
+            "priority": self.priority.status(),
+            "action_space": self.actions.status(self),
             "reward_signal": round(self._compute_reward(), 4),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),

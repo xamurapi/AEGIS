@@ -24,6 +24,11 @@ class SolveResult:
     winning_skill: str | None = None
     candidates: int = 0
     elapsed_ms: float = 0.0
+    # The last answer any skill produced, even when none verified. `answer` is
+    # deliberately None on failure (nothing was accepted), but a repair loop
+    # needs to know WHAT was answered wrongly, not just that something was.
+    last_answer: object = None
+    last_skill: str | None = None
 
 
 class MultiAgentSolver:
@@ -35,19 +40,25 @@ class MultiAgentSolver:
         t0 = CLOCK.now()
         skills = self.library.for_kind(task.kind)
         candidates = 0
+        last_answer = None
+        last_skill = None
         for skill in skills:
             candidates += 1
             out = run_skill(skill.code, skill.func, task.payload, timeout=self.timeout)
             ok = bool(out.get("ok")) and task.verify(out.get("result"))
             self.library.record(skill.name, ok)
+            if out.get("ok"):
+                last_answer, last_skill = out.get("result"), skill.name
             if ok:
                 return SolveResult(
                     task.id, task.kind, True, out.get("result"),
                     skill.name, candidates, round((CLOCK.now() - t0) * 1000, 1),
+                    last_answer=out.get("result"), last_skill=skill.name,
                 )
         return SolveResult(
             task.id, task.kind, False, None, None, candidates,
             round((CLOCK.now() - t0) * 1000, 1),
+            last_answer=last_answer, last_skill=last_skill,
         )
 
     def solve_composite(self, task) -> SolveResult:

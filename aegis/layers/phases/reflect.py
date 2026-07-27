@@ -36,7 +36,11 @@ async def run(substrate, ctx: TickContext) -> None:
 
     # LLM-powered reflection
     llm_reflection = None
-    if substrate._is_llm_tick() and not substrate._regulation_directives.get("skip_llm"):
+    reflect_lease = (substrate.acquire("reflect_llm")
+                     if substrate._is_llm_tick()
+                     and not substrate._regulation_directives.get("skip_llm")
+                     else None)
+    if reflect_lease is not None:
         recent_events = [e["event"] for e in substrate.memory.episodic[-5:]]
         episode = {
             "tick": substrate.tick_count,
@@ -48,7 +52,8 @@ async def run(substrate, ctx: TickContext) -> None:
             "consciousness_mode": substrate.consciousness.mode,
         }
         ctx.mark_external("reflect")
-        result = await substrate.llm.reflect(episode)
+        result = await substrate.llm.reflect(episode, lease=reflect_lease)
+        substrate.settle(reflect_lease, value=1.0 if result.get("success") else 0.0)
         if result["success"] and "parsed" in result and isinstance(result["parsed"], dict):
             llm_reflection = result["parsed"]
             learning = str(llm_reflection.get("learning", "") or "")
@@ -151,6 +156,24 @@ async def run(substrate, ctx: TickContext) -> None:
                     "productive" if success else "unproductive",
                     success=success,
                 )
+
+        # ── System 1: what the action was actually worth ─────────────
+        # Recorded with the REAL numbers, and the forecast is handed to the
+        # next tick to close — the successor state cannot be observed until
+        # the world has moved (§M1.6).
+        if ctx.state is not None and ctx.decision:
+            substrate.world_model.observe_outcome(
+                ctx.state, ctx.decision, success=ctx.learned_something(),
+                reward=realized,
+                cost=substrate.last_tick_duration * 1000)
+            if ctx.prediction is not None:
+                substrate._pending_prediction = {
+                    "id": ctx.prediction.id,
+                    "state": ctx.state,
+                    "action": ctx.decision,
+                    "success": ctx.learned_something(),
+                    "reward": realized,
+                }
 
         # System 2: ingest recent memory into the typed cognitive graph.
         if substrate.tick_count % max(1, COGNITIVE_GRAPH_EVERY_N_TICKS) == 0:

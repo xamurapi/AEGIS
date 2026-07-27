@@ -49,6 +49,16 @@ class HealthMonitor:
             "consecutive_errors": 5,
         }
 
+    @property
+    def last_status(self) -> str:
+        """Status of the most recent ``check()``.
+
+        Exposed because telemetry samples health every tick and re-running the
+        whole check (psutil probes included) purely to read its verdict would
+        make observing the system a measurable part of its cost.
+        """
+        return self._prev_status
+
     def check(self) -> dict:
         report = {
             "status": "healthy",

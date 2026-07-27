@@ -82,6 +82,16 @@ _STATE_DIRS = (
     ("aegis.layers.substrate", "CODE_BACKUPS_DIR", "code_backups"),
     ("aegis.layers.dataset_builder", "WEIGHT_DATASETS_DIR", "datasets"),
     ("aegis.telemetry.store", "TELEMETRY_DIR", "telemetry"),
+    # The contours added by the development spec read their directory from
+    # `aegis.config` at construction time rather than binding a module-level
+    # constant, so the config module is what has to be redirected for them.
+    ("aegis.config", "MOTIVATION_DIR", "motivation"),
+    ("aegis.config", "POLICY_DIR", "policy"),
+    ("aegis.config", "REASONING_DIR", "reasoning"),
+    ("aegis.config", "DISCOVERY_DIR", "discovery"),
+    ("aegis.config", "CORTEX_DIR", "cortex"),
+    ("aegis.config", "WORLD_MODEL_DIR", "world_model"),
+    ("aegis.config", "EVOLUTION_DIR", "evolution"),
 )
 
 

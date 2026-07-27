@@ -123,12 +123,24 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
 # LLM Provider: "deepseek", "claude", "both", "local" (local transformers model)
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "both")
 
-# --- Local model (transformers) ---
+# --- Trainable local model (the LoRA contour, spec M8.3) ---
+# This model exists to be CHANGED, not to be clever: it is the only place the
+# system rewrites its own weights. Its size is bounded by what fits in memory
+# together with activations and gradients on the reference machine (§M8.3a),
+# not by how well it reasons — reasoning is the cortex's job.
 LOCAL_MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
 LOCAL_MODEL_DEVICE = os.environ.get("LOCAL_MODEL_DEVICE", "cpu")  # "auto", "cuda", "cpu"
-LOCAL_MODEL_DTYPE = os.environ.get("LOCAL_MODEL_DTYPE", "float32")  # "float16", "bfloat16", "float32"
+# bfloat16, not float32: on the reference profile (CPU-only torch, 32 GB RAM)
+# float32 doubles the memory a model needs and buys nothing (§M8.3a).
+LOCAL_MODEL_DTYPE = os.environ.get("LOCAL_MODEL_DTYPE", "bfloat16")  # float16|bfloat16|float32
 LOCAL_MODEL_QUANTIZE = os.environ.get("LOCAL_MODEL_QUANTIZE", "")  # "4bit", "8bit", "" (none)
-LOCAL_MODEL_MAX_LENGTH = _env_int("LOCAL_MODEL_MAX_LENGTH", "2048")
+LOCAL_MODEL_MAX_LENGTH = _env_int("LOCAL_MODEL_MAX_LENGTH", "4096")
+# Fraction of a model's raw weight size that a training run additionally needs
+# for activations, gradients and optimizer state. Used by the pre-load memory
+# guard so an oversized model is refused with an explanation instead of dying
+# inside from_pretrained (§M8.3a).
+LOCAL_MODEL_TRAIN_OVERHEAD = _env_float("LOCAL_MODEL_TRAIN_OVERHEAD", "3.0")
+LOCAL_MODEL_INFER_OVERHEAD = _env_float("LOCAL_MODEL_INFER_OVERHEAD", "1.3")
 
 # --- Weight modification / LoRA fine-tuning ---
 WEIGHT_CHECKPOINTS_DIR = DATA_DIR / "weight_checkpoints"
@@ -139,7 +151,41 @@ WEIGHT_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_R = _env_int("LORA_R", "16")              # LoRA rank
 LORA_ALPHA = _env_int("LORA_ALPHA", "32")       # LoRA alpha
 LORA_DROPOUT = _env_float("LORA_DROPOUT", "0.05")
-LORA_TARGET_MODULES = ["q_proj", "v_proj", "k_proj", "o_proj"]
+# Which projections LoRA attaches to depends on the model ARCHITECTURE, not on
+# our preference: q/k/v/o_proj is right for Llama, Qwen, Mistral and Gemma, but
+# Phi-3 fuses them into qkv_proj. Hardcoding the list meant that swapping model
+# family silently trained zero parameters (§M8.3c), so it comes from the
+# environment and WeightModifier verifies at least one match before training.
+LORA_TARGET_MODULES = [m.strip() for m in
+                       os.environ.get("LORA_TARGET_MODULES",
+                                      "q_proj,k_proj,v_proj,o_proj").split(",")
+                       if m.strip()] or ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+
+def quantization_error(quantize: str = LOCAL_MODEL_QUANTIZE) -> str | None:
+    """Why the requested quantization cannot be used here, or None if it can.
+
+    ``bitsandbytes`` 4-bit/8-bit loading needs CUDA. On the reference profile
+    (CPU-only torch) requesting it used to blow up deep inside
+    ``from_pretrained``; refusing at configuration time with a sentence the
+    operator can act on is the difference between a bug and a setting.
+    """
+    if not quantize:
+        return None
+    if quantize not in ("4bit", "8bit"):
+        return (f"LOCAL_MODEL_QUANTIZE={quantize!r} is not recognised — "
+                f"use '4bit', '8bit' or leave it empty.")
+    try:
+        import torch  # noqa: PLC0415 — optional heavy dependency
+    except Exception:
+        return (f"LOCAL_MODEL_QUANTIZE={quantize!r} requires torch with CUDA, "
+                f"but torch is not installed.")
+    if not torch.cuda.is_available():
+        return (f"LOCAL_MODEL_QUANTIZE={quantize!r} requires a CUDA device "
+                f"(bitsandbytes has no CPU kernels). This machine has none — "
+                f"unset LOCAL_MODEL_QUANTIZE and use LOCAL_MODEL_DTYPE=bfloat16 "
+                f"with a model of 3B parameters or smaller.")
+    return None
 
 TRAIN_BATCH_SIZE = _env_int("TRAIN_BATCH_SIZE", "1")
 TRAIN_GRADIENT_ACCUMULATION = _env_int("TRAIN_GRADIENT_ACCUMULATION", "4")
@@ -239,6 +285,182 @@ PHASE_BUDGET_WINDOW = _env_int("PHASE_BUDGET_WINDOW", "20")
 
 # --- LLM call budget (per process run) ---
 # Hard ceiling on LLM calls per run to bound token spend; 0 = unlimited.
+# Kept as the OUTERMOST fuse: from stage 2 on, every cortex call also needs a
+# lease from the ResourceManager, which is the real accounting (§M4.3).
 LLM_MAX_CALLS_PER_RUN = _env_int("LLM_MAX_CALLS_PER_RUN", "0")
 # Minimum seconds between any two LLM calls (simple rate limit); 0 = none.
 LLM_MIN_INTERVAL_SECONDS = _env_float("LLM_MIN_INTERVAL_SECONDS", "0")
+
+
+def _env_str(name: str, default: str = "") -> str:
+    return os.environ.get(name, default)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Development spec §5.2 — the seven new contours
+# ══════════════════════════════════════════════════════════════════════
+
+# --- Storage roots (spec §5.3) ---
+POLICY_DIR = DATA_DIR / "policy"
+MOTIVATION_DIR = DATA_DIR / "motivation"
+REASONING_DIR = DATA_DIR / "reasoning"
+DISCOVERY_DIR = DATA_DIR / "discovery"
+CORTEX_DIR = DATA_DIR / "cortex"
+
+for d in [POLICY_DIR, MOTIVATION_DIR, REASONING_DIR, DISCOVERY_DIR, CORTEX_DIR,
+          DISCOVERY_DIR / "datasets"]:
+    d.mkdir(parents=True, exist_ok=True)
+
+# --- M1: predictive world model -------------------------------------
+# Additive smoothing with back-off: a state/action pair seen fewer than
+# WM_MIN_N times borrows its estimate from the action's marginal instead of
+# inventing a confident number from two observations.
+WM_SMOOTHING = _env_float("WM_SMOOTHING", "1.0")
+WM_MIN_N = _env_int("WM_MIN_N", "3")
+WM_BRANCH = _env_int("WM_BRANCH", "3")          # successor states expanded per node
+WM_BEAM = _env_int("WM_BEAM", "5")
+WM_DEPTH = _env_int("WM_DEPTH", "3")
+WM_DISCOUNT = _env_float("WM_DISCOUNT", "0.9")
+# Counts decay by 0.5 every WM_HALF_LIFE observations, so the model follows the
+# system as it changes instead of averaging over a world that no longer exists.
+WM_HALF_LIFE = _env_int("WM_HALF_LIFE", "500")
+WM_MAX_PREDICTIONS = _env_int("WM_MAX_PREDICTIONS", "20000")
+WM_MAX_STATES = _env_int("WM_MAX_STATES", "20000")
+WM_EXPLORE_BONUS = _env_float("WM_EXPLORE_BONUS", "0.15")
+WM_CALIBRATION_BINS = _env_int("WM_CALIBRATION_BINS", "10")
+WM_SURPRISE_WINDOW = _env_int("WM_SURPRISE_WINDOW", "50")
+
+# State encoding boundaries (spec Appendix D). JSON so the whole scheme can be
+# replaced from the environment; the bin edges are themselves genome material.
+_WM_STATE_BINS_DEFAULT = {
+    "energy": {"lo": 0.33, "hi": 0.66},
+    "error": {"none": 0.0001, "low": 0.05, "high": 0.20},
+    "load": {"lo": 0.5, "hi": 1.0},
+    "perf": {"window": 5, "flat_band": 0.01},
+    "mood": "as_is",
+    "mode": "as_is",
+    "focus_kind": "via_goal_intelligence",
+}
+
+
+def _env_json(name: str, default):
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        import json as _json
+        parsed = _json.loads(raw)
+    except Exception:
+        _log.warning("Invalid JSON for %s; using default", name)
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
+
+
+WM_STATE_BINS = _env_json("WM_STATE_BINS", _WM_STATE_BINS_DEFAULT)
+
+# --- M2: planner -----------------------------------------------------
+PLAN_ENABLED = _env_str("PLAN_ENABLED", "1") == "1"
+PLAN_MAX_CANDIDATES = _env_int("PLAN_MAX_CANDIDATES", "12")
+# Log the plan to the autobiography only when the planner actually changed the
+# decision by at least this much expected value — otherwise the log is noise.
+PLAN_LOG_THRESHOLD = _env_float("PLAN_LOG_THRESHOLD", "0.05")
+
+# --- M3: behaviour policy -------------------------------------------
+POLICY_LR = _env_float("POLICY_LR", "0.15")
+POLICY_WEIGHT = _env_float("POLICY_WEIGHT", "0.3")
+POLICY_MIN_SUPPORT = _env_int("POLICY_MIN_SUPPORT", "20")
+POLICY_MAX_COND = _env_int("POLICY_MAX_COND", "2")
+POLICY_MINE_EVERY_N_TICKS = _env_int("POLICY_MINE_EVERY_N_TICKS", "200")
+POLICY_TRIAL_TICKS = _env_int("POLICY_TRIAL_TICKS", "300")
+POLICY_REVIEW_TICKS = _env_int("POLICY_REVIEW_TICKS", "1000")
+POLICY_MIN_EFFECT = _env_float("POLICY_MIN_EFFECT", "0.03")
+POLICY_ALPHA = _env_float("POLICY_ALPHA", "0.05")
+POLICY_MAX_RULES = _env_int("POLICY_MAX_RULES", "500")
+POLICY_MAX_PREFS = _env_int("POLICY_MAX_PREFS", "20000")
+
+# --- M4: resources and priority -------------------------------------
+RES_TOKENS_PER_HOUR = _env_int("RES_TOKENS_PER_HOUR", "200000")
+RES_CALLS_PER_HOUR = _env_int("RES_CALLS_PER_HOUR", "400")
+RES_WALL_MS_PER_TICK = _env_int("RES_WALL_MS_PER_TICK", "2500")
+RES_SUBPROC_SLOTS = _env_int("RES_SUBPROC_SLOTS", "4")
+RES_TRAINING_SLOTS = _env_int("RES_TRAINING_SLOTS", "1")
+RES_NET_CALLS_PER_HOUR = _env_int("RES_NET_CALLS_PER_HOUR", "600")
+RES_DISK_MB = _env_int("RES_DISK_MB", "4096")
+# Share of every budget that safety-critical work keeps no matter how the ROI
+# tracker would prefer to spend it (spec Appendix B, category 7).
+RESOURCE_SAFETY_FLOOR = _env_float("RESOURCE_SAFETY_FLOOR", "0.15")
+# No activity may be starved to zero: an activity with no budget never produces
+# a result, so its ROI can never recover — the reallocation would be one-way.
+RESOURCE_MIN_SHARE = _env_float("RESOURCE_MIN_SHARE", "0.05")
+RESOURCE_REALLOC_EVERY_N_TICKS = _env_int("RESOURCE_REALLOC_EVERY_N_TICKS", "500")
+PRIORITY_AGING = _env_float("PRIORITY_AGING", "0.01")
+PRIORITY_AGING_MAX_TICKS = _env_int("PRIORITY_AGING_MAX_TICKS", "2000")
+
+# --- M5: population evolution ---------------------------------------
+EVO_POP_SIZE = _env_int("EVO_POP_SIZE", "10")
+EVO_SIGMA = _env_float("EVO_SIGMA", "0.15")
+EVO_EPSILON = _env_float("EVO_EPSILON", "0.005")
+EVO_MIN_DISTANCE = _env_float("EVO_MIN_DISTANCE", "0.02")
+EVO_EVERY_N_TICKS = _env_int("EVO_EVERY_N_TICKS", "250")
+EVO_SPLIT_ROTATE_EVERY = _env_int("EVO_SPLIT_ROTATE_EVERY", "5")
+EVO_WATCH_TICKS = _env_int("EVO_WATCH_TICKS", "500")
+EVO_ROLLBACK_DELTA = _env_float("EVO_ROLLBACK_DELTA", "0.03")
+EVO_COST_PENALTY = _env_float("EVO_COST_PENALTY", "0.1")
+EVO_LATENCY_PENALTY = _env_float("EVO_LATENCY_PENALTY", "0.05")
+EVO_MAX_ARCHIVE = _env_int("EVO_MAX_ARCHIVE", "2000")
+
+# --- M6: reasoning ---------------------------------------------------
+REASON_MAX_STEPS = _env_int("REASON_MAX_STEPS", "24")
+REASON_MIN_GAIN = _env_float("REASON_MIN_GAIN", "0.05")
+REASON_COST_TOLERANCE = _env_float("REASON_COST_TOLERANCE", "1.5")
+REASON_TRIAL_N = _env_int("REASON_TRIAL_N", "50")
+REASON_SCAN_EVERY_N_TICKS = _env_int("REASON_SCAN_EVERY_N_TICKS", "300")
+REASON_UCB_C = _env_float("REASON_UCB_C", "1.4")
+REASON_MAX_TRACES = _env_int("REASON_MAX_TRACES", "5000")
+
+# --- M7: discovery ---------------------------------------------------
+DISC_MAX_LAG = _env_int("DISC_MAX_LAG", "5")
+DISC_MAX_DEPTH = _env_int("DISC_MAX_DEPTH", "4")
+DISC_ALPHA = _env_float("DISC_ALPHA", "0.05")
+DISC_MIN_N = _env_int("DISC_MIN_N", "100")
+DISC_BLOCK_TICKS = _env_int("DISC_BLOCK_TICKS", "100")
+DISC_LAW_REPS = _env_int("DISC_LAW_REPS", "3")
+DISC_SCAN_EVERY_N_TICKS = _env_int("DISC_SCAN_EVERY_N_TICKS", "1000")
+DISC_INTERVENTION_ENABLED = _env_str("DISC_INTERVENTION_ENABLED", "1") == "1"
+DISC_INTERVENTION_MAX_DELTA = _env_float("DISC_INTERVENTION_MAX_DELTA", "0.2")
+DISC_MAX_HYPOTHESES = _env_int("DISC_MAX_HYPOTHESES", "2000")
+
+# --- M8: cortex ------------------------------------------------------
+# role -> failover chain. The expensive roles go to hosted APIs; FAST, which
+# fires on nearly every LLM tick, is served locally so it costs no API tokens.
+CORTEX_ROUTES_DEFAULT = {
+    "deep": ["kimi", "claude", "local_openai"],
+    "code": ["kimi", "claude"],
+    "judge": ["claude", "kimi"],
+    "fast": ["local_openai", "kimi"],
+}
+CORTEX_ROUTES = _env_json("CORTEX_ROUTES", CORTEX_ROUTES_DEFAULT)
+CORTEX_DETERMINISTIC = _env_str("CORTEX_DETERMINISTIC", "1") == "1"
+CORTEX_CACHE_TTL = _env_float("CORTEX_CACHE_TTL", "3600")
+CORTEX_CACHE_MAX = _env_int("CORTEX_CACHE_MAX", "2000")
+CORTEX_BREAKER_ERRORS = _env_int("CORTEX_BREAKER_ERRORS", "5")
+CORTEX_BREAKER_COOLDOWN = _env_float("CORTEX_BREAKER_COOLDOWN", "300")
+# One repair round-trip when the model answers with malformed JSON, then give
+# up and fall back to the deterministic path (§M8.5).
+CORTEX_MAX_REPAIRS = _env_int("CORTEX_MAX_REPAIRS", "1")
+
+# Providers. Every model identifier is an environment variable, so moving to a
+# newer generation of any family never touches code (§M8.3b).
+KIMI_API_KEY = _env_str("KIMI_API_KEY")
+KIMI_BASE_URL = _env_str("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
+KIMI_MODEL = _env_str("KIMI_MODEL", "kimi-k2-0905-preview")
+OPENAI_API_KEY = _env_str("OPENAI_API_KEY")
+OPENAI_BASE_URL = _env_str("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = _env_str("OPENAI_MODEL", "gpt-4o-mini")
+LOCAL_OPENAI_BASE_URL = _env_str("LOCAL_OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+LOCAL_OPENAI_MODEL = _env_str("LOCAL_OPENAI_MODEL", "")
+LOCAL_OPENAI_API_KEY = _env_str("LOCAL_OPENAI_API_KEY", "ollama")
+
+# --- M9: infrastructure ---------------------------------------------
+EVAL_POOL_WORKERS = _env_int("EVAL_POOL_WORKERS", "4")
+EVAL_POOL_TASK_TIMEOUT = _env_float("EVAL_POOL_TASK_TIMEOUT", "120")

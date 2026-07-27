@@ -30,11 +30,25 @@ class TickContext:
     new_episodic: int = 0
     llm_insights: int = 0
 
+    # ── where the system is (spec M1.6) ──────────────────────────────
+    # Filled in PERCEIVE. `state_inputs` is the raw reading, `state` its
+    # bucketed form; both are kept because the encoder is a pure function of
+    # the first and a test needs to be able to check that separately.
+    state_inputs: dict = field(default_factory=dict)
+    state: object | None = None
+
     # ── what this tick decided ───────────────────────────────────────
     regulation_directives: dict = field(default_factory=dict)
     pending_experiences: dict = field(default_factory=dict)
     decision: str | None = None
     confidence: float | None = None
+    #: The forecast written down in DECIDE, before the action was taken.
+    prediction: object | None = None
+    #: How wrong the *previous* tick's forecast turned out to be, scored in
+    #: EVALUATE once this tick's state revealed where the action led.
+    prediction_score: dict | None = None
+    #: Resource lease the chosen action is running under.
+    lease: object | None = None
 
     # ── phases that blocked on the outside world this tick ───────────
     # Network, hosted model or subprocess. The per-phase latency budget skips
@@ -59,14 +73,20 @@ class TickContext:
         feedback loop closes an experience with."""
         return self.new_concepts > 0 or self.llm_insights > 0
 
+    def state_key(self) -> str | None:
+        """The encoded state as a string, or None before PERCEIVE has run."""
+        return self.state.key() if self.state is not None else None
+
     def summary(self) -> dict:
         return {
             "tick": self.tick,
+            "state": self.state_key(),
             "new_concepts": self.new_concepts,
             "new_episodic": self.new_episodic,
             "llm_insights": self.llm_insights,
             "decision": self.decision,
             "confidence": self.confidence,
+            "prediction": (self.prediction.id if self.prediction is not None else None),
             "external_phases": sorted(self.external),
             "durations_ms": {k: round(v, 3) for k, v in self.durations_ms.items()},
         }

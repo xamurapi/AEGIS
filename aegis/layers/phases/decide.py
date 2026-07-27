@@ -74,8 +74,13 @@ async def run(substrate, ctx: TickContext) -> None:
     except Exception:
         logger.exception("Value-driven selection failed — keeping heuristic decision")
 
-    # LLM-powered decision making
-    if substrate._is_llm_tick() and not substrate._regulation_directives.get("skip_llm"):
+    # LLM-powered decision making — under a lease like every other cortex call
+    # (§M4.3). No lease means the deterministic choice above stands.
+    decision_lease = (substrate.acquire("curiosity_explore")
+                      if substrate._is_llm_tick()
+                      and not substrate._regulation_directives.get("skip_llm")
+                      else None)
+    if decision_lease is not None:
         options = [decision] + alternatives
         ctx.mark_external("decide")
         result = await substrate.llm.make_decision(options, {
@@ -85,7 +90,9 @@ async def run(substrate, ctx: TickContext) -> None:
                               if g.status == "active" and g.level != "axiom"},
             "mood": substrate.emotions.mood,
             "consciousness_mode": substrate.consciousness.mode,
-        })
+        }, lease=decision_lease)
+        substrate.settle(decision_lease,
+                         value=1.0 if result.get("success") else 0.0)
         if result["success"] and "parsed" in result and isinstance(result["parsed"], dict):
             parsed = result["parsed"]
             # Coerce defensively — "chosen"/"confidence" may arrive as
@@ -147,6 +154,21 @@ async def run(substrate, ctx: TickContext) -> None:
     #    the objective. Deterministic and cheap; guarded so a failure here
     #    cannot abort the tick. (System 4 now runs before the decision is
     #    final — see the value-driven selection block above.) ──
+    ctx.decision = decision
+    ctx.confidence = confidence
+
+    # ── System 1: the forecast, written down BEFORE the action ───────
+    # This ordering is the whole point (§M1.6). A prediction recorded after the
+    # outcome is not a prediction, and the error signal it would produce would
+    # be worthless. It is closed at the start of the next tick, once this tick's
+    # successor state is known.
+    if ctx.state is not None:
+        try:
+            ctx.prediction = substrate.world_model.make_prediction(
+                ctx.state, decision, substrate.tick_count)
+        except Exception:
+            logger.exception("Recording the prediction failed")
+
     try:
         focus_name = focus["name"] if focus else "idle_exploration"
 

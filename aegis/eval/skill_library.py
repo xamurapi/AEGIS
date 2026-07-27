@@ -6,7 +6,6 @@ the sandbox safety check; capability compounds because a useful skill is reused
 forever (unlike fine-tuning a model on its own text, which drifts/collapses).
 """
 import json
-import time
 import hashlib
 import logging
 import threading
@@ -14,6 +13,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 from aegis._atomic import atomic_write_text
+from aegis.clock import CLOCK
 from aegis.eval.sandbox import check_safe
 
 logger = logging.getLogger("aegis.skills")
@@ -27,7 +27,9 @@ class Skill:
     func: str = "solve"
     attempts: int = 0
     successes: int = 0
-    created: float = field(default_factory=time.time)
+    # Injectable clock (spec §3.6) — this was the last direct wall-clock read
+    # left in the package, and it made a skill's birth time untestable.
+    created: float = field(default_factory=CLOCK.now)
     origin: str = "seed"  # "seed" | "llm" | "synthesized"
 
     def success_rate(self) -> float:

@@ -7,8 +7,22 @@ cycle and inflate the error rate).
 """
 import asyncio
 
+import pytest
+
 from aegis.layers.substrate import Substrate, _coerce_int, _coerce_float
 from aegis.config import LLM_THINK_EVERY_N_TICKS
+
+
+@pytest.fixture(autouse=True)
+def _isolate(isolated_state):
+    """Give every test in this module its own stores.
+
+    These build a real Substrate, which loads whatever the shared ``data/``
+    directory happens to hold. Once episodic memory reaches its cap there, "did
+    this tick add a memory?" stops being answerable — the assertion measures the
+    leftovers of previous runs rather than this one.
+    """
+    return isolated_state
 
 
 def _make_substrate():
@@ -26,7 +40,7 @@ def _make_substrate():
     s.llm.enabled = True
 
     # Malformed-but-plausible payloads for every LLM call the tick makes.
-    async def _eval_state(state):
+    async def _eval_state(state, lease=None):
         return {"success": True, "response": "r", "parsed": {
             "assessment": "ok",
             "insight": "an insight",
@@ -34,13 +48,13 @@ def _make_substrate():
             # valid one — all within the first two the tick consumes:
             "suggested_goals": [123, "valid_goal", {"x": 1}]}}
 
-    async def _make_decision(options, ctx):
+    async def _make_decision(options, ctx, lease=None):
         return {"success": True, "response": "r", "parsed": {
             "chosen": "2",          # string, not int
             "confidence": "high",   # non-numeric
             "reasoning": 42}}       # non-string
 
-    async def _reflect(ep):
+    async def _reflect(ep, lease=None):
         return {"success": True, "response": "r", "parsed": {
             "learning": 99,                 # non-string
             "knowledge": "not an object"}}  # string, not dict

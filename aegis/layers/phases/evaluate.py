@@ -14,8 +14,49 @@ from aegis.layers.phases.context import TickContext
 logger = logging.getLogger("aegis.substrate")
 
 
+def close_previous_prediction(substrate, ctx: TickContext) -> None:
+    """Score the forecast the last tick made, now that its outcome is known.
+
+    The successor state is *this* tick's state — that is the whole reason the
+    scoring happens here rather than at the end of the previous tick: where an
+    action led cannot be observed until the world has moved.
+
+    The error this produces is the model's only learning signal, and its
+    surprise is what points curiosity somewhere specific instead of everywhere
+    (§M1.5).
+    """
+    pending = substrate._pending_prediction
+    if not pending or ctx.state is None:
+        return
+    substrate._pending_prediction = None
+
+    try:
+        substrate.world_model.observe_transition(
+            pending["state"], pending["action"], ctx.state)
+        score = substrate.world_model.score_prediction(
+            pending["id"], pending["success"], pending["reward"], ctx.state)
+    except Exception:
+        logger.exception("Closing the previous prediction failed")
+        return
+
+    if score is None:
+        return
+    ctx.prediction_score = score.as_dict()
+
+    # Surprise steers curiosity: repeatedly being wrong about where actions
+    # lead is exactly the signal that there is something here worth learning.
+    try:
+        surprise = substrate.world_model.surprise()
+        substrate.goals.curiosity_level = max(
+            0.0, min(1.0, 0.5 * substrate.goals.curiosity_level
+                     + 0.5 * min(1.0, surprise / 4.0)))
+    except Exception:
+        logger.exception("Feeding surprise into curiosity failed")
+
+
 async def run(substrate, ctx: TickContext) -> None:
     substrate.cycle_phase = "evaluate"
+    close_previous_prediction(substrate, ctx)
 
     # Real system metrics for introspection
     total_ticks = substrate.health.successful_ticks + substrate.health.failed_ticks
@@ -85,7 +126,11 @@ async def run(substrate, ctx: TickContext) -> None:
 
     # LLM-powered state evaluation
     llm_eval = None
-    if substrate._is_llm_tick() and not substrate._regulation_directives.get("skip_llm"):
+    lease = (substrate.acquire("evaluate_state_llm")
+             if substrate._is_llm_tick()
+             and not substrate._regulation_directives.get("skip_llm")
+             else None)
+    if lease is not None:
         substrate.llm_thinking = True
         # RAG: pull concepts RELEVANT to the current focus, not just recent ones.
         focus_query = (focus.get("name", "") + " " + focus.get("description", "")) if focus else ""
@@ -108,7 +153,10 @@ async def run(substrate, ctx: TickContext) -> None:
             "active_archetype": substrate.active_archetype.name if substrate.active_archetype else None,
         }
         ctx.mark_external("evaluate")
-        result = await substrate.llm.evaluate_state(compact_state)
+        result = await substrate.llm.evaluate_state(compact_state, lease=lease)
+        # The tick learned something exactly when the appraisal produced an
+        # insight; that is the value this lease returned.
+        substrate.settle(lease, value=1.0 if result.get("success") else 0.0)
         if result.get("response"):
             _, llm_warnings = substrate.self_preservation.filter_llm_response(result["response"])
             if llm_warnings:

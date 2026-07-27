@@ -6,8 +6,22 @@ deterministically and offline (no provider calls, no real source edits).
 """
 import asyncio
 
+import pytest
+
 from aegis.layers.substrate import Substrate
 from aegis.config import LLM_THINK_EVERY_N_TICKS
+
+
+@pytest.fixture(autouse=True)
+def _isolate(isolated_state):
+    """Give every test in this module its own stores.
+
+    These build a real Substrate, which loads whatever the shared ``data/``
+    directory happens to hold. Once episodic memory reaches its cap there, "did
+    this tick add a memory?" stops being answerable — the assertion measures the
+    leftovers of previous runs rather than this one.
+    """
+    return isolated_state
 
 
 def _make_substrate():
@@ -25,21 +39,21 @@ def _make_substrate():
     # LLM is ON, but every provider call is stubbed below.
     s.llm.enabled = True
 
-    async def _eval_state(state):
+    async def _eval_state(state, lease=None):
         return {"success": True, "response": "ok", "parsed": {
             "assessment": "stable", "insight": "energy drives exploration",
             "suggested_goals": ["learn topology", "improve memory"]}}
 
-    async def _make_decision(options, ctx):
+    async def _make_decision(options, ctx, lease=None):
         return {"success": True, "response": "ok", "parsed": {
             "chosen": 1, "reasoning": "best expected value", "confidence": 0.8}}
 
-    async def _reflect(ep):
+    async def _reflect(ep, lease=None):
         return {"success": True, "response": "ok", "parsed": {
             "learning": "reflection stabilizes mood",
             "knowledge": {"concept": "homeostasis", "definition": "self-regulation"}}}
 
-    async def _curiosity(known):
+    async def _curiosity(known, lease=None):
         return {"success": True, "response": "ok", "parsed": {
             "topic": "emergent computation", "question": "how does it arise?",
             "connection": "links to complexity"}}
@@ -102,7 +116,7 @@ def test_parametric_modification_applies_within_bounds():
     async def run():
         s = _make_substrate()
 
-        async def _analyze(metrics):
+        async def _analyze(metrics, lease=None):
             return {"success": True, "parsed": {"adjustments": [
                 {"parameter": "curiosity_weight", "direction": "increase",
                  "magnitude": 0.05, "reason": "encourage exploration"}]}}
@@ -123,7 +137,7 @@ def test_parametric_modification_ignores_unknown_param():
     async def run():
         s = _make_substrate()
 
-        async def _analyze(metrics):
+        async def _analyze(metrics, lease=None):
             return {"success": True, "parsed": {"adjustments": [
                 {"parameter": "does_not_exist", "direction": "increase",
                  "magnitude": 0.05}]}}
@@ -143,7 +157,7 @@ def test_code_self_modification_no_change_path():
             {"path": "toy.py", "immutable": False, "size": 100}]
         s.code_modifier.read_source = lambda p: "x = 1\n"
 
-        async def _propose(path, src, state):
+        async def _propose(path, src, state, lease=None):
             return {"success": True, "parsed": {
                 "should_modify": False, "reason": "already optimal"}}
 
@@ -165,7 +179,7 @@ def test_code_self_modification_applies_when_safe(monkeypatch):
             {"path": "toy.py", "immutable": False, "size": 100}]
         s.code_modifier.read_source = lambda p: "x = 1\n"
 
-        async def _propose(path, src, state):
+        async def _propose(path, src, state, lease=None):
             return {"success": True, "parsed": {
                 "should_modify": True,
                 "modified_code": "x = 2  # improved\n",

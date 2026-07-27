@@ -19,12 +19,18 @@ Usage:
     python scripts/mutation_test.py evolution  # one system by keyword
 """
 import ast
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Wall-clock ceiling for one mutant's test run. Generous enough that a slow but
+# finite suite is never mistaken for a hang, tight enough that a non-terminating
+# mutant costs seconds rather than the whole build.
+MUTANT_TIMEOUT = float(os.environ.get("MUTANT_TIMEOUT", "180"))
 
 # (source module, test file(s) that exercise it). The test entry may be a single
 # path or a space-separated list of paths — all are run together per mutant.
@@ -58,6 +64,55 @@ TARGETS = [
     ("aegis/clock.py", "tests/test_clock.py"),
     ("aegis/telemetry/store.py", "tests/test_telemetry.py"),
     ("aegis/layers/phases/context.py", "tests/test_tick_context.py"),
+    # Determinism substitutes and versioned persistence. Both are load-bearing
+    # for every later stage: a quasirandom sequence that silently stopped
+    # spreading, or a migration that silently dropped a field, would corrupt
+    # results everywhere downstream without failing anything locally.
+    ("aegis/util/quasirandom.py", "tests/test_quasirandom.py"),
+    ("aegis/store/migrations.py", "tests/test_migrations.py"),
+    # Stage 1 — the cortex. The schema validator is the boundary that stops
+    # malformed model output from entering state, and the breaker is what keeps
+    # a dead provider from eating a phase budget in timeouts; a surviving
+    # mutant in either is a hole in a guarantee the whole system rests on.
+    ("aegis/cortex/schemas.py",
+     "tests/test_cortex_schemas.py tests/test_cortex_fuzz.py tests/test_cortex_edges.py"),
+    ("aegis/cortex/breaker.py", "tests/test_cortex_breaker.py"),
+    ("aegis/cortex/cache.py",
+     "tests/test_cortex_cache.py tests/test_cortex_edges.py"),
+    ("aegis/cortex/router.py",
+     "tests/test_cortex_router.py tests/test_cortex_budget.py "
+     "tests/test_cortex_telemetry.py tests/test_cortex_edges.py"),
+    # Stage 2 — resources. The lease is what makes motivation binding, and the
+    # safety floor is what keeps health checks funded when everything else is
+    # competing for the same budget; a surviving mutant in either would mean
+    # the guarantee is decorative.
+    ("aegis/layers/motivation/resources.py", "tests/test_resources.py"),
+    ("aegis/layers/motivation/roi.py", "tests/test_roi.py"),
+    ("aegis/layers/motivation/priority.py", "tests/test_priority.py"),
+    ("aegis/layers/actions.py",
+     "tests/test_action_registry.py tests/test_action_preconditions.py"),
+    # Stage 3 — the predictive world model. Every later contour reads these
+    # estimates: the planner ranks on them, the policy measures against them,
+    # the discovery engine fits laws to them. A silently wrong probability here
+    # is a wrong decision everywhere downstream.
+    ("aegis/util/stats.py",
+     "tests/test_prediction_scoring.py tests/test_world_edges.py "
+     "tests/test_world_formulas.py tests/test_world_guards.py"),
+    ("aegis/layers/world/state.py",
+     "tests/test_world_state.py tests/test_world_edges.py "
+     "tests/test_world_formulas.py tests/test_world_guards.py"),
+    ("aegis/layers/world/transition.py",
+     "tests/test_transition_model.py tests/test_world_edges.py "
+     "tests/test_world_formulas.py tests/test_world_guards.py"),
+    ("aegis/layers/world/outcome.py",
+     "tests/test_outcome_model.py tests/test_world_edges.py "
+     "tests/test_world_formulas.py tests/test_world_guards.py"),
+    ("aegis/layers/world/prediction.py",
+     "tests/test_prediction_scoring.py tests/test_world_edges.py "
+     "tests/test_world_formulas.py tests/test_world_guards.py"),
+    ("aegis/layers/world/simulate.py",
+     "tests/test_simulate.py tests/test_world_edges.py "
+     "tests/test_world_formulas.py tests/test_world_guards.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",
@@ -194,12 +249,23 @@ def _apply(node, kind, sub, repl):
 def _run_tests(test_files: str) -> bool:
     """Return True if the tests PASS (mutant survived), False if they fail.
 
-    `test_files` may be a single path or a space-separated list of paths."""
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", *test_files.split(), "-x", "-q",
-         "--no-header", "-p", "no:cacheprovider"],
-        cwd=ROOT, capture_output=True, text=True,
-    )
+    `test_files` may be a single path or a space-separated list of paths.
+
+    The timeout is load-bearing, not defensive. Mutating an arithmetic operator
+    inside a loop routinely produces code that never terminates — turning
+    ``n //= base`` into ``n *= base`` is enough — and without a bound the whole
+    gate hangs forever on the first such mutant instead of failing. A mutant
+    that hangs is a mutant the tests did NOT accept, so a timeout counts as a
+    kill: the change was detected, by wall clock rather than by assertion.
+    """
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", *test_files.split(), "-x", "-q",
+             "--no-header", "-p", "no:cacheprovider"],
+            cwd=ROOT, capture_output=True, text=True, timeout=MUTANT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     return proc.returncode == 0
 
 

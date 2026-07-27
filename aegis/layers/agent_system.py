@@ -5,7 +5,6 @@ through each blueprint's fixed list, and next-run staggering is a fixed spread �
 no ``random`` anywhere (project-wide "zero randomness" guarantee).
 """
 from aegis.clock import CLOCK
-import time
 import asyncio
 import itertools
 from collections import deque
@@ -31,7 +30,9 @@ class SpiderAgent:
     task_description: str
     topic: str = ""
     status: str = "created"
-    created_at: float = field(default_factory=time.time)
+    # Injectable clock (spec §3.6) — agent age drives retirement,
+    # so it has to be movable in a test rather than only by waiting.
+    created_at: float = field(default_factory=CLOCK.now)
     last_run: float = 0.0
     next_run: float = 0.0
     run_interval: float = 120.0

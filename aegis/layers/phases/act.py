@@ -115,10 +115,22 @@ async def run(substrate, ctx: TickContext) -> None:
             substrate.motor.execute("log", payload={"message": f"Evolution: spawned {len(evo['created'])} new agents"})
 
     # LLM-driven curiosity exploration (every 5th LLM tick instead of random 40%)
-    if substrate._is_llm_tick() and not substrate._regulation_directives.get("skip_llm") and substrate.tick_count % (LLM_THINK_EVERY_N_TICKS * 5) == 0:
+    curiosity_lease = (
+        substrate.acquire("curiosity_explore")
+        if (substrate._is_llm_tick()
+            and not substrate._regulation_directives.get("skip_llm")
+            and substrate.tick_count % (LLM_THINK_EVERY_N_TICKS * 5) == 0)
+        else None)
+    if curiosity_lease is not None:
         known = list(substrate.memory.semantic.keys())
         ctx.mark_external("act")
-        result = await substrate.llm.generate_curiosity(known)
+        result = await substrate.llm.generate_curiosity(known, lease=curiosity_lease)
+        # Value here is a new concept actually entering memory — not merely a
+        # successful call, since an answer nobody stores bought nothing.
+        substrate.settle(
+            curiosity_lease,
+            value=1.0 if (result.get("success")
+                          and (result.get("parsed") or {}).get("topic")) else 0.0)
         if result["success"] and "parsed" in result:
             parsed = result["parsed"]
             topic = parsed.get("topic", "")
@@ -146,9 +158,15 @@ async def run(substrate, ctx: TickContext) -> None:
                 ))
 
     # ── Parametric self-modification (LLM-driven instead of random) ──
-    if substrate.tick_count % 15 == 0 and substrate._is_llm_tick() and not substrate._regulation_directives.get("skip_llm"):
+    param_lease = (
+        substrate.acquire("parametric_self_mod")
+        if (substrate.tick_count % 15 == 0 and substrate._is_llm_tick()
+            and not substrate._regulation_directives.get("skip_llm"))
+        else None)
+    if param_lease is not None:
         ctx.mark_external("act")
-        await substrate._llm_parametric_modification()
+        applied = await substrate._llm_parametric_modification(lease=param_lease)
+        substrate.settle(param_lease, value=1.0 if applied else 0.0)
 
     # ── Code self-modification (opt-in only — audit C2) ──
     if (CODE_SELF_MOD_ENABLED

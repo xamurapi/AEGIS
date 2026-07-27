@@ -2,11 +2,12 @@
 import asyncio
 import copy
 import logging
-import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
+
+from aegis.clock import CLOCK
 
 logger = logging.getLogger("aegis.event_bus")
 
@@ -40,7 +41,10 @@ class Event:
     event_type: str
     payload: dict[str, Any] = field(default_factory=dict)
     ethical_clearance: float = 1.0
-    timestamp: float = field(default_factory=time.time)
+    # Injectable clock (spec §3.6). Mechanical substitution only — the veto
+    # path, the ordering and the history semantics are untouched; this module
+    # is a safety fuse (Appendix H) and nothing about its behaviour changes.
+    timestamp: float = field(default_factory=CLOCK.now)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
 

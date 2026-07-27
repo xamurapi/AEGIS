@@ -8,7 +8,8 @@ from pathlib import Path
 from aegis._atomic import atomic_write_text
 from aegis.config import (
     LOCAL_MODEL_PATH, LOCAL_MODEL_DEVICE, LOCAL_MODEL_DTYPE, LOCAL_MODEL_QUANTIZE,
-    LOCAL_MODEL_MAX_LENGTH,
+    LOCAL_MODEL_MAX_LENGTH, LOCAL_MODEL_TRAIN_OVERHEAD, LOCAL_MODEL_INFER_OVERHEAD,
+    quantization_error,
     WEIGHT_CHECKPOINTS_DIR, TRAIN_MAX_CHECKPOINTS,
     LORA_R, LORA_ALPHA, LORA_DROPOUT, LORA_TARGET_MODULES,
     TRAIN_BATCH_SIZE, TRAIN_GRADIENT_ACCUMULATION, TRAIN_EPOCHS,
@@ -76,10 +77,127 @@ class WeightModifier:
             return False, f"Cooldown: {remaining}s remaining (min interval: {TRAIN_MIN_INTERVAL_SECONDS}s)"
         return True, "Ready"
 
+    # ── pre-flight guards (spec §M8.3a) ──────────────────────────────
+    # Refusing at configuration time with a sentence the operator can act on is
+    # worth more than a stack trace from inside from_pretrained. Both guards
+    # answer the same question — "will this model actually fit here?" — before
+    # anything expensive is attempted.
+
+    @staticmethod
+    def available_memory_bytes() -> int | None:
+        """Physical memory currently available, or None if it cannot be read."""
+        try:
+            import psutil  # noqa: PLC0415 — optional dependency
+            return int(psutil.virtual_memory().available)
+        except Exception:
+            pass
+        try:  # Linux without psutil
+            with open("/proc/meminfo", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) * 1024
+        except Exception:
+            pass
+        try:  # Windows without psutil
+            import ctypes  # noqa: PLC0415
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            status = _MemStatus()
+            status.dwLength = ctypes.sizeof(_MemStatus)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullAvailPhys)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _bytes_per_param(dtype: str) -> int:
+        return {"float16": 2, "bfloat16": 2, "float32": 4}.get(dtype, 4)
+
+    @staticmethod
+    def _declared_parameter_count(model_path: str) -> int | None:
+        """Parameter count inferred from the model id, e.g. '...-3B-Instruct'.
+
+        A local config.json is read when present; otherwise the size suffix in
+        the name is the only signal available before downloading gigabytes, and
+        it is the signal the operator typed.
+        """
+        cfg_path = Path(model_path) / "config.json"
+        if cfg_path.exists():
+            try:
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                hidden = int(cfg.get("hidden_size", 0))
+                layers = int(cfg.get("num_hidden_layers", 0))
+                vocab = int(cfg.get("vocab_size", 0))
+                if hidden and layers:
+                    # 12·h²  per transformer block (attention + MLP), plus the
+                    # embedding and output matrices.
+                    return 12 * hidden * hidden * layers + 2 * vocab * hidden
+            except Exception:
+                logger.debug("Could not read %s for a parameter estimate", cfg_path)
+        import re as _re
+        match = _re.search(r"(\d+(?:\.\d+)?)\s*[bB](?![a-zA-Z0-9])", str(model_path))
+        if match:
+            return int(float(match.group(1)) * 1_000_000_000)
+        match = _re.search(r"(\d+(?:\.\d+)?)\s*[mM](?![a-zA-Z0-9])", str(model_path))
+        if match:
+            return int(float(match.group(1)) * 1_000_000)
+        return None
+
+    @classmethod
+    def memory_check(cls, model_path: str = LOCAL_MODEL_PATH, *,
+                     for_training: bool = False) -> dict:
+        """Would this model fit? Returns a verdict rather than raising.
+
+        ``ok=False`` carries everything an operator needs to fix it: which
+        model, how much it needs, how much there is, and what to do.
+        """
+        params = cls._declared_parameter_count(model_path)
+        available = cls.available_memory_bytes()
+        overhead = LOCAL_MODEL_TRAIN_OVERHEAD if for_training else LOCAL_MODEL_INFER_OVERHEAD
+        if params is None:
+            return {"ok": True, "reason": "unknown_size", "params": None,
+                    "required_bytes": None, "available_bytes": available}
+        required = int(params * cls._bytes_per_param(LOCAL_MODEL_DTYPE) * overhead)
+        verdict = {"ok": True, "reason": "fits", "params": params,
+                   "required_bytes": required, "available_bytes": available,
+                   "dtype": LOCAL_MODEL_DTYPE, "for_training": for_training}
+        if available is None:
+            verdict["reason"] = "available_memory_unknown"
+            return verdict
+        if required > available:
+            verdict["ok"] = False
+            verdict["reason"] = (
+                f"{model_path} has ~{params / 1e9:.2f}B parameters; "
+                f"{'training' if for_training else 'loading'} it in "
+                f"{LOCAL_MODEL_DTYPE} needs ~{required / 2**30:.1f} GiB but only "
+                f"~{available / 2**30:.1f} GiB is available. Choose a smaller "
+                f"model (the reference profile tops out at 3B for training), "
+                f"or set LOCAL_MODEL_DTYPE=bfloat16, or free memory."
+            )
+        return verdict
+
     def load_model(self) -> dict:
         """Load the base model and tokenizer."""
         if self.model_loaded:
             return {"success": True, "message": "Model already loaded"}
+
+        quant_error = quantization_error()
+        if quant_error:
+            return {"success": False, "error": quant_error}
+        fit = self.memory_check(LOCAL_MODEL_PATH, for_training=False)
+        if not fit["ok"]:
+            return {"success": False, "error": fit["reason"], "memory_check": fit}
 
         try:
             import torch
@@ -150,15 +268,69 @@ class WeightModifier:
         except Exception as e:
             logger.warning(f"Failed to apply checkpoint {checkpoint_path}: {e}")
 
+    @staticmethod
+    def module_leaf_names(model) -> list[str] | None:
+        """Distinct leaf module names of a model, sorted, or None if unknowable.
+
+        These are the names LoRA matches against; showing them is what turns
+        "training changed nothing" into an actionable error message. A model
+        object that cannot be walked returns None rather than an empty list —
+        "I could not look" and "I looked and found nothing" must not collapse
+        into the same answer, because only the second one is a mismatch.
+        """
+        walk = getattr(model, "named_modules", None)
+        if not callable(walk):
+            return None
+        try:
+            names = {full_name.rsplit(".", 1)[-1]
+                     for full_name, _ in walk() if full_name}
+        except Exception:
+            logger.debug("Could not enumerate model modules", exc_info=True)
+            return None
+        return sorted(names)
+
+    @classmethod
+    def matching_lora_targets(cls, model, targets=LORA_TARGET_MODULES) -> list[str]:
+        """Which of the configured target modules actually exist in ``model``.
+
+        When the model cannot be introspected the configured list is returned
+        unchanged: refusing to train on the grounds that we could not check
+        would be a worse failure than the one being guarded against.
+        """
+        present = cls.module_leaf_names(model)
+        if present is None:
+            return list(targets)
+        return [t for t in targets if t in set(present)]
+
     def _prepare_lora(self):
-        """Attach LoRA adapters to the model for training."""
+        """Attach LoRA adapters to the model for training.
+
+        The target-module list is architecture-specific (q/k/v/o_proj for Llama,
+        Qwen, Mistral and Gemma; qkv_proj for Phi-3). With a mismatched list
+        ``peft`` used to attach nothing and training would then run to
+        completion having updated zero parameters — expensive, plausible-looking
+        and worthless. Verified here instead, with the available names in the
+        error (§M8.3c).
+        """
         from peft import LoraConfig, get_peft_model, TaskType
+
+        matched = self.matching_lora_targets(self.model)
+        if not matched:
+            available = self.module_leaf_names(self.model) or []
+            projection_like = [n for n in available if "proj" in n or "attn" in n]
+            raise ValueError(
+                f"LORA_TARGET_MODULES={list(LORA_TARGET_MODULES)} matches no module "
+                f"in {LOCAL_MODEL_PATH}. Training would update zero parameters. "
+                f"Projection-like modules this model does have: "
+                f"{projection_like or available[:40]}. "
+                f"Set LORA_TARGET_MODULES to a comma-separated subset of those."
+            )
 
         lora_config = LoraConfig(
             r=LORA_R,
             lora_alpha=LORA_ALPHA,
             lora_dropout=LORA_DROPOUT,
-            target_modules=LORA_TARGET_MODULES,
+            target_modules=matched,
             task_type=TaskType.CAUSAL_LM,
             bias="none",
         )
@@ -166,8 +338,15 @@ class WeightModifier:
         trainable = sum(p.numel() for p in self.peft_model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.peft_model.parameters())
         logger.info(f"LoRA attached: {trainable:,} trainable / {total:,} total params "
-                     f"({trainable / total * 100:.2f}%)")
-        return {"trainable_params": trainable, "total_params": total}
+                     f"({trainable / max(1, total) * 100:.2f}%)")
+        if trainable == 0:
+            raise ValueError(
+                f"LoRA attached to {matched} but produced zero trainable "
+                f"parameters — refusing to run a training cycle that cannot "
+                f"change anything."
+            )
+        return {"trainable_params": trainable, "total_params": total,
+                "target_modules": matched}
 
     def _load_dataset(self, dataset_dir: Path) -> tuple:
         """Load training and validation datasets from JSONL files."""
@@ -210,6 +389,12 @@ class WeightModifier:
         """Run LoRA fine-tuning on the dataset. Returns training result."""
         if not ethics_approved:
             return {"success": False, "error": "Ethics approval required before training"}
+
+        # Training needs the weights AND their gradients AND optimizer state, so
+        # it is checked against a larger budget than plain inference (§M8.3a).
+        fit = self.memory_check(LOCAL_MODEL_PATH, for_training=True)
+        if not fit["ok"]:
+            return {"success": False, "error": fit["reason"], "memory_check": fit}
 
         # Atomic check-and-set: without the lock two concurrent train() calls
         # could both pass can_train() before either sets the flag.

@@ -8,6 +8,7 @@ were moved, not rewritten.
 import logging
 
 from aegis.event_bus import Event, Layer
+from aegis.layers.world.state import collect_state_inputs
 
 from aegis.layers.phases.context import TickContext
 
@@ -17,6 +18,17 @@ logger = logging.getLogger("aegis.substrate")
 async def run(substrate, ctx: TickContext) -> None:
     substrate.cycle_phase = "perceive"
     perception = substrate.world.perceive()
+
+    # ── System 1: where the system actually is (spec M1.6) ───────────
+    # The encoded state is what every prediction, transition and outcome is
+    # keyed on, so it is established first and once. Guarded: a state that
+    # cannot be encoded leaves `ctx.state` as None, which every consumer
+    # already treats as "no prediction this tick" rather than as an error.
+    try:
+        ctx.state_inputs = collect_state_inputs(substrate)
+        ctx.state = substrate.world_model.encode(ctx.state_inputs)
+    except Exception:
+        logger.exception("State encoding failed — this tick has no predictions")
 
     # Sensor cortex
     sensor_data = substrate.sensors.read_all()

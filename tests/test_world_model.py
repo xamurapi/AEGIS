@@ -122,8 +122,8 @@ def test_refine_chain_validates_shape(tmp_path):
 
 
 def test_pruning_bounds_links(tmp_path, monkeypatch):
-    import aegis.layers.world_model as wmmod
-    monkeypatch.setattr(wmmod, "MAX_LINKS", 10)
+    import aegis.layers.world.causal as causal
+    monkeypatch.setattr(causal, "MAX_LINKS", 10)
     wm = _wm(tmp_path)
     for i in range(50):
         wm.observe(f"cause_{i}", f"effect_{i}", success=True)
@@ -237,8 +237,8 @@ def test_build_chain_confidence_is_mean_of_steps(tmp_path):
 
 def test_chains_are_bounded(tmp_path, monkeypatch):
     # Kills the `len(chains) > MAX_CHAINS` boundary mutant.
-    import aegis.layers.world_model as wmmod
-    monkeypatch.setattr(wmmod, "MAX_CHAINS", 3)
+    import aegis.layers.world.causal as causal
+    monkeypatch.setattr(causal, "MAX_CHAINS", 3)
     wm = _wm(tmp_path)
     for i in range(10):
         wm.build_chain(f"objective_{i}")
@@ -255,16 +255,16 @@ def test_refine_chain_confidence_clamped(tmp_path):
 
 
 def test_default_store_path_is_used(tmp_path, monkeypatch):
-    import aegis.layers.world_model as wmmod
-    monkeypatch.setattr(wmmod, "WORLD_MODEL_DIR", tmp_path)
+    import aegis.config as cfg
+    monkeypatch.setattr(cfg, "WORLD_MODEL_DIR", tmp_path)
     wm = WorldModel()
     assert wm._store_path == tmp_path / "model.json"
 
 
 def test_refine_chain_also_bounds_chain_list(tmp_path, monkeypatch):
     # Kills the `len(chains) > MAX_CHAINS` boundary mutant in refine_chain.
-    import aegis.layers.world_model as wmmod
-    monkeypatch.setattr(wmmod, "MAX_CHAINS", 3)
+    import aegis.layers.world.causal as causal
+    monkeypatch.setattr(causal, "MAX_CHAINS", 3)
     wm = _wm(tmp_path)
     for i in range(10):
         wm.refine_chain({"objective": f"o{i}", "confidence": 0.5})
