@@ -222,11 +222,17 @@ def _delta_rate_positive(ctx):
 def _no_longer_matters(ctx):
     policy, rule = ctx["policy"], ctx["rule"]
     start = rule.activated_tick + 1
+    # Every active rule about this action, not only the tracked one: the miner
+    # legitimately finds several equivalent descriptions of one fact, and the
+    # world changing back changed it for all of them.
+    watched = [r for r in policy.lifecycle.active() if r.action == BAD]
     for offset in range(80):
         tick = start + offset
         policy.apply_rules(LOW, _plans(BAD, GOOD), tick)
-        policy.shadow.record(rule.id, policy.shadow.applies_this_tick(rule, tick),
-                             0.7, tick)
+        for active in watched:
+            policy.shadow.record(
+                active.id, policy.shadow.applies_this_tick(active, tick),
+                0.7, tick)
     ctx["tick"] = rule.activated_tick + cfg.POLICY_REVIEW_TICKS
 
 

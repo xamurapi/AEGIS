@@ -132,14 +132,17 @@ TARGETS = [
     # false-discovery control, the support floor or the safety-critical
     # exemption would let the policy suppress things on evidence that does not
     # exist.
-    ("aegis/layers/policy/store.py", "tests/test_policy_store.py"),
+    ("aegis/layers/policy/store.py",
+     "tests/test_policy_store.py tests/test_policy_mutation.py"),
     ("aegis/layers/policy/rules.py",
      "tests/test_rule_miner.py tests/test_rule_lifecycle.py "
-     "tests/test_policy_integration.py"),
+     "tests/test_policy_integration.py tests/test_policy_mutation.py"),
     ("aegis/layers/policy/counterfactual.py",
-     "tests/test_shadow_evaluator.py tests/test_policy_integration.py"),
+     "tests/test_shadow_evaluator.py tests/test_policy_integration.py "
+     "tests/test_policy_mutation.py"),
     ("aegis/layers/policy/__init__.py",
-     "tests/test_policy_integration.py tests/test_bdd_behaviour_change.py"),
+     "tests/test_policy_integration.py tests/test_bdd_behaviour_change.py "
+     "tests/test_policy_mutation.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",

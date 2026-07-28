@@ -249,3 +249,57 @@ def test_a_real_rule_drives_the_interleave(shadow):
     assert shadow.applies_this_tick(rule, 7) is True
     assert shadow.applies_this_tick(rule, 17) is False
     assert shadow.trial_finished(rule, 47) is True
+
+
+# ── the monitoring holdout of an active rule ─────────────────────────
+
+class _Active:
+    def __init__(self, id="r1", activated_tick=0):
+        self.id = id
+        self.activated_tick = activated_tick
+        self.trial_started = 0
+
+
+def test_an_active_rule_acts_in_three_blocks_of_four(shadow):
+    """A rule that always acted could never be re-judged: there would be
+    nothing left to compare it against, and every review would retire it for
+    want of evidence. The holdout is what keeps §M3.5's promise payable."""
+    rule = _Active(activated_tick=0)
+    acting = [shadow.acts_while_active(rule, tick) for tick in range(40)]
+    assert acting[:10] == [True] * 10
+    assert acting[10:20] == [True] * 10
+    assert acting[20:30] == [True] * 10
+    assert acting[30:40] == [False] * 10
+
+
+def test_the_holdout_repeats_for_the_life_of_the_rule(shadow):
+    # Blocks are 10 ticks, so the acting/holdout cycle repeats every 40.
+    rule = _Active(activated_tick=0)
+    assert shadow.acts_while_active(rule, 65) is True     # block 6
+    assert shadow.acts_while_active(rule, 75) is False    # block 7 — holdout
+    assert shadow.acts_while_active(rule, 80) is True     # block 8
+
+
+def test_the_holdout_phase_starts_where_the_rule_activated(shadow):
+    early = _Active("early", activated_tick=0)
+    late = _Active("late", activated_tick=15)
+    disagreements = sum(1 for tick in range(40)
+                        if shadow.acts_while_active(early, tick)
+                        != shadow.acts_while_active(late, tick))
+    assert disagreements > 0
+
+
+def test_a_rule_with_no_activation_tick_is_treated_as_activated_at_zero(shadow):
+    assert shadow.acts_while_active(_Active(activated_tick=None), 0) is True
+
+
+def test_a_review_needs_both_arms(shadow):
+    assert not shadow.enough_to_review("never_seen")
+    for _ in range(5):
+        shadow.record("r1", True, 0.8)
+    assert not shadow.enough_to_review("r1")     # one arm only
+    for _ in range(4):
+        shadow.record("r1", False, 0.4)
+    assert not shadow.enough_to_review("r1")     # four is not enough
+    shadow.record("r1", False, 0.4)
+    assert shadow.enough_to_review("r1")

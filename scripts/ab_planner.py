@@ -173,6 +173,18 @@ def build(planner_enabled: bool, root: Path):
     substrate.weight_modifier.load_model = lambda: {
         "success": False, "error": "disabled in the A/B harness"}
 
+    # The held-out benchmark runs as a DETACHED task whose duration depends on
+    # real subprocess scheduling, so which tick its result lands on differs
+    # between processes. Two runs of the same experiment then diverge — measured
+    # here at tick 56 of 60 — and a comparison that is not reproducible is not a
+    # comparison (§3.1). Neither harness measures the skill library, so the
+    # benchmark is pinned rather than timed.
+    async def _no_benchmark(tick=None):
+        return None
+
+    substrate._run_benchmark = _no_benchmark
+    substrate._last_benchmark_score = 0.5
+
     # The scenario, read off the tick context so both arms are scored by
     # exactly the same rule.
     def scenario_reward():

@@ -134,12 +134,21 @@ def test_a_rule_retires_once_it_stops_paying(policy):
     activated_at = rule.activated_tick
 
     # Now both arms pay the same: suppression buys nothing any more.
+    #
+    # Every active rule about this action is fed, not just the one being
+    # tracked: the miner legitimately produces several equivalent descriptions
+    # of one fact (low energy and a tired mood always co-occur here), the data
+    # cannot tell them apart, and "the world changed back" changed it for all
+    # of them.
     tick = activated_at + 1
+    watched = [r for r in policy.lifecycle.active() if r.action == BAD]
+    assert rule in watched
     for offset in range(80):
         policy.apply_rules(LOW, plans(BAD, GOOD), tick + offset)
-        policy.shadow.record(rule.id,
-                             policy.shadow.applies_this_tick(rule, tick + offset),
-                             0.7, tick + offset)
+        for active in watched:
+            policy.shadow.record(
+                active.id, policy.shadow.applies_this_tick(active, tick + offset),
+                0.7, tick + offset)
 
     outcomes = policy.review(activated_at + cfg.POLICY_REVIEW_TICKS)
     assert outcomes["retired"] >= 1
@@ -414,3 +423,59 @@ def test_regret_is_published_once_it_exists(policy):
     policy.shadow.note_regret(0.4, 0.9)
     policy.publish_metrics(1)
     assert recorded[M.POLICY_REGRET] == pytest.approx(0.5)
+
+
+# ── an active rule stays measurable ──────────────────────────────────
+
+def test_an_active_rule_keeps_a_monitoring_holdout(policy):
+    """One block in four the action is offered again. That costs exactly what
+    the rule exists to avoid — and it is the only way to ever find out that the
+    rule has stopped being right."""
+    rule = _activate(policy)
+    block = policy.shadow.block_length()
+    start = rule.activated_tick
+
+    offered = [BAD in [plan.action for plan in
+                       policy.apply_rules(LOW, plans(BAD, GOOD), start + offset)]
+               for offset in range(block * 4)]
+    assert any(offered), "an active rule with no holdout can never be withdrawn"
+    assert not all(offered), "the rule has to actually act most of the time"
+    # Three blocks acting, one withholding.
+    assert sum(offered) == block
+
+
+def test_a_review_without_a_comparison_group_postpones_rather_than_retires(policy):
+    """Absence of evidence is not evidence of absence. Retiring here would
+    withdraw a properly activated rule because nobody had measured it yet."""
+    rule = _activate(policy)
+    policy.shadow.forget(rule.id)          # no samples at all
+
+    outcomes = policy.review(rule.activated_tick + cfg.POLICY_REVIEW_TICKS)
+    assert outcomes["retired"] == 0
+    assert rule.status == ACTIVE
+
+
+def test_a_review_with_a_one_sided_record_also_postpones(policy):
+    rule = _activate(policy)
+    policy.shadow.forget(rule.id)
+    for offset in range(20):
+        policy.shadow.record(rule.id, True, 0.8, rule.activated_tick + offset)
+
+    outcomes = policy.review(rule.activated_tick + cfg.POLICY_REVIEW_TICKS)
+    assert outcomes["retired"] == 0
+    assert rule.status == ACTIVE
+
+
+def test_a_postponed_review_is_retried_later(policy):
+    rule = _activate(policy)
+    policy.shadow.forget(rule.id)
+    policy.review(rule.activated_tick + cfg.POLICY_REVIEW_TICKS)
+    assert rule.status == ACTIVE
+
+    # Evidence arrives, and the next review does judge it.
+    for offset in range(40):
+        policy.shadow.record(rule.id, offset % 2 == 0, 0.7,
+                             rule.activated_tick + offset)
+    outcomes = policy.review(rule.activated_tick + cfg.POLICY_REVIEW_TICKS + 1)
+    assert outcomes["retired"] >= 1
+    assert rule.status == "retired"

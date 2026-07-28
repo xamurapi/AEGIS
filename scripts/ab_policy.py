@@ -50,6 +50,27 @@ TRAP_ENERGY = "lo"
 TRAP_DRIVE = "knowledge"
 TRAP_PAYOFF = 0.05
 
+#: The world has regimes, and imposes them.
+#:
+#: Left to itself the substrate's energy never leaves "hi": nothing in an
+#: offline harness drains it, and REFLECT recharges it every twenty ticks. The
+#: trap above then never fires, the miner has one constant column to look at,
+#: and the run measures nothing — which is exactly what the first version of
+#: this harness did, honestly and uselessly.
+#:
+#: So the scenario drives energy through a cycle, the way an environment with
+#: day and night would. The period is deliberately far shorter than a trial
+#: block (75 ticks), so every block of the ABAB interleave contains both
+#: regimes and the comparison is between arms rather than between epochs.
+ENERGY_PERIOD = 5
+ENERGY_LOW = 0.25
+ENERGY_HIGH = 0.85
+
+
+def energy_at(tick: int) -> float:
+    """The regime this tick falls in. Deterministic, no RNG (§3.1)."""
+    return ENERGY_LOW if (int(tick) // ENERGY_PERIOD) % 2 == 0 else ENERGY_HIGH
+
 
 def _spread(*material: str) -> float:
     from aegis.util.quasirandom import hash_unit
@@ -175,6 +196,18 @@ def build(policy_enabled: bool, root: Path, noise: bool = False):
     substrate.weight_modifier.load_model = lambda: {
         "success": False, "error": "disabled in the A/B harness"}
 
+    # The held-out benchmark runs as a DETACHED task whose duration depends on
+    # real subprocess scheduling, so which tick its result lands on differs
+    # between processes. Two runs of the same experiment then diverge — measured
+    # here at tick 56 of 60 — and a comparison that is not reproducible is not a
+    # comparison (§3.1). Neither harness measures the skill library, so the
+    # benchmark is pinned rather than timed.
+    async def _no_benchmark(tick=None):
+        return None
+
+    substrate._run_benchmark = _no_benchmark
+    substrate._last_benchmark_score = 0.5
+
     if not policy_enabled:
         substrate.policy = _NullPolicy()
         substrate.planner.policy = substrate.policy
@@ -217,6 +250,9 @@ def build(policy_enabled: bool, root: Path, noise: bool = False):
 async def drive_arm(substrate, ticks: int, clock) -> list[float]:
     rewards = []
     for _ in range(ticks):
+        # The regime is imposed before the tick, so PERCEIVE encodes it and
+        # every arm is scored in the state it actually ran in.
+        substrate.emotions.energy = energy_at(substrate.tick_count + 1)
         await substrate.tick()
         clock.advance(cfg.TICK_INTERVAL)
         rewards.append(substrate._compute_reward())

@@ -37,6 +37,25 @@ MAX_SHADOW_ROWS = 20000
 #: from being read as the rule's effect.
 TRIAL_BLOCKS = 4
 
+#: An active rule is withheld on one block in this many, forever.
+#:
+#: §M3.5 requires an active rule to be re-judged and retired when it stops
+#: being significant — and that is impossible for a rule that always acts,
+#: because there is nothing left to compare it against. Every review would then
+#: find one empty arm and retire the rule for want of evidence, which turns the
+#: monitoring requirement into an expiry date.
+#:
+#: So a small, deterministic holdout continues for the life of the rule. It has
+#: a real cost — one block in four, the suppressed action is offered again and
+#: may cost what the rule exists to avoid — and that cost is what buys the
+#: ability to notice the world changing. A rule that is never tested is a rule
+#: nobody can withdraw.
+ACTIVE_HOLDOUT_BLOCKS = 4
+
+#: Below this many observations in either arm a review has nothing to judge on.
+#: Absence of evidence must not retire a rule that was properly activated.
+MIN_REVIEW_SAMPLES = 5
+
 #: Smoothing for the behaviour-change rate. Slow enough to be a trend rather
 #: than a reading of the last few ticks.
 DELTA_ALPHA = 0.02
@@ -59,6 +78,10 @@ class ShadowEvaluator:
         self.regret: float | None = None
         self._pending: list[dict] = []
         self._rows_written = 0
+        #: How often the log has actually been rewritten. Reported because the
+        #: alternative — inferring it from the file's length — cannot tell a
+        #: log that was trimmed from one that never grew.
+        self.truncations = 0
 
     # ── the interleave ───────────────────────────────────────────────
 
@@ -75,6 +98,24 @@ class ShadowEvaluator:
         started = rule.trial_started if rule.trial_started is not None else 0
         elapsed = max(0, int(tick) - int(started))
         return (elapsed // self.block_length()) % 2 == 0
+
+    def acts_while_active(self, rule, tick: int) -> bool:
+        """Whether an *active* rule acts on this tick.
+
+        Three blocks in four. The fourth is the monitoring holdout described
+        above: without it the rule has no comparison group, and §M3.5's promise
+        that an active rule can lose its significance could never be kept.
+        """
+        started = rule.activated_tick if rule.activated_tick is not None else 0
+        elapsed = max(0, int(tick) - int(started))
+        block = (elapsed // self.block_length()) % ACTIVE_HOLDOUT_BLOCKS
+        return block != ACTIVE_HOLDOUT_BLOCKS - 1
+
+    def enough_to_review(self, rule_id: str) -> bool:
+        """Whether both arms carry enough observations to judge a rule on."""
+        applied, withheld = self.arms(rule_id)
+        return (len(applied) >= MIN_REVIEW_SAMPLES
+                and len(withheld) >= MIN_REVIEW_SAMPLES)
 
     def trial_finished(self, rule, tick: int) -> bool:
         if rule.trial_started is None:
@@ -200,7 +241,10 @@ class ShadowEvaluator:
                 return
             with self._store_path.open("r", encoding="utf-8") as handle:
                 lines = handle.readlines()
-            if len(lines) <= MAX_SHADOW_ROWS * 2:
+            if len(lines) <= MAX_SHADOW_ROWS:
+                # The tracked count had drifted from the file — a restart, an
+                # external edit. Correct it and leave the log alone; there is
+                # nothing here to trim.
                 self._rows_written = len(lines)
                 return
             keep = lines[-MAX_SHADOW_ROWS:]
@@ -208,6 +252,7 @@ class ShadowEvaluator:
             tmp.write_text("".join(keep), encoding="utf-8")
             tmp.replace(self._store_path)
             self._rows_written = len(keep)
+            self.truncations += 1
         except Exception:
             logger.warning("Failed to truncate the shadow log", exc_info=True)
 
@@ -220,6 +265,7 @@ class ShadowEvaluator:
             "counterfactual_regret": (round(self.regret, 5)
                                       if self.regret is not None else None),
             "trials": len(self.samples),
+            "truncations": self.truncations,
             "trial_ticks": self.trial_ticks,
             "block_length": self.block_length(),
         }

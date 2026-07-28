@@ -153,10 +153,14 @@ class BehaviourPolicy:
         """Which rules may act this tick, and which are held back."""
         acting, inert = [], []
         for rule in self.lifecycle.ordered():
+            if not rule.matches_state(state):
+                continue
             if rule.status == ACTIVE:
-                if rule.matches_state(state):
-                    acting.append(rule)
-            elif rule.status == TRIAL and rule.matches_state(state):
+                # Active rules keep a monitoring holdout for life, or nothing
+                # could ever establish that they had stopped working.
+                (acting if self.shadow.acts_while_active(rule, tick)
+                 else inert).append(rule)
+            elif rule.status == TRIAL:
                 (acting if self.shadow.applies_this_tick(rule, tick)
                  else inert).append(rule)
         return acting, inert
@@ -220,6 +224,12 @@ class BehaviourPolicy:
 
         for rule in self.lifecycle.active():
             if tick - (rule.activated_tick or 0) < cfg.POLICY_REVIEW_TICKS:
+                continue
+            if not self.shadow.enough_to_review(rule.id):
+                # Nothing to judge on yet. Postponing keeps the rule; retiring
+                # it here would mean withdrawing a properly activated rule for
+                # want of evidence, which is the opposite of what the review is
+                # for. The window stays open, so the next call tries again.
                 continue
             applied, withheld = self.shadow.arms(rule.id)
             verdict = self.lifecycle.review(rule, applied, withheld, tick)
