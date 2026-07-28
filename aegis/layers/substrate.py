@@ -66,6 +66,7 @@ from aegis.layers.code_modifier import CodeModifier
 from aegis.layers.world_model import WorldModel, MAX_LINKS as WM_MAX_LINKS
 from aegis.layers.cognitive_graph import CognitiveGraph, MAX_NODES as CG_MAX_NODES
 from aegis.layers.evolution_engine import EvolutionEngine
+from aegis.layers.evolution.genome import GENES_BY_NAME, Genome
 from aegis.layers.goal_intelligence import GoalIntelligence
 from aegis.layers.feedback_loop import FeedbackLoop
 from aegis.eval.benchmark import DEFAULT_BENCHMARK, split_tasks
@@ -172,9 +173,6 @@ class Substrate:
         # parameters + the last known benchmark (fitness). Mutations are judged
         # against this baseline; a change survives only if the held-out
         # benchmark improves — "self-modification != self-improvement" (spec #2).
-        if self.evolution.champion is None:
-            base_fitness = self._last_benchmark_score if self._last_benchmark_score is not None else 0.0
-            self.evolution.register_champion(dict(self.self_mod.parameters), base_fitness)
 
         # Metric time-series (spec M9.2). Every contour publishes here; this is
         # the only history the system has of itself, and the discovery engine
@@ -205,6 +203,14 @@ class Substrate:
         #: lease id -> the rate-limit entry that reservation overwrote, so
         #: :meth:`release` can put it back (see the note there).
         self._rate_limit_undo: dict[str, int | None] = {}
+        #: What the contours were configured with before the pending evolution
+        #: candidate was applied — what a rejection reverts to.
+        self._genome_before_candidate = None
+        #: A generation running detached, so the tick that started it can go on.
+        self._evolution_task = None
+        #: The genome the system is running under. Set from the contours at
+        #: boot and thereafter only by `apply_genome`.
+        self._genome = Genome()
         # The planner (M2): decisions become a comparison of plans priced by
         # the world model, instead of a ranking of wishes. It proposes only —
         # every gate that can refuse runs after it (Appendix J).
@@ -216,6 +222,14 @@ class Substrate:
             world_model=self.world_model, actions=self.actions,
             goal_intelligence=self.goal_intelligence, policy=self.policy,
             telemetry=self.telemetry)
+
+        # The genome the contours booted with, recorded once so every later
+        # apply/revert has something exact to go back to.
+        self._genome = self._genome_from_contours()
+        self.evolution.evaluator.pool = self.eval_pool
+        if self.evolution.champion is None:
+            base_fitness = self._last_benchmark_score if self._last_benchmark_score is not None else 0.0
+            self.evolution.register_champion(self._genome.to_dict(), base_fitness)
         # From here on every cortex call needs a lease. This replaces hoping
         # that LLM_MAX_CALLS_PER_RUN was set generously enough.
         self.llm.cortex.resources = self.resources
@@ -322,21 +336,20 @@ class Substrate:
                                 self.self_mod.parameters[k] = float(v)
                             except (TypeError, ValueError):
                                 pass
-                    # Keep the Evolution champion genome in sync with the live
-                    # (restored) parameters — the parameters are the source of
-                    # truth for what is actually running.
-                    #
-                    # EXCEPT the parameter of a still-pending candidate: its live
-                    # value is the UNJUDGED mutation. Copying it into the champion
-                    # would silently accept a change no benchmark ever scored, and
-                    # a later rejection (which reverts only self_mod.parameters)
-                    # would leave champion and live values desynced (audit R3-4).
-                    champion = self.evolution.champion
-                    if champion:
-                        pending = (self.evolution.candidate or {}).get("mutated_param")
-                        for k in champion["genome"]:
-                            if k in self.self_mod.parameters and k != pending:
-                                champion["genome"][k] = self.self_mod.parameters[k]
+                # Restore the configuration the system was running under, so a
+                # benchmark-verified win survives a restart.
+                #
+                # NOT while a candidate is pending: the saved genome is then the
+                # UNJUDGED mutation, and adopting it on boot would silently
+                # accept a change no benchmark ever scored — the audit R3-4
+                # concern, in the terms v2 states it. A restart then falls back
+                # to the champion, because that one was measured.
+                saved_genome = data.get("genome")
+                if isinstance(saved_genome, dict):
+                    if self.evolution.candidate is None:
+                        self.apply_genome(saved_genome)
+                    elif self.evolution.champion:
+                        self.apply_genome(self.evolution.champion["genome"])
             except Exception:
                 logger.warning("Failed to restore checkpoint %s — starting fresh",
                                self._checkpoint_path, exc_info=True)
@@ -351,8 +364,11 @@ class Substrate:
             "consciousness_mode": self.consciousness.mode,
             "energy": self.emotions.energy,
             # Persist tunable parameters so accepted Evolution mutations survive
-            # restart (audit H1).
+            # restart (audit H1). These are the LoRA parameters, which
+            # parametric self-modification still tunes; the evolved genome is a
+            # separate set and is stored beside them.
             "parameters": dict(self.self_mod.parameters),
+            "genome": self.current_genome().to_dict(),
         }
         # Atomic, versioned write — a crash mid-write must not corrupt the
         # checkpoint and silently reset tick_count/version to defaults on next
@@ -449,6 +465,79 @@ class Substrate:
             self._rate_limit_undo[lease.id] = self.actions.last_run.get(action)
             self.actions.mark_run(spec, self.tick_count)
         return lease
+
+    # ── the genome: evolution's only way into the running system ─────
+
+    def current_genome(self) -> Genome:
+        """The configuration the contours are running under.
+
+        Read from what was last applied rather than by interrogating every
+        contour, because not every gene has a reader yet: a gene declared for a
+        later stage is applied to nothing, and a read-back would hand it its
+        default instead of the value it was actually set to. That made a revert
+        lossy — the rejected variant's value survived in the genes nobody could
+        read back — which is exactly the failure the whole-genome revert exists
+        to prevent.
+        """
+        return Genome(self._genome)
+
+    def _genome_from_contours(self) -> Genome:
+        """What the contours say they are configured with, at boot."""
+        genome = Genome()
+        genome.update_values({
+            "plan_beam": self.planner.beam,
+            "plan_depth": self.planner.depth,
+            "plan_discount": self.planner.discount,
+            "w_ev": self.planner.weights["ev"],
+            "w_val": self.planner.weights["val"],
+            "w_exp": self.planner.weights["exp"],
+            "w_cost": self.planner.weights["cost"],
+            "w_risk": self.planner.weights["risk"],
+            "policy_weight": self.policy.store.weight,
+            "policy_min_support": self.policy.miner.min_support,
+            "solver_timeout": self.solver.timeout,
+            "solver_order": self.solver.order,
+            "wm_smoothing": self.world_model.transitions.smoothing,
+            "wm_half_life": self.world_model.transitions.half_life,
+            "explore_bonus": self.world_model.simulator.explore_bonus,
+            **{f"priority_w_{name}": value
+               for name, value in self.priority.weights.items()},
+            **{f"res_share_{drive}": share
+               for drive, share in self.roi.shares.items()},
+        })
+        return genome
+
+    def apply_genome(self, genome) -> Genome:
+        """Configure every contour that reads a gene. Returns what was replaced.
+
+        This is the *only* path from evolution into the running system, and it
+        returns the previous genome rather than nothing, because a rejected
+        variant has to be revertible in full. A coordinate mutation moves every
+        gene at once (§M5.4), so reverting the single gene that moved furthest
+        would leave the rest of a rejected variant permanently in place.
+
+        Genes whose contour has not landed are applied to nothing and simply
+        wait — the same rule the action registry uses for pending stages.
+        """
+        previous = Genome(self._genome)
+        genome = Genome(genome)
+        for target, method in ((self.planner, "set_weights"),
+                               (self.priority, "set_weights"),
+                               (self.policy, "set_genome"),
+                               (self.solver, "set_genome"),
+                               (self.world_model, "apply_genome"),
+                               (self.roi, "set_genome")):
+            try:
+                getattr(target, method)(genome.to_dict())
+            except Exception:
+                logger.exception("Applying the genome to %s failed",
+                                 type(target).__name__)
+        try:
+            self.memory.retention_bias = float(genome["mem_retention_bias"])
+        except Exception:
+            logger.debug("Memory retention bias is not settable", exc_info=True)
+        self._genome = genome
+        return previous
 
     def release(self, lease, *, keep_rate_limit: bool = False) -> None:
         """Hand back a lease for an action that will not run under it.
@@ -622,10 +711,14 @@ class Substrate:
                     started_tick is None
                     or cand.get("proposed_at_tick", -1) < started_tick):
                 verdict = self.evolution.judge_candidate(report["score"])
-                if verdict.get("decision") == "rejected" and verdict.get("revert_to") is not None:
-                    param = verdict["param"]
-                    if param in self.self_mod.parameters:
-                        self.self_mod.parameters[param] = verdict["revert_to"]
+                if verdict.get("decision") == "rejected":
+                    # Put the whole genome back, not just the reported gene: a
+                    # coordinate mutation moves every gene, and reverting only
+                    # the largest move would leave the rest of the rejected
+                    # variant in place for good.
+                    param = verdict.get("param")
+                    if self._genome_before_candidate is not None:
+                        self.apply_genome(self._genome_before_candidate)
                     self.autobiography.log_event(
                         "evolution", f"Mutation of {param} rejected — reverted", 0.5)
                 elif verdict.get("decision") == "accepted":
@@ -658,7 +751,8 @@ class Substrate:
             if not mutation:
                 return
             param, new_val = mutation["param"], mutation["new_value"]
-            if param not in self.self_mod.parameters:
+            if param not in GENES_BY_NAME:
+                # A gene the schema does not know cannot be applied to anything.
                 self.evolution.abandon_candidate()
                 return
 
@@ -674,18 +768,19 @@ class Substrate:
                 self.autobiography.log_event("evolution", f"Mutation of {param} blocked by safety", 0.5)
                 return
 
-            # Clamp to the parameter's real bounds, then apply directly. The
-            # champion/candidate genome and old_value let us revert on rejection.
-            bounds = getattr(self.self_mod, "_param_bounds", {}).get(param)
-            if bounds:
-                lo, hi = bounds
-                new_val = max(lo, min(hi, new_val))
-                self.evolution.candidate["new_value"] = new_val
-                self.evolution.candidate["genome"][param] = new_val
-            self.self_mod.parameters[param] = new_val
+            # The gene's own range is the clamp — `GeneSpec.clamp` is the single
+            # place a legal value is defined, so a mutation, a crossover, a
+            # cortex proposal and a migrated file all end up bounded the same
+            # way. The candidate genome is then applied to the contours that
+            # read it, and the previous genome is what a rejection reverts to.
+            new_val = GENES_BY_NAME[param].clamp(new_val)
+            self.evolution.candidate["new_value"] = new_val
+            self.evolution.candidate["genome"][param] = new_val
+            self._genome_before_candidate = self.apply_genome(
+                self.evolution.candidate["genome"])
             self.autobiography.log_event(
                 "evolution",
-                f"Proposed mutation: {param} {mutation['old_value']:.5f} -> {new_val:.5f} "
+                f"Proposed mutation: {param} {mutation['old_value']} -> {new_val} "
                 f"(gen {self.evolution.generation}, awaiting benchmark)",
                 0.6)
         except Exception:
@@ -1282,7 +1377,8 @@ class Substrate:
         run keeps writing checkpoints during process teardown. The underlying
         executor thread of a training run cannot be force-killed, but cancelling
         the awaiting task stops the substrate from waiting on it."""
-        for attr in ("_eval_task", "_skill_synth_task", "_weight_training_task"):
+        for attr in ("_eval_task", "_skill_synth_task", "_weight_training_task",
+                     "_evolution_task"):
             task = getattr(self, attr, None)
             if task is not None and not task.done():
                 task.cancel()

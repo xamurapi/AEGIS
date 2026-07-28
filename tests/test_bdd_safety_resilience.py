@@ -173,11 +173,13 @@ def _api_answers(ctx, code):
 
 # ══ Evolution ═════════════════════════════════════════════════════════
 
-@given(parsers.parse('a champion parameter "{param}" of {value:f}'))
+@given(parsers.parse('a champion gene "{param}" of {value:f}'))
 def _champion(ctx, param, value):
+    from aegis.layers.evolution.genome import Genome
     from aegis.layers.evolution_engine import EvolutionEngine
+
     ev = EvolutionEngine(store_path=ctx["tmp"] / "lineage.json")
-    ev.register_champion({param: value}, fitness=0.5)
+    ev.register_champion(Genome({param: value}).to_dict(), fitness=0.5)
     ctx["evolution"] = ev
     ctx["param"] = param
 
@@ -185,17 +187,18 @@ def _champion(ctx, param, value):
 @given(parsers.parse('a pending mutation of "{param}" to {value:f} that no benchmark has scored'))
 def _pending_mutation(ctx, param, value, monkeypatch):
     import aegis.config as cfg
+    from aegis.layers.evolution.genome import Genome
     from aegis.layers.substrate import Substrate
 
     monkeypatch.setattr(cfg, "CHECKPOINTS_DIR", ctx["tmp"])
     sub = Substrate()
     monkeypatch.setattr(sub, "_checkpoint_path", ctx["tmp"] / "latest.json")
     sub.evolution = ctx["evolution"]
-    sub.self_mod.parameters[param] = ctx["evolution"].champion["genome"][param]
+    sub.apply_genome(ctx["evolution"].champion["genome"])
     sub.evolution.propose_mutation(tick=5)
-    sub.self_mod.parameters[param] = value
-    sub.evolution.candidate["new_value"] = value
-    sub.evolution.candidate["genome"][param] = value
+    unjudged = Genome({param: value})
+    sub.evolution.candidate["genome"] = unjudged.to_dict()
+    ctx["unjudged"] = unjudged
     (ctx["tmp"] / "latest.json").write_text(json.dumps({
         "tick_count": 5, "version": "1.0.0", "parameters": {param: value},
     }), encoding="utf-8")
@@ -212,21 +215,36 @@ def _propose(ctx):
     ctx["mutation"] = ctx["evolution"].propose_mutation(tick=1)
 
 
-@then(parsers.parse('the champion should still record {value:f} for "{param}"'))
-def _champion_unchanged(ctx, value, param):
-    assert ctx["substrate"].evolution.champion["genome"][param] == pytest.approx(value)
+@then(parsers.parse('the running configuration should still be {value:f} for "{param}"'))
+def _configuration_unchanged(ctx, value, param):
+    assert ctx["substrate"].current_genome()[param] == pytest.approx(value)
 
 
-@then(parsers.parse("the live parameter should still be {value:f} awaiting judgement"))
-def _live_param(ctx, value):
-    assert ctx["substrate"].self_mod.parameters[ctx["param"]] == pytest.approx(value)
+@then("the mutation should still be awaiting judgement")
+def _still_pending(ctx):
     assert ctx["substrate"].evolution.candidate is not None
 
 
-@then("the proposed value should differ from zero")
-def _differs_from_zero(ctx):
-    assert ctx["mutation"] is not None
-    assert ctx["mutation"]["new_value"] != 0.0
+@when("mutations are proposed over several generations")
+def _propose_several(ctx):
+    from aegis.layers.evolution.operators import coordinate_mutation
+
+    champion = ctx["evolution"].champion_genome()
+    ctx["proposals"] = [coordinate_mutation(champion, generation=g, index=g)
+                        for g in range(8)]
+
+
+@then("that gene should have moved off zero")
+def _moved_off_zero(ctx):
+    """A multiplicative step would have left it at zero forever (audit R3-3).
+
+    Over generations rather than in one step: a single Halton offset can
+    legitimately point below the floor and clamp back, and asserting that
+    *every* step moves *every* gene would be asserting something the operator
+    does not promise.
+    """
+    param = ctx["param"]
+    assert any(proposal[param] > 0 for proposal in ctx["proposals"])
 
 
 # ══ Experience log ════════════════════════════════════════════════════

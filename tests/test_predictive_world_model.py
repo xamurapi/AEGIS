@@ -40,6 +40,10 @@ def substrate(isolated_state):
     s.environment.step = lambda: {"reward": 0.0, "solved": False, "task": None}
     s.health.check = lambda: {"status": "healthy", "warnings": [],
                               "critical": [], "metrics": {}}
+    # A generation evaluates ten variants in other processes — minutes of work,
+    # and irrelevant to what the world model learns. Kept out of the way like
+    # the network and the model.
+    s.evolution.generation_running = True
     return s
 
 

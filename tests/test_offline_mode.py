@@ -33,6 +33,11 @@ def _offline_substrate() -> Substrate:
     substrate.agent_system.run_due_agents = _no_agents
     substrate.external_learning.learn_from_source = _no_learning
     substrate.sensors.read_all = lambda: {"pinned": True}
+    # A generation evaluates ten variants in subprocesses — minutes of work.
+    # These runs are about the tick surviving, not about evolution, so the
+    # action is kept out of the way the same way the network and the model
+    # already are.
+    substrate.evolution.generation_running = True
     substrate.health.check = lambda: {
         "status": "healthy", "warnings": [], "critical": [], "metrics": {},
     }

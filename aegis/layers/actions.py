@@ -191,7 +191,7 @@ ACTIONS_BY_NAME: dict[str, ActionSpec] = {spec.name: spec for spec in ACTIONS}
 #: later stage resolve to nothing and are simply unavailable — which is how a
 #: contour under construction is kept out of the schedule instead of crashing
 #: when it is selected. Bumped by the stage that delivers the executors.
-DELIVERED_STAGE = 5
+DELIVERED_STAGE = 7
 
 
 # ── preconditions ────────────────────────────────────────────────────
@@ -213,6 +213,11 @@ def _failing_kinds(substrate) -> list[str]:
     except Exception:
         logger.debug("failing_kinds probe failed", exc_info=True)
         return []
+
+
+def _task_finished(task) -> bool:
+    """Whether a detached task is absent or already over."""
+    return task is None or task.done()
 
 
 def _unsolved_coding(substrate) -> list:
@@ -244,9 +249,11 @@ PREDICATES: dict[str, Callable[[object, object], bool]] = {
         lambda s, ctx: bool(getattr(s, "reasoning", None)
                             and s.reasoning.has_queued_task()),
     "no_active_generation":
-        lambda s, ctx: not getattr(s.evolution, "generation_running", False),
+        lambda s, ctx: (not getattr(s.evolution, "generation_running", False)
+                        and _task_finished(getattr(s, "_evolution_task", None))),
     "evolution_allowed":
-        lambda s, ctx: not s._regulation_directives.get("skip_learning"),
+        lambda s, ctx: (cfg.EVO_ENABLED
+                        and not s._regulation_directives.get("skip_learning")),
     "enough_experiences":
         lambda s, ctx: s.feedback_loop.resolved >= cfg.POLICY_MIN_SUPPORT * 5,
     "has_active_rules":

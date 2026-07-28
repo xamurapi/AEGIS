@@ -397,6 +397,15 @@ PRIORITY_AGING = _env_float("PRIORITY_AGING", "0.01")
 PRIORITY_AGING_MAX_TICKS = _env_int("PRIORITY_AGING_MAX_TICKS", "2000")
 
 # --- M5: population evolution ---------------------------------------
+# Whether the tick may start evolution generations at all.
+#
+# A generation evaluates ten variants, each of which builds a fresh system in
+# another process and runs a benchmark and a rollout in it. That is the right
+# amount of work for a long-lived deployment and far too much to start by
+# accident: any long-running test that ticks past the interval would otherwise
+# spawn one, and a suite that runs real generations is measuring the machine
+# rather than the code.
+EVO_ENABLED = os.environ.get("AEGIS_EVO_ENABLED", "1") == "1"
 EVO_POP_SIZE = _env_int("EVO_POP_SIZE", "10")
 EVO_SIGMA = _env_float("EVO_SIGMA", "0.15")
 EVO_EPSILON = _env_float("EVO_EPSILON", "0.005")

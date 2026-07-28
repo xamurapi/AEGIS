@@ -125,3 +125,20 @@ def isolated_state(tmp_path, monkeypatch):
                         raising=False)
 
     yield root
+
+
+# ── evolution stays off unless a test asks for it ────────────────────
+# A generation evaluates ten variants, each building a fresh system in another
+# process to run a benchmark and a rollout in it. Any test that ticks past
+# `EVO_EVERY_N_TICKS` would otherwise start one — and a suite that runs real
+# generations measures the machine rather than the code. Measured: 137 python
+# processes and a suite that stopped finishing.
+#
+# The tests that are *about* evolution drive `run_generation` directly, so they
+# are unaffected; `test_evolution_is_off_in_the_suite` keeps this honest.
+
+@pytest.fixture(autouse=True)
+def _evolution_off(monkeypatch):
+    import aegis.config as cfg
+
+    monkeypatch.setattr(cfg, "EVO_ENABLED", False)

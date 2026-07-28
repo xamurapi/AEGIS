@@ -54,10 +54,17 @@ def test_full_status_exposes_five_systems():
 
 
 def test_evolution_champion_seeded_on_boot():
+    from aegis.layers.evolution.genome import GENE_NAMES, RETIRED_GENES
+
     s = _make_substrate()
     assert s.evolution.champion is not None
-    # Genome mirrors the tunable self-mod parameters.
-    assert set(s.evolution.champion["genome"]) == set(s.self_mod.parameters)
+    # The genome is the fixed schema of Appendix C, not a mirror of the LoRA
+    # parameters: those are still tunable through `parametric_self_mod`, but
+    # nothing the benchmark measures reads them, so evolution no longer selects
+    # on them (§M5.3).
+    assert set(s.evolution.champion["genome"]) == set(GENE_NAMES)
+    assert RETIRED_GENES & set(s.self_mod.parameters)
+    assert not (RETIRED_GENES & set(GENE_NAMES))
 
 
 def test_tick_drives_world_model_and_feedback():
@@ -90,10 +97,11 @@ def test_evolution_proposes_and_is_judged():
         # Force the evolution cadence on the next tick.
         from aegis.config import EVOLUTION_EVERY_N_TICKS
         s.tick_count = EVOLUTION_EVERY_N_TICKS - 1
+        before = s.current_genome()
         await s.tick()  # lands on cadence -> proposes a mutation
         assert s.evolution.candidate is not None
         param = s.evolution.candidate["mutated_param"]
-        old = s.evolution.candidate["old_value"]
+        assert s.current_genome() != before      # the variant is live
 
         # Simulate a benchmark that makes the mutation look worse -> rejected
         # and the parameter reverted to its old value. Stub the evaluator so
@@ -101,7 +109,11 @@ def test_evolution_proposes_and_is_judged():
         s.evaluator.run = lambda: {"score": 0.0, "passed": 0, "total": 1}
         await s._run_benchmark()
         assert s.evolution.candidate is None
-        assert s.self_mod.parameters[param] == old
+        # The WHOLE genome goes back, not just the gene that moved furthest: a
+        # coordinate mutation moves every gene at once (§M5.4), so reverting one
+        # would leave the rest of a rejected variant in place for good.
+        assert s.current_genome() == before, (
+            f"a rejected variant left {param!r} and possibly others behind")
     asyncio.run(run())
 
 

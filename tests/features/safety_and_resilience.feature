@@ -53,17 +53,17 @@ Feature: Safety and resilience of the cognitive core
   # ── Evolution: only measured improvements survive ────────────────────
   Rule: A parameter change is kept only when a benchmark scored it
 
-    Scenario: A restart does not promote a mutation that was never judged
-      Given a champion parameter "temperature" of 0.70
-      And a pending mutation of "temperature" to 0.77 that no benchmark has scored
+    Scenario: A restart does not adopt a mutation that was never judged
+      Given a champion gene "w_ev" of 1.00
+      And a pending mutation of "w_ev" to 1.90 that no benchmark has scored
       When the system restarts and restores its checkpoint
-      Then the champion should still record 0.70 for "temperature"
-      And the live parameter should still be 0.77 awaiting judgement
+      Then the running configuration should still be 1.00 for "w_ev"
+      And the mutation should still be awaiting judgement
 
-    Scenario: A parameter sitting at zero is still explored
-      Given a champion parameter "dropout" of 0.00
-      When a mutation is proposed
-      Then the proposed value should differ from zero
+    Scenario: A gene sitting at the bottom of its range is still explored
+      Given a champion gene "w_ev" of 0.00
+      When mutations are proposed over several generations
+      Then that gene should have moved off zero
 
   # ── Experience log: learning data survives partial writes ────────────
   Rule: A damaged experience log degrades, it does not vanish

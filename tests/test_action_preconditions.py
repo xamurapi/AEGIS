@@ -297,7 +297,14 @@ def test_self_modification_only_stops_at_critical(s):
     assert check("health_not_critical", s) is False
 
 
-def test_learning_respects_the_regulator(s):
+def test_learning_respects_the_regulator(s, monkeypatch):
+    import aegis.config as cfg
+
+    # Evolution is off across the suite (see conftest): a generation evaluates
+    # ten variants in other processes, so starting one by accident costs
+    # minutes. This test is about the *regulator*, so the switch is turned back
+    # on for it and the regulator is what is varied.
+    monkeypatch.setattr(cfg, "EVO_ENABLED", True)
     s._regulation_directives = {}
     assert check("not_skip_learning", s) is True
     assert check("evolution_allowed", s) is True

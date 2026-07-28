@@ -118,6 +118,11 @@ def _quiet(substrate: Substrate) -> Substrate:
     substrate.llm.enabled = False
     substrate.sensors.read_all = lambda: {"pinned": True}
     substrate.environment.step = lambda: {"reward": 0.0, "solved": False, "task": None}
+    # "No subprocess work" includes evolution: a generation evaluates ten
+    # variants in other processes, which is minutes against a 20 ms ACT budget.
+    # It is detached in production for exactly that reason; here it is kept out
+    # of the way entirely, like the network and the model.
+    substrate.evolution.generation_running = True
     return substrate
 
 

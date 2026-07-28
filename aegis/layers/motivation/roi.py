@@ -125,6 +125,30 @@ class ROITracker:
         return {"competence": 0.35, "knowledge": 0.30,
                 "coherence": 0.20, "stability": 0.15}
 
+    def set_genome(self, genome: dict) -> None:
+        """Adopt the evolved starting split (Appendix C, ``res_share_*``).
+
+        Only the *starting* split: the tracker still reallocates by measured
+        ROI, so what a genome sets is where the search begins, not where it
+        stays. The values are renormalised, because four independently mutated
+        shares do not sum to one and a split that summed to 1.4 would hand out
+        budget that does not exist.
+        """
+        proposed = {}
+        for drive in DRIVES:
+            key = f"res_share_{drive}"
+            if key not in (genome or {}):
+                continue
+            try:
+                proposed[drive] = max(0.0, float(genome[key]))
+            except (TypeError, ValueError):
+                logger.debug("Ignoring unusable share for %s", drive)
+        if not proposed:
+            return
+        merged = {drive: proposed.get(drive, self.shares[drive]) for drive in DRIVES}
+        self.shares = (merged if self._is_valid_allocation(merged)
+                       else self._normalized(merged))
+
     # ── persistence ──────────────────────────────────────────────────
 
     def _load(self) -> None:

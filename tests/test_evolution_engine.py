@@ -14,10 +14,22 @@ def test_register_champion(tmp_path):
 
 
 def test_propose_mutation_changes_one_param(tmp_path):
+    """The single-variant contract, on the v2 genome.
+
+    `register_champion` no longer takes arbitrary keys: the genome is the fixed
+    schema of Appendix C, and the LoRA parameters that used to be genes were
+    removed because nothing the benchmark measures reads them (§M5.3). Unknown
+    keys are dropped rather than refused, so a caller handing over the live
+    `self_mod.parameters` still gets a legal genome.
+    """
+    from aegis.layers.evolution.genome import GENE_NAMES
+
     ev = _ev(tmp_path)
     ev.register_champion({"lr": 0.01, "temp": 0.7}, fitness=0.5)
+    assert "lr" not in ev.champion["genome"]
+
     m = ev.propose_mutation(tick=100)
-    assert m["param"] in ("lr", "temp")
+    assert m["param"] in GENE_NAMES
     assert m["new_value"] != m["old_value"]
     assert ev.candidate is not None
 
@@ -80,26 +92,57 @@ def test_abandon_candidate(tmp_path):
     assert ev.propose_mutation(tick=2) is not None
 
 
-def test_first_mutation_goes_up_by_ten_percent(tmp_path):
-    # Kills the Mult->Div and initial-direction mutants: the exact magnitude
-    # and direction of the first mutation are pinned down.
+def test_a_mutation_moves_the_genome_and_stays_in_range(tmp_path):
+    """v2 replaces the round-robin ±10% step with a Halton coordinate move
+    (§M5.4): every gene shifts by a fraction of *its own* range, so a gene
+    spanning 100..5000 and one spanning 0..1 are perturbed comparably. The
+    exact ±10% of v1 is therefore no longer the contract; staying in range and
+    actually moving are.
+    """
+    from aegis.layers.evolution.genome import GENES_BY_NAME, Genome
+
     ev = _ev(tmp_path)
-    ev.register_champion({"a": 1.0}, fitness=0.5)
+    ev.register_champion(Genome().to_dict(), fitness=0.5)
+    parent = ev.champion_genome()
+
     m = ev.propose_mutation(tick=1)
-    assert m["new_value"] == 1.0 * 1.1  # up 10%, not down, not divided
-    assert m["new_value"] > m["old_value"]
+    child = Genome(ev.candidate["genome"])
+    assert child != parent
+    for name, value in child.items():
+        gene = GENES_BY_NAME[name]
+        if gene.kind == "enum":
+            assert value in gene.choices
+        else:
+            assert gene.low <= float(value) <= gene.high
+
+    # The reported change is the gene that moved furthest in normalised terms —
+    # what the caller's safety pipeline has to clamp and, if refused, revert.
+    gene = GENES_BY_NAME[m["param"]]
+    moved = abs(gene.position(m["new_value"]) - gene.position(m["old_value"]))
+    assert moved == max(
+        abs(GENES_BY_NAME[name].position(child[name])
+            - GENES_BY_NAME[name].position(parent[name]))
+        for name in child)
 
 
-def test_mutation_direction_alternates(tmp_path):
+def test_successive_mutations_explore_different_points(tmp_path):
+    """Two proposals in a row must not be the same proposal.
+
+    v1 alternated direction to guarantee this; v2 walks the Halton sequence,
+    which spreads more evenly than alternating ever did. What has to hold
+    either way is that the search moves.
+    """
+    from aegis.layers.evolution.genome import Genome
+
     ev = _ev(tmp_path)
-    ev.register_champion({"a": 1.0, "b": 1.0}, fitness=0.5)
-    m1 = ev.propose_mutation(tick=1)
+    ev.register_champion(Genome().to_dict(), fitness=0.5)
+    ev.propose_mutation(tick=1)
+    first = Genome(ev.candidate["genome"])
     ev.abandon_candidate()
-    m2 = ev.propose_mutation(tick=2)
-    # First is UP (+10%), second is DOWN (-10%) — exact, not merely different.
-    assert m1["new_value"] == 1.0 * 1.1
-    assert m2["new_value"] == 1.0 * 0.9
-    assert (m1["new_value"] > m1["old_value"]) and (m2["new_value"] < m2["old_value"])
+    ev.propose_mutation(tick=2)
+    second = Genome(ev.candidate["genome"])
+    assert first != second
+    assert first.distance(second) > 0
 
 
 def test_lineage_is_bounded(tmp_path, monkeypatch):

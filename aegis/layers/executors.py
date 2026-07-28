@@ -17,6 +17,7 @@ table of data and the substrate does not grow a method per action.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 logger = logging.getLogger("aegis.executors")
@@ -71,6 +72,35 @@ def review_rules(substrate, ctx):
     return substrate.policy.review(substrate.tick_count)
 
 
+def evolve_generation(substrate, ctx):
+    """Start a generation, detached. Never run one inside a tick.
+
+    A generation evaluates ten variants, each of which runs a benchmark and a
+    short rollout in another process — minutes of work against a 20 ms ACT
+    budget (§3.4). Called inline it does not merely overrun the budget, it
+    stops the cognitive cycle for the duration: no ticks, no dashboard, no
+    health checks. So the action's job is to *schedule* it, exactly as the
+    benchmark and the training cycle are scheduled.
+    """
+    if substrate.evolution.generation_running:
+        return None
+    task = getattr(substrate, "_evolution_task", None)
+    if task is not None and not task.done():
+        return None
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                None, substrate.evolution.run_generation, substrate.tick_count)
+        except Exception:
+            logger.exception("A detached evolution generation failed")
+            return None
+
+    substrate._evolution_task = asyncio.create_task(_run())
+    return substrate._evolution_task
+
+
 #: action name -> adapter. Only actions whose declared executor needs arguments
 #: appear here; everything else is called through its declared path.
 ADAPTERS = {
@@ -81,6 +111,7 @@ ADAPTERS = {
     "rest": rest,
     "mine_rules": mine_rules,
     "review_rules": review_rules,
+    "evolve_generation": evolve_generation,
 }
 
 

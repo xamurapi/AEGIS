@@ -139,22 +139,40 @@ def test_zero_parameter_mutation_is_not_a_noop(tmp_path):
         "that genome slot could never be explored")
 
 
-def test_zero_parameter_explores_both_directions(tmp_path):
-    from aegis.layers.evolution_engine import EvolutionEngine
-    ev = EvolutionEngine(store_path=tmp_path / "lineage.json")
-    ev.register_champion({"dropout": 0.0}, fitness=0.5)
-    first = ev.propose_mutation(tick=1)["new_value"]
-    ev.judge_candidate(0.1)          # reject, clears the candidate
-    second = ev.propose_mutation(tick=2)["new_value"]
-    assert first > 0 > second, "direction must still alternate for zero params"
+def test_a_gene_sitting_at_zero_is_still_explorable(tmp_path):
+    """The R3-3 concern, in the terms v2 states it.
+
+    v1 stepped multiplicatively, so a parameter at zero was a fixed point and
+    that genome slot could never be explored. v2 steps in *position* space — a
+    fraction of the gene's own range — so a gene at the bottom of its range
+    moves like any other. The concern is answered by construction rather than
+    by a special case for zero.
+    """
+    from aegis.layers.evolution.genome import GENES_BY_NAME, Genome
+    from aegis.layers.evolution.operators import coordinate_mutation
+
+    at_zero = Genome({"w_ev": 0.0})
+    assert at_zero["w_ev"] == 0.0
+
+    moved = {coordinate_mutation(at_zero, generation=g, index=g)["w_ev"]
+             for g in range(8)}
+    assert any(value > 0 for value in moved), "a gene at zero never moved"
+    assert all(0.0 <= value <= GENES_BY_NAME["w_ev"].high for value in moved)
 
 
-def test_nonzero_parameter_keeps_multiplicative_step(tmp_path):
-    from aegis.layers.evolution_engine import EvolutionEngine, MUTATION_MAGNITUDE
-    ev = EvolutionEngine(store_path=tmp_path / "lineage.json")
-    ev.register_champion({"temperature": 0.7}, fitness=0.5)
-    m = ev.propose_mutation(tick=1)
-    assert m["new_value"] == pytest.approx(0.7 * (1 + MUTATION_MAGNITUDE))
+def test_a_step_is_a_fraction_of_the_genes_own_range(tmp_path):
+    """v1 stepped by 10% of the *value*, which left wide genes barely touched
+    and threw narrow ones across their range. v2 steps by sigma of the range,
+    so one sigma means the same thing for every gene."""
+    from aegis.layers.evolution.genome import GENES_BY_NAME, Genome
+    from aegis.layers.evolution.operators import coordinate_mutation
+
+    parent = Genome()
+    child = coordinate_mutation(parent, generation=1, index=0, sigma=0.1)
+    for name in ("w_ev", "wm_half_life", "plan_discount"):
+        gene = GENES_BY_NAME[name]
+        moved = abs(gene.position(child[name]) - gene.position(parent[name]))
+        assert moved <= 0.1 + 1e-9, f"{name} moved {moved} of its range"
 
 
 # ══ R3-4 (MED): restart absorbed an unjudged mutation into the champion ═
@@ -172,25 +190,26 @@ def test_pending_candidate_param_not_synced_into_champion(tmp_path, monkeypatch)
     # Isolate from any evolution state persisted by a real run.
     sub.evolution = EvolutionEngine(store_path=tmp_path / "lineage.json")
 
-    # Champion knows temperature=0.7; a mutation to 0.77 is applied and pending.
-    param = "temperature"
-    sub.self_mod.parameters[param] = 0.7
-    sub.evolution.register_champion({param: 0.7}, fitness=0.5)
+    # The champion was measured with w_ev = 1.0; a variant raising it to 1.9 is
+    # applied and still awaiting its benchmark.
+    from aegis.layers.evolution.genome import Genome
+
+    measured = Genome({"w_ev": 1.0})
+    sub.evolution.register_champion(measured.to_dict(), fitness=0.5)
+    sub.apply_genome(measured)
+    unjudged = Genome({"w_ev": 1.9})
     sub.evolution.propose_mutation(tick=5)
-    assert sub.evolution.candidate["mutated_param"] == param
-    sub.self_mod.parameters[param] = 0.77
-    sub.evolution.candidate["new_value"] = 0.77
-    sub.evolution.candidate["genome"][param] = 0.77
+    sub.evolution.candidate["genome"] = unjudged.to_dict()
 
     (tmp_path / "latest.json").write_text(json.dumps({
-        "tick_count": 5, "version": "1.0.0", "parameters": {param: 0.77},
+        "tick_count": 5, "version": "1.0.0", "parameters": {},
+        "genome": unjudged.to_dict(),
     }), encoding="utf-8")
 
     sub._restore_checkpoint()
 
-    assert sub.evolution.champion["genome"][param] == 0.7, (
-        "restart silently promoted an unjudged mutation to champion")
-    assert sub.self_mod.parameters[param] == 0.77  # live value still under test
+    assert sub.current_genome()["w_ev"] == pytest.approx(1.0), (
+        "restart silently adopted a mutation no benchmark ever scored")
 
 
 def test_non_pending_params_still_synced_on_restore(tmp_path, monkeypatch):
@@ -202,16 +221,21 @@ def test_non_pending_params_still_synced_on_restore(tmp_path, monkeypatch):
     sub = Substrate()
     monkeypatch.setattr(sub, "_checkpoint_path", tmp_path / "latest.json")
     sub.evolution = EvolutionEngine(store_path=tmp_path / "lineage.json")
-    sub.self_mod.parameters["temperature"] = 0.7
-    sub.evolution.register_champion({"temperature": 0.7}, fitness=0.5)
+    from aegis.layers.evolution.genome import Genome
+
+    sub.evolution.register_champion(Genome().to_dict(), fitness=0.5)
     sub.evolution.candidate = None
+    judged = Genome({"w_ev": 1.6})
 
     (tmp_path / "latest.json").write_text(json.dumps({
-        "tick_count": 9, "version": "1.0.0", "parameters": {"temperature": 0.9},
+        "tick_count": 9, "version": "1.0.0", "parameters": {},
+        "genome": judged.to_dict(),
     }), encoding="utf-8")
     sub._restore_checkpoint()
 
-    assert sub.evolution.champion["genome"]["temperature"] == 0.9
+    # Nothing pending, so the saved configuration is one that was measured and
+    # it comes back — otherwise every benchmark-verified win dies on restart.
+    assert sub.current_genome()["w_ev"] == pytest.approx(1.6)
 
 
 # ══ R3-5 (MED): one torn JSONL line discarded the whole history ═══════

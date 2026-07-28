@@ -43,8 +43,6 @@ TARGETS = [
      "tests/test_capacity_and_retention.py"),
     ("aegis/layers/cognitive_graph.py",
      "tests/test_cognitive_graph.py tests/test_audit_round3.py tests/test_mutation_gaps.py"),
-    ("aegis/layers/evolution_engine.py",
-     "tests/test_evolution_engine.py tests/test_audit_round3.py"),
     ("aegis/layers/goal_intelligence.py", "tests/test_goal_intelligence.py"),
     ("aegis/layers/feedback_loop.py",
      "tests/test_feedback_loop.py tests/test_audit_round3.py tests/test_mutation_gaps.py"),
@@ -157,6 +155,16 @@ TARGETS = [
     ("aegis/eval/solver.py",
      "tests/test_isolated_eval.py tests/test_eval_layer.py "
      "tests/test_generators_and_splits.py"),
+    # Stage 7 — population evolution. The genome decides what evolution can
+    # even search over, the operators decide whether two runs agree, and the
+    # rollback is the only thing standing between a benchmark-friendly genome
+    # and a permanently worse system.
+    ("aegis/layers/evolution/genome.py", "tests/test_evolution_population.py"),
+    ("aegis/layers/evolution/operators.py", "tests/test_evolution_population.py"),
+    ("aegis/layers/evolution/population.py", "tests/test_evolution_population.py"),
+    ("aegis/layers/evolution_engine.py",
+     "tests/test_evolution_engine.py tests/test_evolution_population.py "
+     "tests/test_audit_round3.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",
