@@ -31,14 +31,58 @@ class SolveResult:
     last_skill: str | None = None
 
 
+#: How the skills claiming a kind are tried (Appendix C, gene ``solver_order``).
+#:
+#: The order decides which skill gets the first attempt, and therefore which one
+#: accumulates the successes that everything downstream ranks by — so it is a
+#: real parameter with a real effect, not a presentation choice.
+#:
+#: * ``by_success`` — the best-performing first. Exploitative; converges fast
+#:   and can entrench an early winner.
+#: * ``by_length`` — the shortest code first. A crude simplicity prior; useful
+#:   when several skills work and one of them is a memorised table.
+#: * ``by_recency`` — the newest first. Gives a freshly synthesised skill the
+#:   chance to prove itself before an incumbent answers.
+SOLVER_ORDERS = ("by_success", "by_length", "by_recency")
+
+
+def order_skills(skills, order: str = "by_success"):
+    """Sort candidate skills. Ties break on the name, so the order is total.
+
+    A partial order would leave the choice to whatever `for_kind` happened to
+    return, and two identical runs could try skills in different sequences.
+    """
+    if order == "by_length":
+        key = lambda skill: (len(skill.code), skill.name)          # noqa: E731
+    elif order == "by_recency":
+        key = lambda skill: (-skill.created, skill.name)           # noqa: E731
+    else:
+        key = lambda skill: (-skill.success_rate(), -skill.attempts,  # noqa: E731
+                             skill.name)
+    return sorted(skills, key=key)
+
+
 class MultiAgentSolver:
-    def __init__(self, library: SkillLibrary, timeout: float = 3.0):
+    def __init__(self, library: SkillLibrary, timeout: float = 3.0,
+                 order: str = "by_success"):
         self.library = library
         self.timeout = timeout
+        self.order = order if order in SOLVER_ORDERS else "by_success"
+
+    def set_genome(self, genome: dict) -> None:
+        """Adopt the evolved solver settings (Appendix C)."""
+        genome = genome or {}
+        if genome.get("solver_order") in SOLVER_ORDERS:
+            self.order = str(genome["solver_order"])
+        if "solver_timeout" in genome:
+            try:
+                self.timeout = max(0.5, min(10.0, float(genome["solver_timeout"])))
+            except (TypeError, ValueError):
+                pass
 
     def solve(self, task: Task) -> SolveResult:
         t0 = CLOCK.now()
-        skills = self.library.for_kind(task.kind)
+        skills = order_skills(self.library.for_kind(task.kind), self.order)
         candidates = 0
         last_answer = None
         last_skill = None

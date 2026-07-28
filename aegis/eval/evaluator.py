@@ -163,6 +163,41 @@ class Evaluator:
         report = self.run(only_kinds=[kind], record=False)
         return report["score"]
 
+    # ── the three-way split (spec M9.3) ──────────────────────────────
+
+    def splits(self) -> dict[str, list[Task]]:
+        """``train`` / ``valid`` / ``test`` over this evaluator's task set.
+
+        Recomputed rather than cached: the task set grows when generators are
+        added, and a cached split would keep describing the set it was built
+        from. The assignment is a pure function of the task ids, so recomputing
+        is cheap and always agrees with itself.
+        """
+        from aegis.eval.benchmark import three_way_split
+
+        return three_way_split(self.tasks)
+
+    def split_sizes(self) -> dict[str, int]:
+        return {name: len(tasks) for name, tasks in self.splits().items()}
+
+    def score_on_split(self, split: str) -> float:
+        """Pass-rate on one split.
+
+        Selection reads ``valid``; ``test`` confirms a champion once and is
+        never selected on (§M5.5). Keeping them separate methods rather than one
+        flag is deliberate — the distinction is the whole protection against
+        overfitting, and it should be visible at the call site.
+        """
+        return self.pass_rate_on(self.splits().get(str(split), []))
+
+    def valid_test_gap(self) -> float:
+        """How much better the selected-on split looks than the untouched one.
+
+        The overfitting indicator of §M5.8. A gap that grows while `valid`
+        improves is evolution learning the validation set rather than the task.
+        """
+        return round(self.score_on_split("valid") - self.score_on_split("test"), 6)
+
     def pass_rate_on(self, tasks: list[Task]) -> float:
         """Pass-rate over an explicit task list (e.g. a held-out split).
 
@@ -195,4 +230,5 @@ class Evaluator:
             "last_report": self.last_report,
             "history_tail": list(self.history)[-20:],
             "benchmark_size": len(self.tasks),
+            "splits": self.split_sizes(),
         }

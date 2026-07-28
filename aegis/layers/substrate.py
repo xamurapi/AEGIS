@@ -73,6 +73,7 @@ from aegis.eval.skill_library import SkillLibrary, Skill
 from aegis.eval.solver import MultiAgentSolver
 from aegis.eval.sandbox import run_skill
 from aegis.eval.evaluator import Evaluator
+from aegis.eval.pool import EvaluationPool
 from aegis.eval.environment import TaskEnvironment
 from aegis.llm import LLMEngine
 
@@ -195,6 +196,11 @@ class Substrate:
         self.priority = PriorityScheduler(
             resources=self.resources, goal_intelligence=self.goal_intelligence,
             roi=self.roi)
+        # The evaluation pool (M9.1). Heavy work — variant scoring, arenas,
+        # experiments — runs here rather than in a tick, under a subprocess
+        # lease and with a hard timeout.
+        self.eval_pool = EvaluationPool(resources=self.resources,
+                                        telemetry=self.telemetry)
         self.actions = ActionSpace()
         #: lease id -> the rate-limit entry that reservation overwrote, so
         #: :meth:`release` can put it back (see the note there).
@@ -1284,6 +1290,12 @@ class Substrate:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+        # The pool holds real OS processes, which outlive the event loop unless
+        # they are told otherwise (§M9.1: "корректная отмена при остановке").
+        try:
+            self.eval_pool.shutdown()
+        except Exception:
+            logger.exception("Shutting down the evaluation pool failed")
 
     def full_status(self) -> dict:
         uptime = CLOCK.now() - self.start_time
@@ -1329,6 +1341,7 @@ class Substrate:
             "dataset_builder": self.dataset_builder.status(),
             "code_modifier": self.code_modifier.status(),
             "evaluator": self.evaluator.status(),
+            "eval_pool": self.eval_pool.status(),
             "skills": self.skill_library.status(),
             "environment": self.environment.status(),
             # Five higher-order cognitive systems.

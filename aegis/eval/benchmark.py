@@ -159,8 +159,72 @@ def split_tasks(kind: str, tasks: list[Task] | None = None) -> tuple[list[Task],
     *holdout* tasks the proposed skill never saw — so a skill that merely
     memorizes the shown cases will not pass the gate. The last task of each kind
     is held out (with a single task, train == holdout as a degenerate fallback).
+
+    Kept as it was. The three-way split below is what evolution and the arena
+    select on; this two-way one is what skill synthesis has always used, and
+    changing it would change the meaning of every stored acceptance decision.
     """
     ts = tasks_for_kind(kind, tasks)
     if len(ts) <= 1:
         return ts, ts
     return ts[:-1], ts[-1:]
+
+
+# ── the three-way split (spec M9.3) ──────────────────────────────────
+
+#: Which split each position in a kind's hash-ordering falls into.
+#:
+#: Dealing round-robin over a *hash ordering of the task ids* rather than over
+#: list positions is what makes the split stable: adding a task changes where
+#: that task lands and nothing else. Assigning by "position in the list" would
+#: re-deal every existing task the moment one was inserted, and every recorded
+#: valid/test score before that point would silently start describing a
+#: different set.
+#:
+#: The cycle gives 50/25/25 over four tasks, and degrades sensibly below that:
+#: two tasks give train+valid, three give train+valid+train. A kind cannot have
+#: three splits out of two items, and pretending otherwise would produce an
+#: empty split that silently scores 0.
+SPLIT_CYCLE: tuple[str, ...] = ("train", "valid", "train", "test")
+SPLITS: tuple[str, ...] = ("train", "valid", "test")
+
+
+def _split_rank(task: Task) -> tuple[float, str]:
+    from aegis.util.quasirandom import hash_unit
+
+    return (hash_unit("eval_split", task.id), task.id)
+
+
+def assign_splits(tasks: list[Task] | None = None) -> dict[str, str]:
+    """``task id -> split``, computed from the ids alone.
+
+    Per kind, so every kind is represented in every split it can support. A
+    global deal would leave whole kinds out of `valid`, and a score on a valid
+    set missing half the kinds is not a measurement of the same thing.
+    """
+    tasks = list(tasks if tasks is not None else DEFAULT_BENCHMARK)
+    assignment: dict[str, str] = {}
+    for kind in all_kinds(tasks):
+        ordered = sorted(tasks_for_kind(kind, tasks), key=_split_rank)
+        for position, task in enumerate(ordered):
+            assignment[task.id] = SPLIT_CYCLE[position % len(SPLIT_CYCLE)]
+    return assignment
+
+
+def split_of(task: Task, tasks: list[Task] | None = None) -> str:
+    """Which split one task belongs to."""
+    return assign_splits(tasks).get(task.id, "train")
+
+
+def three_way_split(tasks: list[Task] | None = None) -> dict[str, list[Task]]:
+    """``{"train": [...], "valid": [...], "test": [...]}``, in a fixed order."""
+    tasks = list(tasks if tasks is not None else DEFAULT_BENCHMARK)
+    assignment = assign_splits(tasks)
+    out: dict[str, list[Task]] = {name: [] for name in SPLITS}
+    for task in tasks:
+        out[assignment.get(task.id, "train")].append(task)
+    return out
+
+
+def tasks_in_split(split: str, tasks: list[Task] | None = None) -> list[Task]:
+    return three_way_split(tasks).get(str(split), [])

@@ -143,6 +143,20 @@ TARGETS = [
     ("aegis/layers/policy/__init__.py",
      "tests/test_policy_integration.py tests/test_bdd_behaviour_change.py "
      "tests/test_policy_mutation.py"),
+    # Stage 6 — evaluation infrastructure. The split decides what "held out"
+    # means, the generators decide whether the benchmark can be memorised, and
+    # the pool decides whether a generation's result depends on machine load.
+    # A silent mutant in any of the three corrupts every measurement built on
+    # top without failing anything locally.
+    ("aegis/eval/generators.py", "tests/test_generators_and_splits.py"),
+    ("aegis/eval/pool.py", "tests/test_eval_pool.py"),
+    ("aegis/eval/isolated.py", "tests/test_isolated_eval.py"),
+    ("aegis/eval/benchmark.py",
+     "tests/test_generators_and_splits.py tests/test_no_leakage.py "
+     "tests/test_eval_layer.py"),
+    ("aegis/eval/solver.py",
+     "tests/test_isolated_eval.py tests/test_eval_layer.py "
+     "tests/test_generators_and_splits.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",
