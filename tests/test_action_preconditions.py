@@ -115,9 +115,23 @@ def test_coding_synthesis_waits_for_an_unsolved_task(s):
 
 # ── contours delivered by later stages ───────────────────────────────
 
-def test_reasoning_preconditions_are_unmet_before_the_contour_exists(s):
-    for name in ("has_queued_task", "enough_results", "has_weakness",
-                 "has_candidate_strategy"):
+def test_the_reasoning_contour_always_has_work_queued(s):
+    """Stage 8 landed the contour, and its queue refills from a generator.
+
+    "Nothing queued" would be a fact about the queue rather than about whether
+    the system has anything to think about, so the precondition is true from
+    boot and the action's own interval is what paces it.
+    """
+    assert check("has_queued_task", s) is True
+
+
+def test_the_synthesis_preconditions_are_unmet_until_stage_nine(s):
+    """The engine exists; the weakness detector, synthesiser and arena do not.
+
+    A fresh engine has no results, therefore no weakness and no candidate —
+    which is the honest answer rather than a missing attribute.
+    """
+    for name in ("enough_results", "has_weakness", "has_candidate_strategy"):
         assert check(name, s) is False, name
 
 

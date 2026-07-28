@@ -124,7 +124,7 @@ ACTIONS: tuple[ActionSpec, ...] = (
                min_interval=200, external=True, stage=2),
     ActionSpec("reason_task", "competence", _cost(tok=4000, ms=8000, proc=1),
                "reasoning.solve", preconditions=("has_queued_task",),
-               min_interval=1, external=True, stage=9),
+               min_interval=1, external=True, stage=8),
     ActionSpec("evolve_generation", "competence", _cost(tok=800, ms=20000, proc=4),
                "evolution.run_generation",
                preconditions=("no_active_generation", "evolution_allowed"),
@@ -191,7 +191,7 @@ ACTIONS_BY_NAME: dict[str, ActionSpec] = {spec.name: spec for spec in ACTIONS}
 #: later stage resolve to nothing and are simply unavailable — which is how a
 #: contour under construction is kept out of the schedule instead of crashing
 #: when it is selected. Bumped by the stage that delivers the executors.
-DELIVERED_STAGE = 7
+DELIVERED_STAGE = 8
 
 
 # ── preconditions ────────────────────────────────────────────────────

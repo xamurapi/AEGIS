@@ -33,12 +33,12 @@ logger = logging.getLogger("aegis.evolution")
 
 #: Bumped when the set of genes changes. A stored genome from an older schema is
 #: migrated by taking what still exists and defaulting the rest (M5.3).
-GENOME_SCHEMA_VERSION = 2
+GENOME_SCHEMA_VERSION = 3
 
 #: The last development stage whose contour reads its genes. Genes above it are
 #: declared, defaulted, persisted — and left out of the sensitivity gate, which
 #: would otherwise fail for a contour that does not exist yet.
-DELIVERED_STAGE = 6
+DELIVERED_STAGE = 8
 
 
 @dataclass(frozen=True)
@@ -150,9 +150,14 @@ GENES: tuple[GeneSpec, ...] = (
              reader="SkillLibrary.for_kind ordering", stage=6),
     GeneSpec("synth_attempts", "int", 2, 1, 4,
              reader="Substrate._skill_synthesis", stage=6),
-    # ── reasoning (M6) — declared, delivered by stages 8-9 ───────────
+    # ── reasoning (M6) ───────────────────────────────────────────────
     GeneSpec("reason_budget", "int", 6, 1, 8, reader="interpreter.run", stage=8),
     GeneSpec("reason_vote_n", "int", 1, 1, 5, reader="VOTE", stage=8),
+    # How finely a problem is cut up before it is worked. A chain longer than
+    # the cap is answered from a truncated problem, so this gene changes
+    # accuracy on multi-step families and not only cost.
+    GeneSpec("reason_decompose_parts", "int", 4, 2, 8,
+             reader="DECOMPOSE max_parts", stage=8),
     GeneSpec("reason_ucb_c", "float", 1.4, 0.2, 3.0,
              reader="strategy selection", stage=9),
     # ── memory ───────────────────────────────────────────────────────

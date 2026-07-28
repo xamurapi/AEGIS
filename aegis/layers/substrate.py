@@ -36,6 +36,7 @@ from aegis.layers.motivation import (
 )
 from aegis.layers.planner import Planner
 from aegis.layers.policy import BehaviourPolicy
+from aegis.layers.reasoning import ReasoningEngine
 from aegis.layers.memory import MemorySystem
 from aegis.layers.introspection import IntrospectionEngine
 from aegis.layers.self_modification import SelfModification
@@ -222,6 +223,13 @@ class Substrate:
             world_model=self.world_model, actions=self.actions,
             goal_intelligence=self.goal_intelligence, policy=self.policy,
             telemetry=self.telemetry)
+        # The reasoning contour (M6). Everything it can reach is handed to it
+        # here: a strategy is synthesised data, and a strategy able to reach
+        # something nobody passed it would be a strategy able to reach anything.
+        self.reasoning = ReasoningEngine(
+            cortex=self.llm.cortex, world_model=self.world_model,
+            memory=self.memory, graph=self.cognitive_graph, solver=self.solver,
+            sandbox=run_skill, telemetry=self.telemetry)
 
         # The genome the contours booted with, recorded once so every later
         # apply/revert has something exact to go back to.
@@ -379,7 +387,8 @@ class Substrate:
         # Persist the higher-order systems alongside the checkpoint.
         for system in (self.world_model, self.cognitive_graph, self.evolution,
                        self.goal_intelligence, self.feedback_loop,
-                       self.resources, self.roi, self.policy):
+                       self.resources, self.roi, self.policy,
+                       self.reasoning):
             try:
                 system.save()
             except Exception:
@@ -524,6 +533,7 @@ class Substrate:
         for target, method in ((self.planner, "set_weights"),
                                (self.priority, "set_weights"),
                                (self.policy, "set_genome"),
+                               (self.reasoning, "set_genome"),
                                (self.solver, "set_genome"),
                                (self.world_model, "apply_genome"),
                                (self.roi, "set_genome")):
@@ -617,6 +627,7 @@ class Substrate:
             self.world_model.publish_metrics(tick)
             self.planner.publish_metrics(tick)
             self.policy.publish_metrics(tick)
+            self.reasoning.publish_metrics(tick)
         except Exception:
             logger.exception("Telemetry publication failed")
 

@@ -165,6 +165,22 @@ TARGETS = [
     ("aegis/layers/evolution_engine.py",
      "tests/test_evolution_engine.py tests/test_evolution_population.py "
      "tests/test_audit_round3.py"),
+    # Stage 8 — the reasoning contour. The grammar and the interpreter are a
+    # security boundary rather than a convenience: strategies are synthesised,
+    # some of them by a language model, and a mutation that quietly widened
+    # what may be admitted or how long a loop may run would be a hole nobody
+    # would notice from the outside.
+    ("aegis/layers/reasoning/dsl.py",
+     "tests/test_reasoning_dsl.py tests/test_bdd_reasoning.py"),
+    ("aegis/layers/reasoning/interpreter.py",
+     "tests/test_interpreter.py tests/test_interpreter_operations.py "
+     "tests/test_bdd_reasoning.py"),
+    ("aegis/layers/reasoning/reasoner.py", "tests/test_reasoning_bench.py"),
+    ("aegis/layers/reasoning/library.py",
+     "tests/test_strategy_library.py tests/test_bdd_reasoning.py"),
+    ("aegis/layers/reasoning/__init__.py",
+     "tests/test_strategy_library.py tests/test_bdd_reasoning.py"),
+    ("aegis/eval/reasoning_bench.py", "tests/test_reasoning_bench.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",

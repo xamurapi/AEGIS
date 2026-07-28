@@ -426,6 +426,7 @@ REASON_TRIAL_N = _env_int("REASON_TRIAL_N", "50")
 REASON_SCAN_EVERY_N_TICKS = _env_int("REASON_SCAN_EVERY_N_TICKS", "300")
 REASON_UCB_C = _env_float("REASON_UCB_C", "1.4")
 REASON_MAX_TRACES = _env_int("REASON_MAX_TRACES", "5000")
+REASON_MAX_STRATEGIES = _env_int("REASON_MAX_STRATEGIES", "40")
 
 # --- M7: discovery ---------------------------------------------------
 DISC_MAX_LAG = _env_int("DISC_MAX_LAG", "5")
