@@ -42,6 +42,18 @@ class TickContext:
     pending_experiences: dict = field(default_factory=dict)
     decision: str | None = None
     confidence: float | None = None
+    #: The action DECIDE settled on — what the world model predicts about and
+    #: what the behaviour policy keys on. The objective above is a wish; this
+    #: is the thing that will actually happen.
+    action: str | None = None
+    #: The winning plan, with its score, alternatives and reasoning.
+    plan: object | None = None
+    #: Actions already performed this tick, so the scheduled paths in ACT and
+    #: the planned action cannot run the same work twice.
+    executed_actions: set = field(default_factory=set)
+    #: The ethics verdict on the chosen course of action.
+    ethics_status: str = "approved"
+    ethics_score: float = 1.0
     #: The forecast written down in DECIDE, before the action was taken.
     prediction: object | None = None
     #: How wrong the *previous* tick's forecast turned out to be, scored in

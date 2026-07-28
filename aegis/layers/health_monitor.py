@@ -1,6 +1,5 @@
 """Health Monitor — system resource monitoring and emergency prevention."""
 from aegis.clock import CLOCK
-import platform
 from collections import deque
 
 from aegis.config import PHASE_BUDGET_MS, PHASE_BUDGET_WINDOW

@@ -9,6 +9,7 @@ import pytest
 
 import aegis.config as cfg
 from aegis.layers.actions import (
+    DELIVERED_STAGE,
     ACTIONS, ACTIONS_BY_NAME, ActionSpace, ActionSpec, PREDICATES,
     evaluate_precondition,
 )
@@ -183,7 +184,7 @@ def test_the_safety_floor_covers_every_safety_critical_action():
 
 def test_every_delivered_action_has_a_live_executor(space, substrate):
     """Actions whose stage has landed must be performable, not just declared."""
-    delivered = [spec for spec in ACTIONS if spec.stage <= 2]
+    delivered = [spec for spec in ACTIONS if spec.stage <= DELIVERED_STAGE]
     unwired = [spec.name for spec in delivered if not space.is_wired(spec, substrate)]
     assert unwired == []
 
@@ -191,7 +192,7 @@ def test_every_delivered_action_has_a_live_executor(space, substrate):
 def test_actions_from_later_stages_are_simply_unavailable(space, substrate):
     # A contour still under construction must not be schedulable — but it must
     # also not crash anything by being named in the registry.
-    pending = {spec.name for spec in ACTIONS if spec.stage > 2}
+    pending = {spec.name for spec in ACTIONS if spec.stage > DELIVERED_STAGE}
     assert set(space.unwired(substrate)) == pending
 
 

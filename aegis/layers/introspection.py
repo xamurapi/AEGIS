@@ -2,7 +2,6 @@
 
 All metrics are computed from real system state — no random activations.
 """
-import math
 from aegis.clock import CLOCK
 
 

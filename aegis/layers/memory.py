@@ -6,7 +6,6 @@ computed from age, importance, and access count — no random threshold.
 import json
 import math
 import logging
-from pathlib import Path
 from aegis.config import MEMORY_DIR, MAX_WORKING_MEMORY, MEMORY_DECAY_RATE
 from aegis.clock import CLOCK
 

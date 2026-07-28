@@ -87,7 +87,6 @@ class GoalEngine:
         self._last_goal_gen = now
         new_goals = []
         tick = state.get("tick", 0)
-        memory_size = state.get("memory_size", 0)
 
         # Strategy: create one if fewer than 2 active — round-robin through templates
         active_strategies = [g for g in self.goals if g.level == "strategy" and g.status == "active"]

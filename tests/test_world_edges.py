@@ -45,6 +45,31 @@ def test_welford_ageing_keeps_the_mean_and_drops_the_weight():
     assert tracker.n < 3
 
 
+def test_a_small_weight_survives_a_gentle_ageing():
+    """Truncating the weight to an integer would send 1 straight to 0.
+
+    Every observation after that would restart from nothing, so the mean would
+    become whatever was seen last and the variance would collapse to zero —
+    statistics that look healthy while describing a single sample.
+    """
+    tracker = Welford()
+    tracker.update(5.0)
+    tracker.scale(0.999)
+    assert tracker.n > 0.9
+    tracker.update(1.0)
+    assert tracker.mean == pytest.approx(3.0, abs=0.01)
+
+
+def test_repeated_gentle_ageing_does_not_erase_the_record():
+    tracker = Welford()
+    for value in (0.0, 1.0, 0.0, 1.0, 0.0, 1.0):
+        tracker.scale(0.998)
+        tracker.update(value)
+    assert tracker.n > 5.0
+    assert tracker.mean == pytest.approx(0.5, abs=0.05)
+    assert tracker.sd() > 0.4
+
+
 def test_welford_ageing_is_clamped():
     tracker = Welford(n=10, mean=1.0, m2=4.0)
     tracker.scale(5.0)          # nonsense factor

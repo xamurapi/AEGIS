@@ -147,6 +147,34 @@ class GoalIntelligence:
             self.decisions = self.decisions[-200:]
         return choice
 
+    def commit(self, objective: str, context: dict | None = None) -> dict | None:
+        """Record that ``objective`` is what was actually chosen.
+
+        Distinct from :meth:`choose`, which picks the highest-value option and
+        assumes that pick is what happens. Once a planner exists that is no
+        longer true: it weighs expected value, cost and risk alongside this
+        table and may land somewhere else. Reward has to be credited to what
+        was *done*, or the utilities learn from a decision nobody took.
+        """
+        if not objective:
+            return None
+        entry = self._value_of(objective)
+        entry["attempts"] += 1
+        choice = {
+            "objective": objective,
+            "drive": entry["drive"],
+            "expected_value": self.expected_value(objective, context),
+            "alternatives": [],
+            "tick": (context or {}).get("tick"),
+            "time": CLOCK.now(),
+            "source": "committed",
+        }
+        self._last_choice = choice
+        self.decisions.append(choice)
+        if len(self.decisions) > 200:
+            self.decisions = self.decisions[-200:]
+        return choice
+
     def reward(self, realized: float, objective: str | None = None):
         """Credit realized reward to an objective's utility (TD-style update).
         If no objective is given, credits the last choice."""

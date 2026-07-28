@@ -4,7 +4,6 @@ All state transitions are deterministic, driven by real system metrics (reward,
 context flags, energy).  No random noise — emotion is a pure function of inputs.
 """
 import math
-import time
 from collections import deque
 
 

@@ -97,7 +97,8 @@ TARGETS = [
     # is a wrong decision everywhere downstream.
     ("aegis/util/stats.py",
      "tests/test_prediction_scoring.py tests/test_world_edges.py "
-     "tests/test_world_formulas.py tests/test_world_guards.py"),
+     "tests/test_world_formulas.py tests/test_world_guards.py "
+     "tests/test_stats_inference.py"),
     ("aegis/layers/world/state.py",
      "tests/test_world_state.py tests/test_world_edges.py "
      "tests/test_world_formulas.py tests/test_world_guards.py"),
@@ -113,6 +114,32 @@ TARGETS = [
     ("aegis/layers/world/simulate.py",
      "tests/test_simulate.py tests/test_world_edges.py "
      "tests/test_world_formulas.py tests/test_world_guards.py"),
+    # Stage 4 — the planner and the gate sequence. The scoring is where the
+    # world model actually changes a decision, and Appendix J's ordering is a
+    # safety property rather than a style: a mutant that moves the ethics gate
+    # or lets the cortex reach past the shortlist must not survive.
+    ("aegis/layers/planner.py",
+     "tests/test_planner.py tests/test_planner_gates.py "
+     "tests/test_planner_mutation.py tests/test_stage4_edges.py "
+     "tests/test_bdd_planning.py"),
+    ("aegis/layers/phases/decide.py",
+     "tests/test_planner_gates.py tests/test_decide_mutation.py "
+     "tests/test_stage4_edges.py tests/test_bdd_planning.py "
+     "tests/test_audit_stage4_fixes.py"),
+    ("aegis/layers/executors.py", "tests/test_stage4_edges.py"),
+    # Stage 5 — the behaviour policy. This is the contour that can *remove* an
+    # option, so its thresholds are load-bearing: a mutant that weakened the
+    # false-discovery control, the support floor or the safety-critical
+    # exemption would let the policy suppress things on evidence that does not
+    # exist.
+    ("aegis/layers/policy/store.py", "tests/test_policy_store.py"),
+    ("aegis/layers/policy/rules.py",
+     "tests/test_rule_miner.py tests/test_rule_lifecycle.py "
+     "tests/test_policy_integration.py"),
+    ("aegis/layers/policy/counterfactual.py",
+     "tests/test_shadow_evaluator.py tests/test_policy_integration.py"),
+    ("aegis/layers/policy/__init__.py",
+     "tests/test_policy_integration.py tests/test_bdd_behaviour_change.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",

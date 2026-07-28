@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import operator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 import aegis.config as cfg
@@ -187,6 +187,12 @@ ACTIONS: tuple[ActionSpec, ...] = (
 
 ACTIONS_BY_NAME: dict[str, ActionSpec] = {spec.name: spec for spec in ACTIONS}
 
+#: The last development stage whose executors exist. Actions declared for a
+#: later stage resolve to nothing and are simply unavailable — which is how a
+#: contour under construction is kept out of the schedule instead of crashing
+#: when it is selected. Bumped by the stage that delivers the executors.
+DELIVERED_STAGE = 5
+
 
 # ── preconditions ────────────────────────────────────────────────────
 # Named predicates over the live substrate. Declaring them by name rather than
@@ -195,10 +201,25 @@ ACTIONS_BY_NAME: dict[str, ActionSpec] = {spec.name: spec for spec in ACTIONS}
 # typo that silently reads as False forever.
 
 def _failing_kinds(substrate) -> list[str]:
+    """What the last benchmark found failing.
+
+    The cached answer, deliberately: ``failing_kinds()`` re-runs the whole
+    sandboxed benchmark, which is seconds of subprocess work. A precondition
+    evaluated on every candidate on every tick cannot afford to re-measure —
+    and a decision should act on the last measurement anyway.
+    """
     try:
-        return substrate.evaluator.failing_kinds()
+        return substrate.evaluator.failing_kinds_cached()
     except Exception:
         logger.debug("failing_kinds probe failed", exc_info=True)
+        return []
+
+
+def _unsolved_coding(substrate) -> list:
+    try:
+        return substrate.evaluator.unsolved_coding_cached()
+    except Exception:
+        logger.debug("unsolved_coding probe failed", exc_info=True)
         return []
 
 
@@ -218,7 +239,7 @@ PREDICATES: dict[str, Callable[[object, object], bool]] = {
     "no_failing_kind":
         lambda s, ctx: not _failing_kinds(s),
     "has_unsolved_coding":
-        lambda s, ctx: bool(s.evaluator.unsolved_coding()),
+        lambda s, ctx: bool(_unsolved_coding(s)),
     "has_queued_task":
         lambda s, ctx: bool(getattr(s, "reasoning", None)
                             and s.reasoning.has_queued_task()),
@@ -342,9 +363,25 @@ class ActionSpace:
 
     # ── resolution ───────────────────────────────────────────────────
 
-    def executor_for(self, spec: ActionSpec | str, substrate):
-        """The callable that performs an action, or None if it is not wired."""
+    def executor_for(self, spec: ActionSpec | str, substrate, ctx=None):
+        """A zero-argument callable that performs an action, or None.
+
+        An adapter is used when the declared executor needs arguments assembled
+        from the tick (see :mod:`aegis.layers.executors`); otherwise the
+        declared path is called directly. Either way the caller gets something
+        it can simply invoke — a planner that could choose an action it was
+        unable to perform would be choosing labels.
+        """
+        from aegis.layers.executors import adapter_for
+
         spec = self.by_name[spec] if isinstance(spec, str) else spec
+        adapter = adapter_for(spec.name)
+        if adapter is not None:
+            # The adapter still needs its subsystem to exist, or an action from
+            # a contour that has not landed would look performable.
+            if _resolve(substrate, spec.executor) is None:
+                return None
+            return lambda: adapter(substrate, ctx)
         target = _resolve(substrate, spec.executor)
         return target if callable(target) else None
 

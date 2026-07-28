@@ -17,7 +17,6 @@ that no longer exists.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 
 import aegis.config as cfg

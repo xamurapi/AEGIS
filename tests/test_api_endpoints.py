@@ -43,15 +43,44 @@ def substrate(tmp_path_factory):
     return sub
 
 
+@pytest.fixture(scope="module")
+def http(substrate):
+    """One entered HTTP client for the whole module.
+
+    ``TestClient`` starts an anyio portal — a thread with its own event loop,
+    and on Windows that means a socketpair — for every request unless the
+    client has been entered. Across this module's tests that is enough to
+    exhaust the machine's socket budget, which shows up as an ``OSError`` in an
+    unrelated test somewhere later in the suite. Entering once keeps it to one.
+
+    The app's lifespan is swapped for a no-op first: the real one builds its own
+    Substrate and starts the cognitive loop, which is precisely what these
+    tests must not do.
+    """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _no_runtime(_app):
+        yield
+
+    original = server.app.router.lifespan_context
+    server.app.router.lifespan_context = _no_runtime
+    try:
+        with TestClient(server.app) as entered:
+            yield entered
+    finally:
+        server.app.router.lifespan_context = original
+
+
 @pytest.fixture
-def client(substrate, monkeypatch):
+def client(http, substrate, monkeypatch):
     monkeypatch.setattr(cfg, "API_TOKEN", "")
     monkeypatch.setattr(server, "substrate", substrate)
     monkeypatch.setattr(server, "connected_ws", [])
     # The substrate is shared across the module for speed, so reset the bits
     # individual tests mutate — otherwise assertions depend on test order.
     substrate.llm.enabled = False
-    return TestClient(server.app)
+    return http
 
 
 def _plain_get_paths():

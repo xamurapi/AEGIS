@@ -87,13 +87,13 @@ def test_a_finished_benchmark_no_longer_blocks(s):
 # ── capability gaps ──────────────────────────────────────────────────
 
 def test_synthesis_waits_for_something_to_fix(s):
-    s.evaluator.failing_kinds = lambda: ["is_prime"]
+    s.evaluator.failing_kinds_cached = lambda: ["is_prime"]
     assert check("has_failing_kind", s) is True
     assert check("no_failing_kind", s) is False
 
 
 def test_optimisation_waits_until_nothing_is_failing(s):
-    s.evaluator.failing_kinds = lambda: []
+    s.evaluator.failing_kinds_cached = lambda: []
     assert check("has_failing_kind", s) is False
     assert check("no_failing_kind", s) is True
 
@@ -102,14 +102,14 @@ def test_a_probe_that_raises_reads_as_no_failing_kind(s):
     def explode():
         raise RuntimeError("evaluator down")
 
-    s.evaluator.failing_kinds = explode
+    s.evaluator.failing_kinds_cached = explode
     assert check("has_failing_kind", s) is False
 
 
 def test_coding_synthesis_waits_for_an_unsolved_task(s):
-    s.evaluator.unsolved_coding = lambda: ["task"]
+    s.evaluator.unsolved_coding_cached = lambda: ["task"]
     assert check("has_unsolved_coding", s) is True
-    s.evaluator.unsolved_coding = lambda: []
+    s.evaluator.unsolved_coding_cached = lambda: []
     assert check("has_unsolved_coding", s) is False
 
 

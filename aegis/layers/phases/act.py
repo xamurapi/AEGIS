@@ -5,6 +5,7 @@ grown to 1763 lines with seven more systems still to land; each phase now lives
 where it can be read and tested on its own. Behaviour is unchanged — the bodies
 were moved, not rewritten.
 """
+import inspect
 import logging
 import asyncio
 
@@ -14,16 +15,90 @@ from aegis.config import (
     EVOLUTION_EVERY_N_TICKS, LLM_THINK_EVERY_N_TICKS,
     SKILL_SYNTH_EVERY_N_TICKS, TRAIN_EVERY_N_TICKS,
 )
+from aegis.clock import CLOCK
+from aegis.event_bus import Event, Layer
+from aegis.layers.motivation import ResourceCost
 from aegis.layers.phases.common import _LEARNING_SOURCES
 
 from aegis.layers.phases.context import TickContext
 
 logger = logging.getLogger("aegis.substrate")
 
+#: Actions the scheduled blocks below already own. The planner may still choose
+#: them — that is how it shifts effort between them — but the executor is not
+#: called a second time in the same tick, and the scheduled block is skipped
+#: instead. Doing both would run an environment step or a benchmark twice.
+_SCHEDULED_ACTIONS = frozenset({
+    "env_step", "run_benchmark", "learn_external", "run_agents", "evolve_agents",
+    "curiosity_explore", "parametric_self_mod", "code_self_mod", "train_weights",
+    "synthesize_skill", "synthesize_coding", "optimize_skill",
+    # These two belong to EVALUATE and REFLECT, which assemble their own
+    # context and hold their own lease.
+    "evaluate_state_llm", "reflect_llm",
+})
+
+
+async def _run_planned_action(substrate, ctx: TickContext) -> None:
+    """Perform whatever DECIDE settled on.
+
+    Guarded on every axis: an action the scheduled code below owns is left to
+    it, a missing executor is a no-op rather than a crash, and a failing
+    executor costs the action rather than the tick.
+    """
+    action = ctx.action
+    if not action or ctx.lease is None:
+        return
+    ctx.executed_actions.add(action)
+    if action in _SCHEDULED_ACTIONS:
+        # The block below owns this action and takes its own lease. This
+        # reservation has to go back: anything still open when the tick ends is
+        # committed at its full estimate, so leaving it here bills the system
+        # for tokens no model was ever asked to spend. Over a 2000-tick A/B run
+        # that phantom spend was 12 000 tokens — enough to make the planner look
+        # like it bought its advantage.
+        substrate.release(ctx.lease, keep_rate_limit=True)
+        ctx.lease = None
+        return
+
+    executor = substrate.actions.executor_for(action, substrate, ctx)
+    if executor is None:
+        return
+    spec = substrate.actions.by_name.get(action)
+    if spec is not None and spec.external:
+        ctx.mark_external("act")
+
+    started = CLOCK.monotonic()
+    succeeded = True
+    try:
+        result = executor()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        logger.exception("Planned action %s failed", action)
+        ctx.executed_actions.discard(action)
+        succeeded = False
+
+    # Settle with what was actually consumed, not with the estimate. An action
+    # that reserved a token allowance and never called a model must hand it
+    # back; charging the reservation would make the budget shrink every time
+    # the planner considered something expensive and then did something cheap.
+    spent = ctx.lease.committed or ResourceCost()
+    substrate.settle(
+        ctx.lease,
+        ResourceCost(llm_tokens=spent.llm_tokens, llm_calls=spent.llm_calls,
+                     wall_ms=int((CLOCK.monotonic() - started) * 1000)),
+        value=1.0 if succeeded else 0.0)
+    ctx.lease = None
+
 
 async def run(substrate, ctx: TickContext) -> None:
     substrate.cycle_phase = "act"
     action_result = substrate.world.act({"type": "internal_computation"})
+
+    # The planned action runs first, under the lease DECIDE reserved for it.
+    # Without this the planner would be an elaborate way of choosing a label:
+    # what actually happened would still be whatever the tick counter said.
+    await _run_planned_action(substrate, ctx)
 
     # Motor cortex
     if substrate.tick_count % 10 == 0:

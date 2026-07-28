@@ -7,20 +7,14 @@ supplied, so the runtime as a whole is not fully deterministic.
 Code self-modification is integrated via CodeModifier + LLM proposals.
 """
 import asyncio
-import json
 import logging
 from pathlib import Path
 
 import aegis.config as cfg
 from aegis.config import (
     CHECKPOINT_EVERY_N_TICKS, CHECKPOINTS_DIR,
-    LLM_THINK_EVERY_N_TICKS, TRAIN_EVERY_N_TICKS,
-    CODE_BACKUPS_DIR, CODE_MOD_EVERY_N_TICKS, CODE_MOD_MIN_TICK, CODE_MOD_MAX_PER_SESSION,
-    CODE_MOD_MAX_FILE_CHARS, CODE_SELF_MOD_ENABLED,
-    EVAL_DIR, EVAL_EVERY_N_TICKS, ENV_STEP_EVERY_N_TICKS, SKILL_SYNTH_EVERY_N_TICKS,
-    SANDBOX_TIMEOUT,
-    WORLD_MODEL_EVERY_N_TICKS, COGNITIVE_GRAPH_EVERY_N_TICKS, EVOLUTION_EVERY_N_TICKS,
-    MAX_RISK_CONFIDENCE_PENALTY,
+    LLM_THINK_EVERY_N_TICKS, CODE_BACKUPS_DIR, CODE_MOD_MAX_FILE_CHARS, CODE_SELF_MOD_ENABLED,
+    EVAL_DIR, SANDBOX_TIMEOUT,
     CAPACITY_EVERY_N_TICKS, CAPACITY_GROWTH_FACTOR, CAPACITY_SHRINK_FACTOR,
     CAPACITY_HEADROOM, CAPACITY_MAX_MULTIPLE,
 )
@@ -40,6 +34,8 @@ from aegis.layers.actions import ActionSpace
 from aegis.layers.motivation import (
     Candidate, PriorityScheduler, ResourceCost, ResourceManager, ROITracker,
 )
+from aegis.layers.planner import Planner
+from aegis.layers.policy import BehaviourPolicy
 from aegis.layers.memory import MemorySystem
 from aegis.layers.introspection import IntrospectionEngine
 from aegis.layers.self_modification import SelfModification
@@ -72,9 +68,7 @@ from aegis.layers.cognitive_graph import CognitiveGraph, MAX_NODES as CG_MAX_NOD
 from aegis.layers.evolution_engine import EvolutionEngine
 from aegis.layers.goal_intelligence import GoalIntelligence
 from aegis.layers.feedback_loop import FeedbackLoop
-from aegis.eval.benchmark import DEFAULT_BENCHMARK, tasks_for_kind, split_tasks
-from aegis.eval.coding import CODING_BENCHMARK
-from aegis.eval.composite import COMPOSITE_BENCHMARK
+from aegis.eval.benchmark import DEFAULT_BENCHMARK, split_tasks
 from aegis.eval.skill_library import SkillLibrary, Skill
 from aegis.eval.solver import MultiAgentSolver
 from aegis.eval.sandbox import run_skill
@@ -89,6 +83,11 @@ logger = logging.getLogger("aegis.substrate")
 # re-exported here because they were part of this module's surface.
 __all__ = ["Substrate", "_LEARNING_SOURCES", "_META_DOMAINS", "_CONCEPT_SEEDS",
            "_coerce_int", "_coerce_float"]
+
+#: Distinguishes "this lease never touched the rate limit" from "the action had
+#: never run before". ``None`` is a meaningful stored value here, so it cannot
+#: double as the missing marker.
+_NO_PREVIOUS_RUN = object()
 
 
 class Substrate:
@@ -197,6 +196,20 @@ class Substrate:
             resources=self.resources, goal_intelligence=self.goal_intelligence,
             roi=self.roi)
         self.actions = ActionSpace()
+        #: lease id -> the rate-limit entry that reservation overwrote, so
+        #: :meth:`release` can put it back (see the note there).
+        self._rate_limit_undo: dict[str, int | None] = {}
+        # The planner (M2): decisions become a comparison of plans priced by
+        # the world model, instead of a ranking of wishes. It proposes only —
+        # every gate that can refuse runs after it (Appendix J).
+        # The behaviour policy (M3): the fifth link of the development chain,
+        # as an object with evidence rather than a whisper in a confidence
+        # penalty. Built before the planner because the planner reads it.
+        self.policy = BehaviourPolicy(telemetry=self.telemetry)
+        self.planner = Planner(
+            world_model=self.world_model, actions=self.actions,
+            goal_intelligence=self.goal_intelligence, policy=self.policy,
+            telemetry=self.telemetry)
         # From here on every cortex call needs a lease. This replaces hoping
         # that LLM_MAX_CALLS_PER_RUN was set generously enough.
         self.llm.cortex.resources = self.resources
@@ -344,7 +357,7 @@ class Substrate:
         # Persist the higher-order systems alongside the checkpoint.
         for system in (self.world_model, self.cognitive_graph, self.evolution,
                        self.goal_intelligence, self.feedback_loop,
-                       self.resources, self.roi):
+                       self.resources, self.roi, self.policy):
             try:
                 system.save()
             except Exception:
@@ -387,6 +400,7 @@ class Substrate:
         for structure, attr, baseline in (
             (self.world_model, "max_links", WM_MAX_LINKS),
             (self.cognitive_graph, "max_nodes", CG_MAX_NODES),
+            (self.policy.store, "max_preferences", cfg.POLICY_MAX_PREFS),
         ):
             try:
                 current = getattr(structure, attr)
@@ -421,8 +435,36 @@ class Substrate:
         if lease is None:
             self.actions.note_blocked("resources")
         else:
+            # Remember what the rate limit said before this reservation, so a
+            # lease handed back unused can restore it. Charging the interval at
+            # reservation time and never undoing it would silence an action for
+            # `min_interval` ticks that it never actually ran in — for
+            # `train_weights` a single ethics veto would cost 1000 ticks.
+            self._rate_limit_undo[lease.id] = self.actions.last_run.get(action)
             self.actions.mark_run(spec, self.tick_count)
         return lease
+
+    def release(self, lease, *, keep_rate_limit: bool = False) -> None:
+        """Hand back a lease for an action that will not run under it.
+
+        The resources go back to the budget and the rate limit goes back to
+        what it was: ``min_interval`` counts executions, not intentions.
+
+        ``keep_rate_limit`` is for the one case where the action *is* going to
+        happen, just not on this reservation — a scheduled block owns it and
+        takes its own lease. There the interval has been earned, and restoring
+        it would let the planner re-pick an action every tick that only runs on
+        its own cadence.
+        """
+        if lease is None:
+            return
+        previous = self._rate_limit_undo.pop(lease.id, _NO_PREVIOUS_RUN)
+        if not keep_rate_limit and previous is not _NO_PREVIOUS_RUN:
+            if previous is None:
+                self.actions.last_run.pop(lease.purpose, None)
+            else:
+                self.actions.last_run[lease.purpose] = previous
+        self.resources.release(lease)
 
     def settle(self, lease, actual: ResourceCost | None = None,
                value: float = 0.0) -> None:
@@ -434,6 +476,8 @@ class Substrate:
         """
         if lease is None:
             return
+        # The action ran, so the rate limit stands and its undo entry is spent.
+        self._rate_limit_undo.pop(lease.id, None)
         spec = self.actions.by_name.get(lease.purpose)
         spent = actual if actual is not None else (lease.committed or lease.cost)
         self.resources.commit(lease, spent)
@@ -476,6 +520,8 @@ class Substrate:
             self.resources.publish_metrics(tick)
             self.roi.publish_metrics(tick)
             self.world_model.publish_metrics(tick)
+            self.planner.publish_metrics(tick)
+            self.policy.publish_metrics(tick)
         except Exception:
             logger.exception("Telemetry publication failed")
 
@@ -1169,6 +1215,9 @@ class Substrate:
             # lease and then failed would otherwise keep it forever, and the
             # budget would leak away one crash at a time.
             self.resources.finalize_tick()
+            # A lease that survived to here was charged in full, so it counts
+            # as having run; nothing is left to undo and the map starts empty.
+            self._rate_limit_undo.clear()
 
         self.last_tick_duration = CLOCK.now() - tick_start
         self._publish_tick_metrics(self.last_tick_duration * 1000)
@@ -1299,6 +1348,8 @@ class Substrate:
             "roi": self.roi.status(),
             "priority": self.priority.status(),
             "action_space": self.actions.status(self),
+            "planner": self.planner.status(),
+            "policy": self.policy.status(),
             "reward_signal": round(self._compute_reward(), 4),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),

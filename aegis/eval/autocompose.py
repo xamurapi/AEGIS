@@ -8,7 +8,6 @@ planning — the agent composes primitives it has, to depth it discovers, with n
 pipeline specified in advance. A target needing a primitive the agent hasn't
 learned yet is simply unreachable until that primitive exists.
 """
-from collections import deque
 from dataclasses import dataclass, field
 
 # Kinds whose skills follow the {"s": str} -> str contract and can be chained.

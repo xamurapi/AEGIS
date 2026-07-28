@@ -138,6 +138,7 @@ async def run(substrate, ctx: TickContext) -> None:
     #    cognitive graph from this tick's memory. Guarded — never aborts. ──
     try:
         realized = substrate._compute_reward()
+        experience = None
         exp_id = substrate._pending_experiences.pop("decide", None)
         if exp_id is not None:
             # Success = this tick produced knowledge/insight and stayed healthy.
@@ -158,22 +159,40 @@ async def run(substrate, ctx: TickContext) -> None:
                 )
 
         # ── System 1: what the action was actually worth ─────────────
-        # Recorded with the REAL numbers, and the forecast is handed to the
-        # next tick to close — the successor state cannot be observed until
-        # the world has moved (§M1.6).
-        if ctx.state is not None and ctx.decision:
+        # Recorded against the SAME subject the forecast was made about — the
+        # action if one was planned, the objective otherwise. Observing the
+        # objective while predicting the action would leave the two halves
+        # keyed differently, so the model would accumulate evidence it could
+        # never look up and every prediction would fall back to 0.5.
+        subject = ctx.action or ctx.decision
+        if ctx.state is not None and subject:
             substrate.world_model.observe_outcome(
-                ctx.state, ctx.decision, success=ctx.learned_something(),
+                ctx.state, subject, success=ctx.learned_something(),
                 reward=realized,
                 cost=substrate.last_tick_duration * 1000)
             if ctx.prediction is not None:
                 substrate._pending_prediction = {
                     "id": ctx.prediction.id,
                     "state": ctx.state,
-                    "action": ctx.decision,
+                    "action": subject,
                     "success": ctx.learned_something(),
                     "reward": realized,
                 }
+            if ctx.plan is not None:
+                # Close the planner's promise against what was realised; the
+                # gap between the two is what says the model under it is
+                # learning (§M2.8).
+                substrate.planner.record_outcome(ctx.plan, realized)
+
+            # ── M3: the fifth link — the experience changes behaviour ──
+            # Preferences move, the row joins the miner's evidence, and every
+            # rule that was eligible this tick has its arm credited. This has to
+            # run after the reward is known and before the next decision, which
+            # is exactly here.
+            substrate.policy.observe(
+                ctx.state, subject, reward=realized,
+                success=ctx.learned_something(), tick=substrate.tick_count,
+                experience_id=(experience or {}).get("id", ""))
 
         # System 2: ingest recent memory into the typed cognitive graph.
         if substrate.tick_count % max(1, COGNITIVE_GRAPH_EVERY_N_TICKS) == 0:

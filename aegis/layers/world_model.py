@@ -32,7 +32,6 @@ import logging
 from pathlib import Path
 
 import aegis.config as cfg
-from aegis.clock import CLOCK
 from aegis.layers.world.causal import (
     MAX_CHAINS, MAX_LINKS, MIN_OBSERVATIONS_FOR_PREDICTION, CausalLinks,
 )

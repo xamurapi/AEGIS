@@ -38,6 +38,12 @@ class Evaluator:
         self.last_score: float | None = None
         self.last_report: dict = {}
         self.total_runs = 0
+        # What the last full benchmark found. Read by the action registry's
+        # preconditions: deciding what to do must not stop to re-measure, and
+        # `failing_kinds()` re-runs the whole sandboxed benchmark — seconds of
+        # subprocess work that turned a 30 ms decision into a 3 s one.
+        self._failing_kinds: list[str] = []
+        self._unsolved_coding: list[CodingTask] = []
         self._load()
 
     def _load(self):
@@ -94,7 +100,9 @@ class Evaluator:
         coding_total = composite_total = auto_total = 0
         if not subset:
             coding_total = len(self.coding_tasks)
-            coding_passed = sum(1 for t in self.coding_tasks if self.coding_solved(t))
+            unsolved = [t for t in self.coding_tasks if not self.coding_solved(t)]
+            coding_passed = coding_total - len(unsolved)
+            self._unsolved_coding = unsolved
             composite_total = len(self.composite_tasks)
             composite_passed = sum(1 for t in self.composite_tasks if self.solver.solve_composite(t).solved)
             auto_total = len(self.autocompose_tasks)
@@ -117,6 +125,12 @@ class Evaluator:
             "autocompose": {"passed": auto_passed, "total": auto_total},
             "per_kind": {k: {"passed": v[0], "total": v[1]} for k, v in per_kind.items()},
         }
+        if not subset:
+            # Derived from the run that just happened, so a later decision can
+            # read it without paying for the measurement again.
+            self._failing_kinds = sorted(
+                kind for kind, counts in per_kind.items()
+                if counts[0] < counts[1])
         if record and not subset:
             self.last_score = report["score"]
             self.last_report = report
@@ -124,6 +138,22 @@ class Evaluator:
             self.history.append({"t": report["timestamp"], "score": report["score"]})
             self._save()
         return report
+
+    # ── what the last measurement found ──────────────────────────────
+    # Cheap reads for the action registry. They answer "what did the most
+    # recent benchmark say", which is the right question for a decision;
+    # `failing_kinds()` and `unsolved_coding()` answer "what is true right
+    # now" and cost a full sandboxed run to do it.
+
+    def failing_kinds_cached(self) -> list[str]:
+        return list(self._failing_kinds)
+
+    def unsolved_coding_cached(self) -> list[CodingTask]:
+        return list(self._unsolved_coding)
+
+    def has_measured(self) -> bool:
+        """Whether a full benchmark has run at all this session."""
+        return self.total_runs > 0 or bool(self.last_report)
 
     def unsolved_coding(self) -> list[CodingTask]:
         return [t for t in self.coding_tasks if not self.coding_solved(t)]

@@ -2,7 +2,6 @@
 import json
 import gzip
 import time
-import shutil
 import logging
 from pathlib import Path
 from collections import deque

@@ -15,7 +15,6 @@ from aegis.clock import CLOCK
 import json
 import asyncio
 import logging
-from pathlib import Path
 from aegis._atomic import atomic_write_text
 from aegis.cortex import prompts
 from aegis.cortex.router import Cortex, Role
