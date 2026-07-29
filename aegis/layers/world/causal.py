@@ -50,6 +50,13 @@ class CausalLinks:
         # graph's in-degree index. Without it every risk lookup walked the whole
         # cause table, and risks_for now runs on every tick.
         self._cause_index: dict[str, set[str]] = {}
+        # How much a known failure outranks an equally decisive win when
+        # pruning. An instance attribute rather than the module constant because
+        # `mem_retention_bias` is a gene: it declared `WorldModel._retention_score`
+        # as its reader, but the value was being written onto MemorySystem, where
+        # nothing read it. The constant is the default, so an un-evolved system
+        # prunes exactly as before.
+        self.failure_retention_bias = FAILURE_RETENTION_BIAS
         self._store_path = store_path or (cfg.WORLD_MODEL_DIR / "model.json")
         self._load()
 
@@ -151,7 +158,7 @@ class CausalLinks:
         strength = self._strength(link)
         decisiveness = abs(strength - 0.5) * 2
         evidence = min(1.0, link["observations"] / EVIDENCE_SATURATION)
-        bias = FAILURE_RETENTION_BIAS if strength < 0.5 else 1.0
+        bias = self.failure_retention_bias if strength < 0.5 else 1.0
         return decisiveness * evidence * bias
 
     def _prune(self, protect: tuple[str, str] | None = None):

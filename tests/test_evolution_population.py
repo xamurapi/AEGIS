@@ -659,21 +659,36 @@ def test_every_delivered_gene_reaches_a_live_contour(isolated_state):
     end of its range, apply it, and require the system's own configuration to
     come back different. A gene that cannot move anything is a gene evolution
     would search over for nothing.
+
+    The read-back goes through ``_genome_from_contours`` — each contour asked
+    what it is actually configured with — and not through ``current_genome``,
+    which returns the copy of the genome that was handed out. Reading the stored
+    copy made this test tautological: it applied a value and compared it against
+    itself, so it passed for a gene nothing consumed. It did pass, for
+    ``synth_attempts``, whose declared reader used a literal ``range(2)``; and
+    with ``WorldModel.apply_genome`` disabled entirely the whole file still went
+    green. Mutation testing on `world_model.py` is what surfaced it.
     """
     from aegis.layers.substrate import Substrate
 
     substrate = Substrate()
+    covered = set(substrate._genome_from_contours())
     for name in observable_genes():
         gene = GENES_BY_NAME[name]
+        assert name in covered, (
+            f"{name} is declared observable (stage {gene.stage} <= delivered) "
+            f"but no contour reports it back, so this gate cannot check it. "
+            f"Either read it back in Substrate._genome_from_contours or raise "
+            f"the gene's stage above the delivered one.")
         low = Genome({name: gene.low if gene.kind != "enum" else gene.choices[0]})
         high = Genome({name: gene.high if gene.kind != "enum" else gene.choices[-1]})
         if low[name] == high[name]:
             continue                      # a one-value gene cannot be moved
 
         substrate.apply_genome(low)
-        after_low = substrate.current_genome()[name]
+        after_low = substrate._genome_from_contours()[name]
         substrate.apply_genome(high)
-        after_high = substrate.current_genome()[name]
+        after_high = substrate._genome_from_contours()[name]
         assert after_low != after_high, (
             f"{name} does not reach any live contour — its declared reader "
             f"{gene.reader!r} does not read it")
@@ -714,3 +729,77 @@ def test_regulation_can_still_withhold_evolution(isolated_state, monkeypatch):
     monkeypatch.setattr(cfg, "EVO_ENABLED", True)
     substrate._regulation_directives = {"skip_learning": True}
     assert not evaluate_precondition("evolution_allowed", substrate)
+
+
+# ── genes a read-back cannot vouch for ───────────────────────────────
+# `_genome_from_contours` proves a contour *reports* a value. For a gene whose
+# effect is a decision rather than a setting, that is not enough: the reported
+# attribute and the consumed one can be the same field while the consumer
+# ignores it. Two genes were in exactly that state — `mem_retention_bias` was
+# written onto MemorySystem, which never read it, and `synth_attempts` bounded a
+# loop whose repair branch was capped by a literal. Both passed the read-back.
+# These two tests assert the behaviour instead.
+
+
+def test_retention_bias_decides_which_link_survives_pruning(tmp_path):
+    """The gene claims to bias pruning toward remembering failure. Set it to
+    each end of its range and require a different link to be evicted."""
+    from aegis.layers.world.causal import CausalLinks
+
+    def survivor(bias: float) -> str:
+        model = CausalLinks(store_path=tmp_path / f"causal_{bias}.json")
+        model.links = {}
+        # A clearly decisive success and a less decisive failure, on equal
+        # evidence: unbiased, the success is the more informative link. The
+        # margin is wide (0.833 against 0.500) so the outcome turns on the bias
+        # alone and not on how a tie happens to be broken.
+        for index in range(10):
+            model.observe("risky", "failure", success=index < 2)
+        for _ in range(10):
+            model.observe("safe", "success", success=True)
+        assert model._retention_score(model.links["safe"]["success"]) >             model._retention_score(model.links["risky"]["failure"])
+        model.failure_retention_bias = bias
+        model.max_links = 1
+        model._prune()
+        remaining = [cause for cause, effects in model.links.items() if effects]
+        assert len(remaining) == 1
+        return remaining[0]
+
+    assert survivor(1.0) == "safe", "without a bias the more decisive link wins"
+    assert survivor(3.0) == "risky", "with the bias the known failure is kept"
+
+
+def test_synth_attempts_decides_how_many_proposals_are_made(isolated_state,
+                                                            monkeypatch):
+    """The gene claims to set how many times a skill may be proposed. Count the
+    proposals actually made at each end of its range."""
+    import asyncio
+
+    from aegis.layers.substrate import Substrate
+
+    def proposals_at(attempts: int) -> int:
+        substrate = Substrate()
+        substrate.apply_genome(Genome({"synth_attempts": attempts}))
+        calls = 0
+
+        async def propose(kind, examples, feedback=None):
+            nonlocal calls
+            calls += 1
+            return "def solve(payload):\n    return None\n"
+
+        # Every proposal is added, scores no better than the baseline, and is
+        # discarded — so the loop runs to its bound rather than stopping early.
+        substrate.llm.propose_skill = propose
+        substrate.evaluator.failing_kinds = lambda: ["calc"]
+        substrate.evaluator.pass_rate_on = lambda holdout: 0.5
+        substrate._score_holdout = lambda holdout: (
+            0.0, {"payload": "x", "expected": 1, "got": 2})
+        substrate.skill_library.add = lambda skill: (True, "")
+        substrate.skill_library.remove = lambda name: None
+        asyncio.run(substrate._skill_synthesis())
+        return calls
+
+    low = proposals_at(1)
+    high = proposals_at(4)
+    assert low == 1, f"one attempt means one proposal, got {low}"
+    assert high == 4, f"four attempts means four proposals, got {high}"

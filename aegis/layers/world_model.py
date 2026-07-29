@@ -247,6 +247,7 @@ class PredictiveWorldModel:
             "wm_half_life": (("transitions", "half_life"), ("outcomes", "half_life")),
             "explore_bonus": (("simulator", "explore_bonus"),),
             "plan_discount": (("simulator", "discount"),),
+            "mem_retention_bias": (("causal", "failure_retention_bias"),),
         }
         for gene, targets in mapping.items():
             if gene not in (genome or {}):

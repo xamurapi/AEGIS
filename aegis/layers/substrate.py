@@ -506,8 +506,31 @@ class Substrate:
         """
         return Genome(self._genome)
 
+    def _synth_attempts(self) -> int:
+        """How many times a skill proposal may be tried (gene ``synth_attempts``).
+
+        This exists because the gene did not: the loop below used a literal
+        ``range(2)`` while the gene declared ``Substrate._skill_synthesis`` as
+        its reader, so evolution searched over a number nothing consumed. The
+        default is 2 — initial attempt plus one repair — so behaviour is
+        unchanged for a system running the default genome.
+        """
+        try:
+            return max(1, int(self._genome.get("synth_attempts", 2)))
+        except (TypeError, ValueError):
+            return 2
+
     def _genome_from_contours(self) -> Genome:
-        """What the contours say they are configured with, at boot."""
+        """What the contours say they are configured with.
+
+        Every observable gene is read back from the object that consumes it —
+        not from ``self._genome``, which is only a record of what was handed
+        out. That distinction is the whole point: a read-back from the stored
+        copy cannot tell a gene that reached its contour from one that was
+        dropped on the floor, and the sensitivity gate in
+        ``test_evolution_population.py`` is built on this method for exactly
+        that reason.
+        """
         genome = Genome()
         genome.update_values({
             "plan_beam": self.planner.beam,
@@ -525,6 +548,17 @@ class Substrate:
             "wm_smoothing": self.world_model.transitions.smoothing,
             "wm_half_life": self.world_model.transitions.half_life,
             "explore_bonus": self.world_model.simulator.explore_bonus,
+            "mem_retention_bias":
+                self.world_model.causal.failure_retention_bias,
+            "synth_attempts": self._synth_attempts(),
+            # The reasoning genes are resolved by the interpreter at each step
+            # (`$gene:...`), so the interpreter's own copy is where they are
+            # actually read from.
+            "reason_budget": self.reasoning._budget(),
+            "reason_decompose_parts": self.reasoning.interpreter.genome.get(
+                "reason_decompose_parts", 6),
+            "reason_vote_n": self.reasoning.interpreter.genome.get(
+                "reason_vote_n", 1),
             **{f"priority_w_{name}": value
                for name, value in self.priority.weights.items()},
             **{f"res_share_{drive}": share
@@ -558,10 +592,6 @@ class Substrate:
             except Exception:
                 logger.exception("Applying the genome to %s failed",
                                  type(target).__name__)
-        try:
-            self.memory.retention_bias = float(genome["mem_retention_bias"])
-        except Exception:
-            logger.debug("Memory retention bias is not settable", exc_info=True)
         self._genome = genome
         return previous
 
@@ -838,7 +868,7 @@ class Substrate:
 
             code = await self.llm.propose_skill(kind, train_examples)
             kept = False
-            for attempt in range(2):  # initial + one repair
+            for attempt in range(self._synth_attempts()):
                 if not code:
                     break
                 self._skill_synth_count += 1
@@ -861,12 +891,19 @@ class Substrate:
                     kept = True
                     break
 
-                # No generalization — discard and try one repair from a failing
-                # case. The failing case is fed back; re-asking with the exact
-                # same prompt (the previous behaviour) could only return the
-                # same code, so the "repair attempt" never repaired anything.
+                # No generalization — discard and repair from a failing case. The
+                # failing case is fed back; re-asking with the exact same prompt
+                # (the original behaviour) could only return the same code, so
+                # the "repair attempt" never repaired anything.
+                #
+                # The condition is "there is another attempt left", not
+                # "attempt == 0": with the literal, `synth_attempts` above 2 was
+                # bounded by the loop but could never spend the extra rounds,
+                # because the second failure always set `code = None`. Half a
+                # wiring is what makes a gene look connected while its upper
+                # range does nothing.
                 self.skill_library.remove(name)
-                if attempt == 0 and train_examples:
+                if attempt + 1 < self._synth_attempts() and train_examples:
                     code = await self.llm.propose_skill(
                         kind, train_examples,
                         feedback=self._repair_feedback(code, failed_case))

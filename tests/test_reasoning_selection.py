@@ -299,3 +299,61 @@ def test_working_and_improving_leaves_the_system_better(engine):
         while engine.pending_candidates():
             engine.evaluate_candidate(tick=cycle)
     assert score() > before
+
+
+# ── trace lookup (§M10.1) ────────────────────────────────────────────
+# `/api/reasoning/trace/{id}` had no test at all. Mutation testing found it:
+# flipping the identity comparison in `trace()` from `==` to `!=` — so the
+# endpoint answers with *somebody else's* trace — left the whole suite green.
+# An operator debugging why task X failed would be reading task Y's steps, and
+# nothing in the system would contradict them.
+
+
+def _record(engine, task_id, *, strategy="direct", solved=True, answer=1):
+    """Put one trace on the record through the real path."""
+    from aegis.layers.reasoning.interpreter import Trace
+
+    class _Task:
+        id = task_id
+        family = "arith"
+        features: dict = {}
+
+    trace = Trace(strategy=strategy, task_id=task_id, answer=answer,
+                  solved=solved)
+    engine.record(_Task(), engine.library.get(strategy), trace)
+    return trace
+
+
+def test_trace_returns_the_trace_that_was_asked_for(engine):
+    for task_id in ("alpha", "beta", "gamma"):
+        _record(engine, task_id, answer=task_id)
+    for task_id in ("alpha", "beta", "gamma"):
+        found = engine.trace(task_id)
+        assert found is not None
+        assert found["task_id"] == task_id, "returned another task's trace"
+        assert found["answer"] == task_id
+
+
+def test_trace_of_a_reattempt_is_the_latest_one(engine):
+    """Documented behaviour: searched newest first. A re-run of the same problem
+    must not return the stale attempt, or the operator reads a fixed failure."""
+    _record(engine, "alpha", strategy="direct", solved=False, answer="first")
+    _record(engine, "alpha", strategy="predictive_check", solved=True,
+            answer="second")
+    found = engine.trace("alpha")
+    assert found["answer"] == "second"
+    assert found["strategy"] == "predictive_check"
+
+
+def test_trace_of_an_unknown_id_is_none_not_an_arbitrary_trace(engine):
+    _record(engine, "alpha")
+    assert engine.trace("no-such-task") is None
+
+
+def test_trace_accepts_a_non_string_id(engine):
+    """The id arrives from a URL path, so it is text there — but tasks number
+    themselves, and the lookup is documented as keyed on the task id."""
+    _record(engine, 4242)
+    # The stored id keeps the task's own type; the lookup compares as text.
+    assert str(engine.trace("4242")["task_id"]) == "4242"
+    assert str(engine.trace(4242)["task_id"]) == "4242"

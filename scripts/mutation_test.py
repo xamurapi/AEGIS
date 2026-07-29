@@ -27,6 +27,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# A report must not be able to kill the run. The equivalence arguments below are
+# written with real mathematical notation (−, Σ, ·), and on a Windows console
+# claiming cp1251 the first `print` of one raised UnicodeEncodeError *after* the
+# sources had been restored but *before* the summary — so a sweep that had
+# already done an hour of work died at the point of telling anyone what it found,
+# and the surviving mutants it had located were lost. Encoding is a property of
+# the terminal, not of the result.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 # Wall-clock ceiling for one mutant's test run. Generous enough that a slow but
 # finite suite is never mistaken for a hang, tight enough that a non-terminating
 # mutant costs seconds rather than the whole build.
@@ -541,7 +552,18 @@ def main():
         return 1
 
     t0 = time.time()
-    results = [mutate_module(src, test) for src, test in targets]
+    # One module must not be able to discard the whole sweep. A full run costs
+    # over an hour, and the first version lost every result it had gathered
+    # because module sixty-one raised while printing its own report. A module
+    # that fails to run is recorded as a failure and named in the summary — the
+    # run continues, and the build still goes red.
+    results, broken = [], []
+    for src, test in targets:
+        try:
+            results.append(mutate_module(src, test))
+        except Exception as exc:
+            broken.append((src, f"{type(exc).__name__}: {exc}"))
+            print(f"   !! {src} could not be analysed: {type(exc).__name__}: {exc}")
     tot_killed = sum(r["killed"] for r in results)
     tot = sum(r["total"] for r in results)
     overall = round(100 * tot_killed / tot, 1) if tot else 100.0
@@ -555,9 +577,15 @@ def main():
     print("-" * 60)
     print(f"  {'OVERALL MUTATION SCORE':<42} {overall:>5}%  "
           f"({tot_killed}/{tot} killed)")
+    if broken:
+        print("-" * 60)
+        for src, why in broken:
+            print(f"  NOT ANALYSED  {src:<42} {why}")
     print(f"  elapsed: {time.time() - t0:.1f}s")
-    # Non-zero exit if any mutant survived — usable as a CI gate.
-    return 0 if tot_killed == tot else 2
+    # Non-zero exit if any mutant survived, or if any module could not be
+    # analysed at all: an unanalysed module is an unmeasured one, and reporting
+    # a green sweep over a subset of the targets would be the worst outcome here.
+    return 0 if (tot_killed == tot and not broken) else 2
 
 
 if __name__ == "__main__":

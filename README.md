@@ -2,14 +2,14 @@
 
 [![tests](https://img.shields.io/badge/tests-4463%20passing-2ea44f)](#testing--quality)
 [![coverage](https://img.shields.io/badge/branch%20coverage-95%25-2ea44f)](#testing--quality)
-[![mutation score](https://img.shields.io/badge/mutation%20score-100%25%20on%20audited%20modules-2ea44f)](#testing--quality)
+[![mutation score](https://img.shields.io/badge/mutation-round%205%20sweeping%2065%20targets-yellow)](#testing--quality)
 [![audit](https://img.shields.io/badge/audit-4%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#requirements)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > A self-developing AI that predicts before it acts, changes its behaviour from measured experience, evolves a genome that provably moves its own benchmark, improves its own reasoning strategies, and derives laws about itself that it then has to defend against an experiment.
 > **7-layer architecture + 5 higher-order systems + 7 contours of the development spec · provider-agnostic cortex · deterministic core cycle.**
-> **4463 tests · 95% branch coverage · 100% mutation score on every audited module · 4 audit rounds.**
+> **4463 tests · 95% branch coverage · 4 audit rounds, a fifth in progress.**
 > **Safe defaults:** source self-rewriting is opt-in (`AEGIS_CODE_SELF_MOD_ENABLED=1`), the control plane binds to `127.0.0.1`, and self-written skills run only in a child-process sandbox.
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
@@ -577,7 +577,8 @@ No ML dependencies are required — the whole suite runs offline (no network, no
 |---|---:|---:|
 | Tests | **4463** passing (+2 skipped) | all green |
 | Branch coverage (whole package) | **95%** | **90%** |
-| Mutation score, modules audited this round | **100%** | no survivors |
+| Mutation score, modules verified at 100% | discovery · telemetry/store · safety/immutable · store/migrations · reasoning DSL, interpreter, library, weakness, synthesis, arena | no survivors |
+| Mutation sweep over all **65** targets | round 5, in progress | no survivors |
 | Executable Gherkin specifications | **9 feature files** | — |
 
 **Levels.** Unit tests per module · integration tests running the five systems
@@ -605,6 +606,18 @@ Four kinds of test earn their place by catching what unit tests cannot:
 - **Crash resilience** — SIGTERM mid-write, torn files, files from a future
   schema version. The system must come back up with either the old complete
   state or the new one, never half of each.
+
+The sweep is a gate, and right now it is red. A full run over all 65 targets is
+under way as audit round 5, and it is finding real gaps in modules that predate
+the development spec — `world_model.py` scored 33% on twelve mutants. Two of them
+were decorative genes: `synth_attempts` bounded a loop whose repair branch was
+capped by a literal, and `mem_retention_bias` was written onto `MemorySystem`,
+which never read it, while its declared reader lived in the causal model. Both
+passed the gate that exists to forbid exactly that, because the gate read the
+genome back from the copy that had been handed out rather than from the contours
+— it compared a value against itself. It reads from the contours now, and the two
+genes whose effect is a decision rather than a setting have behavioural tests,
+because no read-back can tell a value that was consumed from one that was stored.
 
 **Mutation testing** uses a dependency-free in-repo harness (`scripts/mutation_test.py`):
 mutmut needs WSL on Windows and mutatest 3.1.0 is broken on Python 3.11. It flips
