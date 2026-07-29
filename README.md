@@ -1,15 +1,15 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
-[![tests](https://img.shields.io/badge/tests-1380%20passing-2ea44f)](#testing--quality)
-[![coverage](https://img.shields.io/badge/branch%20coverage-92%25-2ea44f)](#testing--quality)
-[![mutation score](https://img.shields.io/badge/mutation%20score-99.8%25-2ea44f)](#testing--quality)
-[![audit](https://img.shields.io/badge/audit-3%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
+[![tests](https://img.shields.io/badge/tests-4463%20passing-2ea44f)](#testing--quality)
+[![coverage](https://img.shields.io/badge/branch%20coverage-95%25-2ea44f)](#testing--quality)
+[![mutation score](https://img.shields.io/badge/mutation%20score-100%25%20on%20audited%20modules-2ea44f)](#testing--quality)
+[![audit](https://img.shields.io/badge/audit-4%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#requirements)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> A self-developing AI that rewrites its own source code, trains its own neural network weights, and evolves autonomously through a closed feedback loop.
-> **36 modules · 7-layer architecture + 5 higher-order systems · Triple LLM brain · Deterministic core cycle.**
-> **1380 tests · 92% branch coverage · 99.8% mutation score · 3 audit rounds.**
+> A self-developing AI that predicts before it acts, changes its behaviour from measured experience, evolves a genome that provably moves its own benchmark, improves its own reasoning strategies, and derives laws about itself that it then has to defend against an experiment.
+> **7-layer architecture + 5 higher-order systems + 7 contours of the development spec · provider-agnostic cortex · deterministic core cycle.**
+> **4463 tests · 95% branch coverage · 100% mutation score on every audited module · 4 audit rounds.**
 > **Safe defaults:** source self-rewriting is opt-in (`AEGIS_CODE_SELF_MOD_ENABLED=1`), the control plane binds to `127.0.0.1`, and self-written skills run only in a child-process sandbox.
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
@@ -24,16 +24,28 @@ AEGIS is not a chatbot wrapper. It is a stateful, continuously running cognitive
 PERCEIVE → EVALUATE → DECIDE → ACT → REFLECT
 ```
 
-The **core cognitive cycle is deterministic** — reward, confidence, importance, emotions, goals, dreams, and self-modification are all driven by real system metrics (`success_rate`, `energy`, `error_rate`, `goal_completion`), not random number generators. The only non-deterministic part is knowledge-source/topic selection in the external-learning and spider-agent layers, where a topic is picked at random when none is supplied.
+The **whole system is deterministic**, not just its core. Reward, confidence, importance, emotions, goals, dreams and self-modification are driven by real system metrics (`success_rate`, `energy`, `error_rate`, `goal_completion`); the last places that still called an RNG — topic selection, agent staggering, id assignment, dataset shuffling — now rotate through fixed lists or index by a `blake2b` hash of their own inputs, and quasi-random sampling uses Halton sequences. A test walks every file under `aegis/` and fails on an `import random`, an `np.random`, or any RNG call, and a second test proves the replacements still do real work rather than returning a constant.
+
+This is what makes the rest of the README measurable. Every acceptance number below is a comparison of *before* against *after*; if two identical runs could differ, none of those differences would mean anything. Two 300-tick runs from one state produce a byte-identical state digest.
 
 On top of that cycle run five higher-order systems that give it a causal model of
 the world, a connected knowledge graph, benchmark-gated evolution, value-driven
 motivation, and a closed loop from real outcomes back into training data — see
 [below](#the-five-higher-order-systems).
 
+Above **those** run the seven contours of the development specification, which
+turn each of those capabilities from something the system *has* into something it
+can be held to: a forecast written down before the action and scored after it, a
+behaviour policy whose rules carry evidence and expire, motivation that spends a
+real budget, evolution over a genome that provably moves the metric, reasoning
+strategies the system writes and then has to prove on held-out problems, and a
+discovery engine that produces laws about itself and has to defend them against a
+preregistered experiment — see
+[below](#the-seven-contours-of-the-development-spec).
+
 ---
 
-## Architecture — 7 Layers, 36 Modules
+## Architecture — 7 Layers, 5 Systems, 7 Contours
 
 | Layer | Name | Key Files |
 |---|---|---|
@@ -45,6 +57,23 @@ motivation, and a closed loop from real outcomes back into training data — see
 | L5 | World Interface | `agent_system.py`, `sensor_cortex.py`, `external_learning.py` |
 | L6 | Ethics Core | `ethics_core.py` *(immutable)*, `self_preservation.py` |
 | Meta | Higher-Order | `meta_consciousness.py`, `meta_regulation.py`, `meta_reflection.py` |
+
+The tick itself is five phase modules (`layers/phases/*.py`) sharing one
+`TickContext`, so a phase can be read, budgeted and tested on its own. Everything
+time-dependent goes through an injectable `clock.py`, which is what makes a
+300-tick determinism test possible at all.
+
+| Package | What lives there |
+|---|---|
+| `cortex/` | Provider-agnostic LLM router — roles, JSON schemas with one repair attempt, response cache, circuit breaker, failover. The core runs with no provider at all. |
+| `layers/world/` | State encoder, transition and outcome models, forecast scorer, deterministic rollout simulator |
+| `layers/planner.py` | Plans compared on expected value, cost and risk — not the highest-priority goal |
+| `layers/policy/` | Preferences, mined rules with a controlled trial, counterfactual regret |
+| `layers/motivation/` | Resource leases, priority with anti-starvation, ROI-driven reallocation |
+| `layers/evolution/` | Genome, deterministic operators, population, isolated variant evaluation |
+| `layers/reasoning/` | Strategy DSL, interpreter, library, weakness detector, synthesiser, arena |
+| `layers/discovery/` | Data pool, hypothesis scan with FDR control, symbolic regression, preregistered experiments, discovery ledger |
+| `telemetry/`, `store/`, `safety/` | Metric time series, versioned stores with migrations, the immutable-parameter contract |
 
 ---
 
@@ -58,7 +87,7 @@ about causes, keeps only changes that measurably help, and learns from real resu
 |---|---|---|---|
 | 1 | **World Model** | `world_model.py` | Learns cause→effect links from observed outcomes (Laplace-smoothed frequencies) and builds causal chains: `objective → constraints → risks → plan → expected result`. Answers "what tends to fail around this topic" from memory, not from text generation. |
 | 2 | **Cognitive Graph** | `cognitive_graph.py` | Typed graph of knowledge and experience (`concept / event / skill / goal / outcome`, edges `causes / requires / learned_from / led_to`). Gives path finding, relevance and centrality, so reasoning uses **connected** knowledge instead of a flat recency list. |
-| 3 | **Evolution Engine** | `evolution_engine.py` | Natural selection over its own parameters: `champion → mutation → candidate → held-out benchmark → keep only if better`. This is what makes self-modification ≠ self-*improvement* an enforced distinction: a change survives only when an external, verifiable metric says so. |
+| 3 | **Evolution Engine** | `evolution_engine.py`, `layers/evolution/` | Natural selection over its own parameters: `champion → mutation → candidate → held-out benchmark → keep only if better`, since M5 over a population of ten variants with the winner confirmed on a third, untouched split. This is what makes self-modification ≠ self-*improvement* an enforced distinction: a change survives only when an external, verifiable metric says so. |
 | 4 | **Goal Intelligence** | `goal_intelligence.py` | Turns internal state into motivation: `goal → value → action choice → reward`. Keeps a learned utility per objective, updated from realized reward, and picks what to pursue by expected value under four intrinsic drives (competence, knowledge, coherence, stability). |
 | 5 | **Feedback Loop** | `feedback_loop.py` | Closes the experience loop: `situation → decision → real result → evaluation → cause → new experience`. Every row is structured (it records **why** an outcome happened), so the LoRA dataset carries causes rather than raw text. |
 
@@ -101,16 +130,69 @@ the wiring is removed:
 | Cognitive Graph | The **next learning topic** is the concept most connected to the current focus; the flat recency slice is only the fallback. |
 | Goal Intelligence | Learned utility **selects the decision**, before ethics judges it and before the LLM may override it — so on non-LLM ticks motivation alone steers the action. |
 | Feedback Loop | The experience log **reaches the LoRA dataset**, which is the only training source carrying *why* an outcome happened. |
-| Evolution Engine | Already closed by construction (benchmark-gated) — see the limitation below. |
+| Evolution Engine | Closed by construction (benchmark-gated), and since M5 the genes it selects on are ones that provably move that benchmark — see the note below. |
 
-> **Known limitation, stated plainly.** The Evolution Engine's *mechanism* is
-> sound — mutate, benchmark, keep or revert, with the champion never updated from
-> self-report. But the parameters it currently mutates (`learning_rate`,
-> `attention_heads`, …) are simulated knobs that do not causally drive the skill
-> benchmark, so selection currently rides on benchmark drift from other changes.
-> Making the loop meaningful requires wiring the genome to something that
-> measurably moves the metric. This is an architectural gap, not a bug, and it is
-> tracked in [`docs/АУДИТ.md`](docs/АУДИТ.md).
+> **The limitation this section used to declare is closed.** The Evolution
+> Engine's mechanism was always sound — mutate, benchmark, keep or revert, with
+> the champion never updated from self-report — but the genes it mutated
+> (`learning_rate`, `attention_heads`, …) did not causally drive the benchmark,
+> so selection rode on drift from other changes. The genome has been replaced by
+> one made only of parameters that provably move the measured metric: beam width
+> and rollout depth, the planner's scoring weights, the policy's influence and
+> evidence threshold, exploration pressure, world-model smoothing and forgetting,
+> the reasoning budget. Every gene carries a sensitivity test — a gene that
+> cannot be shown to move the fitness by at least 0.01 is removed from the genome
+> rather than left to spin. The LoRA hyper-parameters stay in
+> `SelfModification.parameters`, where the training contour still uses them, and
+> are out of the genome entirely. See [`docs/ЭВОЛЮЦИЯ.md`](docs/%D0%AD%D0%92%D0%9E%D0%9B%D0%AE%D0%A6%D0%98%D0%AF.md).
+
+---
+
+## The Seven Contours of the Development Spec
+
+The five systems above make the cycle *effective*. These seven make each of its
+claims *checkable* — every one of them has a metric for "this changed behaviour"
+and a metric for "the change helped", and both are asserted by a test.
+
+| # | Contour | The link it adds | Acceptance |
+|---|---|---|---|
+| M1 | **Predictive world model** | The forecast becomes an object: written before the action, scored after it, and its error drives curiosity. | Brier ≤ 0.18, ECE ≤ 0.08, strictly better than "always the mean rate" and "always 0.5" |
+| M2 | **Planner** | Decisions come from comparing plans under the world model, not from the highest-priority goal. | **+113%** mean reward against the greedy baseline at equal budget; planning 18.3 ms |
+| M3 | **Behaviour policy** | The fifth arrow — `experience → behaviour change` — as an object: rules with evidence, a controlled trial and an expiry. | Zero rules on noise; suppression and recovery scenarios; `behaviour_delta_rate > 0` |
+| M4 | **Motivation with resources** | Priority as a number and resource as something that runs out. An action without a lease does not run. | Budget exhaustion, anti-starvation, safety floors, ROI never reaching zero |
+| M5 | **Population evolution** | Ten variants a generation, isolated evaluation, selection on a validation split confirmed on a test split. | +15% champion fitness over 20 generations, `valid_test_gap ≤ 0.05` |
+| M6 | **Thinking as data** | A reasoning strategy is a declarative pipeline the system writes, judges on held-out problems, and retires. | held-out **0.685 → 0.965** (+28.0 pp), confident errors 0.305 → **0.000** |
+| M7 | **Discovery engine** | `data → hypothesis → formula → experiment → law`, with false-discovery control and a plan frozen before the data. | Planted law recovered at **R²_valid 0.9999**, 3 replicated discoveries, **0** from 1296 comparisons of noise |
+
+Bold figures are measured by the acceptance scripts below; the rest are the
+gates those runs had to clear.
+
+Two design decisions run through all seven.
+
+**A strategy is not Python.** M6 synthesises reasoning strategies, and one of the
+synthesisers is a language model. A synthesised strategy that were Python would be
+arbitrary code execution with a friendly name, so it is a list of records drawn
+from twelve operations, run by an interpreter that can do exactly those twelve,
+counts every step against one budget, and reaches only what it was handed.
+
+**Not finding a law is the hard part.** A scan over a dozen metrics at six lags
+under three measures performs hundreds of tests; at α = 0.05 roughly one in twenty
+useless pairs clears an uncorrected threshold. So the correction is applied over
+every comparison made rather than the ones that looked promising, the experiment's
+plan is hashed before any data exists, and a refutation is kept forever — both
+because it is knowledge and because otherwise the same appealing pattern is
+rediscovered every thousand ticks.
+
+Acceptance is reproducible, not asserted:
+
+```bash
+python scripts/ab_planner.py       # M2 — the planner against a greedy baseline
+python scripts/ab_policy.py        # M3 — behaviour with and without the policy
+python scripts/evo_bench.py        # M5 — 20 generations
+python scripts/reason_bench.py     # M6 — 30 synthesis cycles
+python scripts/discovery_soak.py   # M7 — a planted law, and pure noise
+python scripts/soak.py             # VII.5 — the 24-hour run
+```
 
 ---
 
@@ -208,17 +290,38 @@ AEGIS/
 ├── requirements-ml.txt         # local model + LoRA (multi-GB, pinned)
 ├── requirements-dev.txt        # pytest, pytest-bdd, coverage, httpx
 ├── docs/
-│   ├── АУДИТ.md               # 3 audit rounds — every finding, fix and test
+│   ├── АУДИТ.md               # 4 audit rounds — every finding, fix and test
 │   ├── QA.md                  # QA procedures, quality metrics, gates
-│   └── СИСТЕМЫ.md             # the five higher-order systems in detail
+│   ├── СИСТЕМЫ.md             # the five higher-order systems in detail
+│   ├── ТЗ-РАЗВИТИЕ.md         # the development specification
+│   ├── ПЛАН-ЭТАПОВ.md         # its twelve stages and what each delivered
+│   ├── ПРОГНОЗ.md             # M1–M2 — prediction and planning
+│   ├── РЕСУРСЫ.md             # M3–M4 — behaviour policy and resources
+│   ├── ЭВОЛЮЦИЯ.md            # M5 — the genome and why it was replaced
+│   ├── МЫШЛЕНИЕ.md            # M6 — reasoning as data
+│   └── ОТКРЫТИЯ.md            # M7 — the discovery engine
 ├── scripts/
-│   └── mutation_test.py       # dependency-free mutation-testing harness
-├── tests/                      # 1380 tests
-│   └── features/              # executable Gherkin specifications
+│   ├── mutation_test.py       # dependency-free mutation-testing harness
+│   ├── ab_planner.py          # M2 acceptance — planner vs greedy
+│   ├── ab_policy.py           # M3 acceptance — behaviour with/without policy
+│   ├── evo_bench.py           # M5 acceptance — 20 generations
+│   ├── reason_bench.py        # M6 acceptance — 30 synthesis cycles
+│   ├── discovery_soak.py      # M7 acceptance — planted law, and noise
+│   ├── soak.py                # VII.5 — the 24-hour run
+│   ├── check_no_stubs.py      # no `pass`-bodied production code
+│   └── check_undefined_names.py
+├── tests/                      # 4463 tests
+│   └── features/              # 9 executable Gherkin specifications
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
+│   ├── clock.py               # injectable clock — what makes determinism testable
 │   ├── event_bus.py
 │   ├── llm.py                 # Triple LLM: DeepSeek + Claude + Local LoRA
+│   ├── cortex/                # provider-agnostic router, schemas, cache, breaker
+│   ├── safety/                # immutable/bounded/monotonic parameter contract
+│   ├── store/                 # versioned stores, migrations, atomic writes
+│   ├── telemetry/             # metric time series, percentiles, compaction
+│   ├── util/                  # deterministic stats — Wilson, BH-FDR, Welch, BIC
 │   ├── api/
 │   │   └── server.py          # FastAPI + WebSocket (token-guarded)
 │   ├── dashboard/
@@ -226,6 +329,14 @@ AEGIS/
 │   ├── eval/                  # benchmark, skill library, isolated sandbox
 │   └── layers/
 │       ├── substrate.py
+│       ├── phases/            # PERCEIVE EVALUATE DECIDE ACT REFLECT, budgeted
+│       ├── world/             # M1 — encoder, transition/outcome models, scorer
+│       ├── planner.py         # M2 — plans compared on value, cost and risk
+│       ├── policy/            # M3 — preferences, mined rules, regret
+│       ├── motivation/        # M4 — leases, priority, ROI reallocation
+│       ├── evolution/         # M5 — genome, operators, population
+│       ├── reasoning/         # M6 — DSL, interpreter, weakness, synthesis, arena
+│       ├── discovery/         # M7 — data pool, hypotheses, symbolic, experiments
 │       ├── memory.py
 │       ├── consciousness.py
 │       ├── emotions.py
@@ -454,25 +565,46 @@ API keys can also be set at runtime via the dashboard (LLM Brain tab).
 ```bash
 pip install -r requirements-dev.txt
 
-python -m pytest -q                                    # 1380 tests
+python -m pytest -q                                    # 4463 tests, ~4.5 min
 python -m coverage run -m pytest -q && python -m coverage report   # gate: 90%
 python scripts/mutation_test.py                        # gate: no survivors
+python scripts/check_no_stubs.py                       # no `pass`-bodied production code
 ```
 
 No ML dependencies are required — the whole suite runs offline (no network, no LLM).
 
 | Metric | Value | Gate |
 |---|---:|---:|
-| Tests | **1380** (+2 skipped) | all green |
-| Branch coverage (whole package) | **92%** | **90%** |
-| Mutation score | **99.8%** (446/447) | no survivors |
-| Modules at 100% mutation score | **12 of 13** | — |
+| Tests | **4463** passing (+2 skipped) | all green |
+| Branch coverage (whole package) | **95%** | **90%** |
+| Mutation score, modules audited this round | **100%** | no survivors |
+| Executable Gherkin specifications | **9 feature files** | — |
 
 **Levels.** Unit tests per module · integration tests running the five systems
-inside a real `Substrate` tick · executable **Gherkin** specifications
-(`tests/features/*.feature`, driven by `pytest-bdd`) · audit regression tests ·
-an API contract sweep derived from the app's own route table · a dashboard
-contract test that checks all 161 field reads against the real status payload.
+and the seven contours inside a real `Substrate` tick · executable **Gherkin**
+specifications (`tests/features/*.feature`, driven by `pytest-bdd`) · audit
+regression tests · an API contract sweep derived from the app's own route table ·
+a dashboard contract test that checks every field read against the real status
+payload · a contract test that reads the development specification itself and
+asserts each numbered requirement against the code.
+
+Four kinds of test earn their place by catching what unit tests cannot:
+
+- **Determinism end-to-end** — two 300-tick runs from one state must produce a
+  byte-identical digest, with a companion test that splices in a genuine
+  `random.choice` and *requires* the comparison to fail. Without it, a digest
+  that accidentally covered nothing would look like a passing guarantee.
+- **Measured phase budgets** — the §3.4 ceilings (PERCEIVE ≤5 ms · EVALUATE
+  ≤10 ms · DECIDE ≤30 ms · ACT ≤20 ms · REFLECT ≤15 ms) are asserted against a
+  real wall clock in a subprocess. Run under the frozen clock the same test
+  passes while measuring zero, which is how it was found to be vacuous.
+- **Migration from a real v1 snapshot** — `tests/fixtures/legacy_state/` holds
+  pre-spec files in their original shapes. It found a migration that named a
+  function which does not exist: every v1 upgrade raised, was caught, logged,
+  and silently discarded the evolution champion and its whole lineage.
+- **Crash resilience** — SIGTERM mid-write, torn files, files from a future
+  schema version. The system must come back up with either the old complete
+  state or the new one, never half of each.
 
 **Mutation testing** uses a dependency-free in-repo harness (`scripts/mutation_test.py`):
 mutmut needs WSL on Windows and mutatest 3.1.0 is broken on Python 3.11. It flips
@@ -500,7 +632,7 @@ The engineering docs are written in Russian; this README is the English entry po
 
 | Document | What is in it |
 |---|---|
-| [`docs/АУДИТ.md`](docs/АУДИТ.md) | All three audit rounds — every finding with file:line, risk, failure scenario and the fix, plus the "red before the fix" proof for each regression test |
+| [`docs/АУДИТ.md`](docs/АУДИТ.md) | All four audit rounds — every finding with file:line, risk, failure scenario and the fix, plus the "red before the fix" proof for each regression test |
 | [`docs/QA.md`](docs/QA.md) | Test levels, reproduction commands, coverage gate, mutation-testing methodology, test-isolation rules and the pre-merge checklist |
 | [`docs/СИСТЕМЫ.md`](docs/СИСТЕМЫ.md) | The five higher-order systems in detail — data structures, tick integration, persistence |
 | [`docs/ПРОГНОЗ.md`](docs/ПРОГНОЗ.md) | The predictive world model — forecast written before the action, scored after it, and the error that drives curiosity |
@@ -509,6 +641,7 @@ The engineering docs are written in Russian; this README is the English entry po
 | [`docs/МЫШЛЕНИЕ.md`](docs/МЫШЛЕНИЕ.md) | Thinking as data — a strategy DSL that is not Python, weakness detection with false-discovery control, and the three gates of the arena |
 | [`docs/ОТКРЫТИЯ.md`](docs/ОТКРЫТИЯ.md) | The discovery contour — how a hypothesis becomes a formula, an experiment and a registered law, and every gate that stops it registering noise |
 | [`docs/ТЗ-РАЗВИТИЕ.md`](docs/ТЗ-РАЗВИТИЕ.md) | The development specification the seven new contours are built to |
+| [`docs/ПЛАН-ЭТАПОВ.md`](docs/ПЛАН-ЭТАПОВ.md) | Its twelve stages — what each one delivered, and the acceptance number it had to clear |
 
 ---
 
