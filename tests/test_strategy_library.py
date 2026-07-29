@@ -94,7 +94,7 @@ def test_a_stored_built_in_marked_retired_comes_back_active(tmp_path):
     every later comparison is against a smaller set than it claims."""
     path = tmp_path / "strategies.json"
     first = Library(store_path=path)
-    first.strategies["direct"].retired = True
+    first.strategies["direct"].status = "retired"
     first.save()
     assert Library(store_path=path).get("direct").retired is False
 
@@ -113,6 +113,93 @@ def test_retiring_something_that_does_not_exist_reports_so(library):
 def test_a_strategy_is_in_use_until_it_is_retired(library):
     assert Strategy(name="fresh").retired is False
     assert Strategy.from_dict({"name": "fresh"}).retired is False
+
+
+# ── standing ─────────────────────────────────────────────────────────
+
+def test_the_three_standings_are_distinguished(library):
+    ordinary = library.get("direct")
+    trial = library.admit("t", [{"op": "REFLECT"}], status="trial")
+    gone = library.admit("g", [{"op": "REFLECT"}, {"op": "REFLECT"}])
+    library.retire("g")
+    assert (ordinary.status, ordinary.on_trial, ordinary.retired) == \
+        ("active", False, False)
+    assert (trial.status, trial.on_trial, trial.retired) == ("trial", True, False)
+    assert (gone.status, gone.on_trial, gone.retired) == ("retired", False, True)
+
+
+def test_a_trial_is_in_use_but_not_in_service(library):
+    """It runs — that is what a trial is — but it is not what the system would
+    answer with, and the two lists are what say so."""
+    trial = library.admit("t", [{"op": "REFLECT"}], status="trial")
+    assert trial in library.in_use() and trial not in library.active()
+    assert trial in library.trials()
+
+
+def test_a_retired_strategy_is_in_neither_list(library):
+    gone = library.admit("g", [{"op": "REFLECT"}], status="trial")
+    library.retire("g")
+    assert gone not in library.in_use() and gone not in library.trials()
+
+
+def test_an_unknown_standing_falls_back_to_ordinary_use(library):
+    assert library.admit("t", [{"op": "REFLECT"}], status="probation").status \
+        == "active"
+    assert Strategy.from_dict({"name": "x", "status": "probation"}).status \
+        == "active"
+
+
+def test_a_trial_is_promoted_only_from_trial(library):
+    library.admit("t", [{"op": "REFLECT"}], status="trial")
+    assert library.promote("t") is True
+    assert library.get("t").status == "active"
+    assert library.promote("t") is False
+    assert library.promote("direct") is False
+    assert library.promote("imaginary") is False
+
+
+def test_a_trial_declares_which_class_it_is_for(library):
+    library.admit("mine", [{"op": "REFLECT"}], status="trial",
+                  family="grid_planning", weakness="family=grid_planning",
+                  incumbent="direct")
+    trial = library.get("mine")
+    assert trial.family == "grid_planning" and trial.incumbent == "direct"
+    assert library.trials("grid_planning") == [trial]
+    assert library.trials("magnitude") == []
+
+
+def test_a_trial_with_no_class_is_for_all_of_them(library):
+    """Measured: filtering these out meant a trial accepted for a weakness that
+    spanned classes got no traffic at all for a whole thirty-cycle run."""
+    library.admit("mine", [{"op": "REFLECT"}], status="trial")
+    assert library.trials("magnitude") and library.trials("grid_planning")
+
+
+def test_a_trials_standing_survives_a_restart(tmp_path):
+    path = tmp_path / "strategies.json"
+    first = Library(store_path=path)
+    first.admit("mine", [{"op": "REFLECT"}], status="trial",
+                family="grid_planning", incumbent="direct",
+                weakness="family=grid_planning")
+    first.save()
+
+    trial = Library(store_path=path).get("mine")
+    assert trial.on_trial and trial.family == "grid_planning"
+    assert trial.incumbent == "direct" and trial.weakness == "family=grid_planning"
+
+
+def test_a_file_written_before_trials_existed_is_still_read(tmp_path):
+    """Dropping the old boolean would put every retired strategy back into
+    rotation on the next restart."""
+    import json
+
+    path = tmp_path / "strategies.json"
+    Library(store_path=path).save()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["strategies"].append({"name": "old", "steps": [{"op": "REFLECT"}],
+                              "retired": True})
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert Library(store_path=path).get("old").retired is True
 
 
 # ── admission ────────────────────────────────────────────────────────
@@ -387,15 +474,20 @@ def test_the_held_out_set_walks_backwards_from_its_far_index(engine, monkeypatch
     assert seen == [10_000_000, 9_999_999, 9_999_998]
 
 
-def test_a_family_falls_back_to_a_named_strategy_when_none_has_evidence(engine):
-    """``best_for`` can still decline after exploration — every strategy could
-    have been tried on a *different* family. Falling through to nothing would
-    make the engine unable to attempt the task at all."""
+def test_selection_always_returns_something_that_can_run(engine):
+    """Falling through to nothing would make the engine unable to attempt the
+    task at all, which is worse than any choice it could have made."""
     for strategy in engine.library.active():
         for _ in range(MIN_ATTEMPTS_PER_FAMILY):
             strategy.note("grid_planning", solved=True)
-    engine.library.best_for = lambda family, min_used=0: None
-    assert engine.select("grid_planning").name == engine.library.active()[0].name
+    chosen = engine.select("grid_planning")
+    assert chosen in engine.library.active()
+
+
+def test_a_library_emptied_at_run_time_is_reseeded(engine):
+    engine.library.strategies.clear()
+    assert engine.select("grid_planning") is not None
+    assert len(engine.library.active()) == len(BUILTIN_STRATEGIES)
 
 
 def test_accuracy_is_the_share_of_attempts_that_were_solved(engine):

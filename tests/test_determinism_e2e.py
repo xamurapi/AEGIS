@@ -13,7 +13,13 @@ import pytest
 from aegis.clock import frozen
 from aegis.layers.substrate import Substrate
 
-TICKS = 12
+#: §3.1 names the number: "two runs of 300 ticks from one state give a
+#: bit-identical state digest". It was twelve while a tick cost forty
+#: milliseconds of telemetry bookkeeping; with that gone the spec's own figure
+#: is affordable, and twelve ticks is not long enough for the contours that
+#: only act periodically — mining, review, capacity regulation — to have run at
+#: all, which is exactly where a determinism bug would hide.
+TICKS = 300
 SECONDS_PER_TICK = 3.0
 
 
@@ -40,6 +46,30 @@ def _quiet(substrate: Substrate) -> Substrate:
     # Sensor readings are real hardware values; the perception they feed is not
     # part of the digest, but pinning them keeps the run cheap and stable.
     substrate.sensors.read_all = lambda: {"pinned": True}
+
+    # The detached benchmark — and only it — for a reason worth stating
+    # plainly rather than hiding in a stub list.
+    #
+    # §3.4 *requires* heavy work to leave the tick: the benchmark runs in
+    # another process and its result arrives on whichever tick it happens to
+    # finish on. That tick depends on how busy the machine is — and it moves.
+    # Run alone, two runs of three hundred ticks agree; run after two thousand
+    # other tests, the benchmark lands a tick earlier or later, the reward for
+    # that tick differs, and emotions, memory, the graph and goal values all
+    # follow it apart. Bisecting found no single culprit test, which is the
+    # signature of load rather than of contamination.
+    #
+    # So the two requirements meet here: the cognitive cycle must be free of
+    # randomness (§3.1) and the heavy work must not be inside it (§3.4). What
+    # is deterministic is the cycle, not the operating system's scheduler. The
+    # digest is compared with the detached results pinned, which is the same
+    # decision already taken for the network and the model — and the same
+    # reason: otherwise this measures the machine.
+    # The environment step is *not* pinned: it runs synchronously inside ACT,
+    # so it lands on the tick that asked for it and has no timing to drift.
+    # Pinning it as well would also change which actions the planner picks,
+    # which is exactly the behaviour this test exists to compare.
+    substrate.evaluator.run = lambda *a, **k: {"score": 0.5, "per_kind": {}}
     return substrate
 
 
@@ -52,6 +82,16 @@ def _run(ticks: int = TICKS) -> tuple[str, dict]:
             for _ in range(ticks):
                 await substrate.tick()
                 clock.advance(SECONDS_PER_TICK)
+            # Detached work is stopped before the digest is taken, and that is
+            # load-bearing rather than tidy. The suite routes every
+            # `asyncio.run` through one shared loop, so a benchmark or a
+            # generation still running when this function returns keeps running
+            # *through the second run* — competing for the same cores and
+            # changing which tick the second run's own detached tasks land on.
+            # The two runs then differ for a reason that has nothing to do with
+            # the cognitive cycle, and the failure looks exactly like
+            # nondeterminism in the thing being tested.
+            await substrate.cancel_background_tasks()
 
         asyncio.run(_drive())
         return substrate.state_digest(), substrate.state_snapshot()

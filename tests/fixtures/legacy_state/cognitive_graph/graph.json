@@ -1,0 +1,45 @@
+{
+ "nodes": {
+  "benchmark": {
+   "type": "concept",
+   "meta": {
+    "source": "cycle"
+   },
+   "created": 1759100000.0,
+   "updated": 1759900000.0
+  },
+  "skill": {
+   "type": "concept",
+   "meta": {
+    "source": "eval"
+   },
+   "created": 1759110000.0,
+   "updated": 1759900000.0
+  },
+  "reward": {
+   "type": "concept",
+   "meta": {
+    "source": "cycle"
+   },
+   "created": 1759120000.0,
+   "updated": 1759900000.0
+  }
+ },
+ "edges": {
+  "benchmark": {
+   "skill": {
+    "relation": "relates_to",
+    "weight": 2.0,
+    "updated": 1759900000.0
+   }
+  },
+  "skill": {
+   "reward": {
+    "relation": "relates_to",
+    "weight": 1.5,
+    "updated": 1759900000.0
+   }
+  }
+ },
+ "ingested_episodic": 220
+}

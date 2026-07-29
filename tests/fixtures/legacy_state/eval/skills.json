@@ -1,0 +1,28 @@
+{
+ "skills": [
+  {
+   "name": "calc_basic",
+   "kinds": [
+    "calc"
+   ],
+   "code": "def solve(p):\n    return p['a'] + p['b']\n",
+   "func": "solve",
+   "attempts": 31,
+   "successes": 30,
+   "created": 1759200000.0,
+   "origin": "builtin"
+  },
+  {
+   "name": "roman_numeral",
+   "kinds": [
+    "roman"
+   ],
+   "code": "def solve(p):\n    return str(p['n'])\n",
+   "func": "solve",
+   "attempts": 14,
+   "successes": 12,
+   "created": 1759100000.0,
+   "origin": "synthesised"
+  }
+ ]
+}

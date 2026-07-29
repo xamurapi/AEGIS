@@ -56,18 +56,21 @@ TARGETS = [
     # everything the later stages verify: if the clock, the safety contract or
     # the state digest can be mutated without a test noticing, then every
     # "before/after" comparison built on top of them is decoration.
-    ("aegis/safety/immutable.py", "tests/test_immutable_params.py"),
+    ("aegis/safety/immutable.py",
+     "tests/test_immutable_params.py tests/test_immutable_across_contours.py"),
     ("aegis/util/canonical.py",
      "tests/test_canonical.py tests/test_determinism_e2e.py"),
     ("aegis/clock.py", "tests/test_clock.py"),
-    ("aegis/telemetry/store.py", "tests/test_telemetry.py"),
+    ("aegis/telemetry/store.py",
+     "tests/test_telemetry.py tests/test_sigterm_resilience.py"),
     ("aegis/layers/phases/context.py", "tests/test_tick_context.py"),
     # Determinism substitutes and versioned persistence. Both are load-bearing
     # for every later stage: a quasirandom sequence that silently stopped
     # spreading, or a migration that silently dropped a field, would corrupt
     # results everywhere downstream without failing anything locally.
     ("aegis/util/quasirandom.py", "tests/test_quasirandom.py"),
-    ("aegis/store/migrations.py", "tests/test_migrations.py"),
+    ("aegis/store/migrations.py",
+     "tests/test_migrations.py tests/test_legacy_state.py"),
     # Stage 1 — the cortex. The schema validator is the boundary that stops
     # malformed model output from entering state, and the breaker is what keeps
     # a dead provider from eating a phase budget in timeouts; a surviving
@@ -179,8 +182,37 @@ TARGETS = [
     ("aegis/layers/reasoning/library.py",
      "tests/test_strategy_library.py tests/test_bdd_reasoning.py"),
     ("aegis/layers/reasoning/__init__.py",
-     "tests/test_strategy_library.py tests/test_bdd_reasoning.py"),
+     "tests/test_strategy_library.py tests/test_arena.py "
+     "tests/test_reasoning_selection.py tests/test_bdd_reasoning.py"),
     ("aegis/eval/reasoning_bench.py", "tests/test_reasoning_bench.py"),
+    # Stage 9 — the improvement loop. The detector decides what gets worked on,
+    # the arena decides what is believed. A mutation that weakened either would
+    # let the system change its own reasoning on evidence that does not exist.
+    ("aegis/layers/reasoning/weakness.py",
+     "tests/test_weakness.py tests/test_bdd_reasoning.py"),
+    ("aegis/layers/reasoning/synthesis.py",
+     "tests/test_synthesis.py tests/test_bdd_reasoning.py"),
+    ("aegis/layers/reasoning/arena.py",
+     "tests/test_arena.py tests/test_bdd_reasoning.py"),
+    # Stage 10 — the discovery contour. Every module here decides what the
+    # system comes to believe about itself. A weakened correction, a lag that
+    # leaked, a preregistration that could be edited after the fact, or a
+    # refutation that could be forgotten would each let the engine accumulate
+    # laws that are not there — and unlike a bug, that failure looks like
+    # success while it is happening.
+    ("aegis/layers/discovery/datapool.py", "tests/test_datapool.py"),
+    ("aegis/layers/discovery/statistics.py", "tests/test_discovery_statistics.py"),
+    ("aegis/layers/discovery/hypothesis.py",
+     "tests/test_hypothesis_scan.py tests/test_bdd_discovery.py"),
+    ("aegis/layers/discovery/symbolic.py",
+     "tests/test_symbolic.py tests/test_bdd_discovery.py"),
+    ("aegis/layers/discovery/experiment.py",
+     "tests/test_experiment_prereg.py tests/test_intervention_safety.py "
+     "tests/test_bdd_discovery.py"),
+    ("aegis/layers/discovery/ledger.py",
+     "tests/test_ledger.py tests/test_bdd_discovery.py"),
+    ("aegis/layers/discovery/__init__.py",
+     "tests/test_discovery_engine.py tests/test_bdd_discovery.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",
@@ -222,6 +254,105 @@ class _Mutant:
 # cosmetics — flipping them does not change program logic, so they are
 # EQUIVALENT MUTANTS by construction and are excluded from the score.
 _COSMETIC_KWARGS = {"exc_info", "ensure_ascii", "indent", "sort_keys", "reload"}
+
+
+# Mutants that are EQUIVALENT to the original by argument rather than by
+# construction — the program behaves identically, so no test can kill them and
+# a surviving one is not a gap in the suite.
+#
+# The spec's gate is "a surviving *non-equivalent* mutant fails the build", so
+# equivalence has to be recordable. Three rules keep this from becoming a place
+# to hide real gaps:
+#
+#   1. Every entry carries a written argument for why no observable behaviour
+#      differs. "The test is hard to write" is not one.
+#   2. The entry is keyed on the *text* of the line, not its number. Edit the
+#      line and the annotation stops applying, so the mutant comes back rather
+#      than silently covering something else.
+#   3. The count of skipped mutants is printed, so a run can never quietly
+#      excuse more than a reader expects.
+#
+# Keyed by (path suffix, mutant description, stripped source line).
+KNOWN_EQUIVALENT: dict[tuple[str, str, str], str] = {
+    (
+        "discovery/hypothesis.py",
+        "boolop: Or->And",
+        "if not names or len(frame) < self.min_rows:",
+    ): (
+        "A fast path, fully subsumed by the per-pair guard below it. With `and` "
+        "the scan proceeds instead of returning early, but every lagged frame it "
+        "then builds is no longer than `frame` — `numeric()` and `lag()` only "
+        "ever drop rows — so each one trips `len(lagged) < self.min_rows` and is "
+        "skipped. Both versions return [], leave `tested` and `rejected` "
+        "untouched, and record the same `scans`. There is nothing to observe."
+    ),
+    (
+        "discovery/symbolic.py",
+        "boolop: Or->And",
+        "if not rows or not predictors:",
+    ): (
+        "Both arms already end in None by another route, confirmed by running "
+        "the mutant: with no rows `usable` is empty and the train/valid split "
+        "fails its minimum-size guard; with no predictors the library is empty, "
+        "the first size produces no candidates, and the frontier empties on the "
+        "first pass. `fit` returns None either way and touches nothing else."
+    ),
+    (
+        "discovery/symbolic.py",
+        "binop: Sub->Add",
+        "residual_sd = (sum((value - residual_mean) ** 2 for value in residuals)",
+    ): (
+        "Equivalent by the algebra of the fit, not by luck. Least squares with "
+        "an intercept forces the residuals to sum to zero, so `residual_mean` "
+        "is zero to within floating-point noise (~1e-16) and `value - mean` "
+        "and `value + mean` differ by twice that. No dataset can separate them "
+        "while the design carries an intercept column, and it always does — "
+        "`_design_matrix` prepends 1.0 to every row."
+    ),
+    (
+        "discovery/statistics.py",
+        "binop: Sub->Add",
+        "cov = sum((a - mean_x) * (b - mean_y) for a, b in zip(x, y))",
+    ): (
+        "Algebraically identical, for either factor. Expanding "
+        "Σ(a + mx)(b − my) gives Σab − my·Σa + mx·Σb − n·mx·my, and since "
+        "my·Σa = n·mx·my = mx·Σb the middle terms cancel exactly, leaving "
+        "Σab − n·mx·my — which is the covariance. The same cancellation holds "
+        "for Σ(a − mx)(b + my). Verified numerically as well: 75.0 against "
+        "74.99999999999997, a difference of one floating-point ulp."
+    ),
+    (
+        "discovery/statistics.py",
+        "boolop: Or->And",
+        "if high_x <= low_x or high_y <= low_y:",
+    ): (
+        "A fast path that computes the same answer the long way. With `and`, a "
+        "constant series is no longer caught by the guard, but `_bin_index` "
+        "returns 0 for a degenerate range, so that series occupies exactly one "
+        "bin; its marginal probability is 1, every log term becomes log(1) = 0, "
+        "and the information is 0.0. Its margin then has one entry, so "
+        "`df = (1 − 1) · (k − 1)` is zero and the function returns "
+        "(0.0, 1.0) — byte for byte what the guard returns."
+    ),
+}
+
+
+def _equivalence_reason(src_rel: str, description: str, source: str,
+                        lineno: int) -> str | None:
+    """The recorded argument for this mutant being equivalent, if there is one."""
+    lines = source.splitlines()
+    if not 1 <= lineno <= len(lines):
+        return None
+    line = lines[lineno - 1].strip()
+    # The description carries the site (" @L144"); the key does not, so that
+    # moving a line does not need the annotation rewritten.
+    bare = description.split(" @L")[0].strip()
+    normalised = src_rel.replace("\\", "/")
+    for (path_suffix, wanted, wanted_line), reason in KNOWN_EQUIVALENT.items():
+        if (normalised.endswith(path_suffix) and bare == wanted
+                and line == wanted_line):
+            return reason
+    return None
 
 
 def _cosmetic_bool_constants(tree):
@@ -362,9 +493,16 @@ def mutate_module(src_rel: str, test_rel: str) -> dict:
     backup_path.write_bytes(original_bytes)
     mutants = _enumerate_mutants(original)
     killed, survived, errored = 0, 0, []
+    equivalent: list[str] = []
     print(f"\n== {src_rel}: {len(mutants)} mutants (tests: {test_rel}) ==")
     try:
         for lineno, desc, mutated in mutants:
+            reason = _equivalence_reason(src_rel, desc, original, lineno)
+            if reason is not None:
+                # Not run at all: an equivalent mutant cannot be killed, and
+                # spending a test cycle proving that on every run is waste.
+                equivalent.append(f"  EQUIVALENT L{lineno}: {desc} — {reason}")
+                continue
             src_path.write_text(mutated, encoding="utf-8", newline="\n")
             try:
                 passed = _run_tests(test_rel)
@@ -383,11 +521,15 @@ def mutate_module(src_rel: str, test_rel: str) -> dict:
 
     total = killed + survived
     score = round(100 * killed / total, 1) if total else 100.0
-    print(f"   killed={killed} survived={survived} score={score}%")
+    excused = f", equivalent={len(equivalent)}" if equivalent else ""
+    print(f"   killed={killed} survived={survived}{excused} score={score}%")
     for line in errored:
         print(line)
+    for line in equivalent:
+        print(line)
     return {"module": src_rel, "killed": killed, "survived": survived,
-            "total": total, "score": score, "surviving": errored}
+            "total": total, "score": score, "surviving": errored,
+            "equivalent": len(equivalent)}
 
 
 def main():

@@ -135,6 +135,7 @@ def build(planner_enabled: bool, root: Path):
                             ("MOTIVATION_DIR", "motivation"),
                             ("POLICY_DIR", "policy"),
                             ("REASONING_DIR", "reasoning"),
+                            ("DISCOVERY_DIR", "discovery"),
                             ("CORTEX_DIR", "cortex")):
         (root / name).mkdir(parents=True, exist_ok=True)
         setattr(cfg, attribute, root / name)

@@ -493,6 +493,128 @@ def benjamini_hochberg(p_values, alpha: float = 0.05) -> list[bool]:
     return survives
 
 
+# ── model fit and study design (M7.7) ────────────────────────────────
+
+def r_squared(actual, predicted) -> float:
+    """Fraction of variance a model accounts for.
+
+    Not clamped at zero. A model can be *worse* than the mean of the data, and
+    a negative R² is the only honest way to say so — clamping would report the
+    useless model and the merely mediocre one as the same thing, and the
+    discovery engine uses this number to decide which formula to keep.
+    """
+    actual = [float(v) for v in actual]
+    predicted = [float(v) for v in predicted]
+    if len(actual) != len(predicted) or len(actual) < 2:
+        return 0.0
+    average = mean(actual)
+    total = sum((value - average) ** 2 for value in actual)
+    if total <= 0.0:
+        # The data is constant. A model that reproduces it exactly explains
+        # everything there is to explain; anything else explains none of it.
+        residual = sum((a - p) ** 2 for a, p in zip(actual, predicted))
+        return 1.0 if residual <= 0.0 else 0.0
+    residual = sum((a - p) ** 2 for a, p in zip(actual, predicted))
+    return 1.0 - residual / total
+
+
+def bic(residual_sum_squares: float, n: int, parameters: int) -> float:
+    """Bayesian information criterion for a least-squares fit — lower is better.
+
+    ``n·ln(RSS/n) + k·ln(n)``. The second term is why the symbolic search uses
+    this rather than R²: every extra node in an expression buys some fit, and
+    with enough nodes a formula reproduces noise exactly. BIC charges for the
+    nodes, and charges more as the data grows — which is the correct direction,
+    because more data should make an elaborate explanation harder to justify,
+    not easier.
+    """
+    n = int(n)
+    parameters = int(parameters)
+    if n <= 0:
+        return float("inf")
+    rss = max(float(residual_sum_squares), 1e-300)
+    return n * math.log(rss / n) + parameters * math.log(n)
+
+
+def bootstrap_ci(values, statistic=None, resamples: int = 200,
+                 confidence: float = 0.95) -> tuple[float, float]:
+    """Percentile confidence interval by deterministic resampling (§3.1).
+
+    Indices are derived by hashing rather than drawn from a generator, so the
+    interval a discovery is registered with is the same interval on every rerun
+    of the same data. A bootstrap whose answer moved between runs would make
+    replication — the thing this interval exists to support — untestable.
+
+    Hash indexing rather than a Halton point per position, which §3.1 offers as
+    the other deterministic substitute. A resample needs one coordinate per
+    observation, and there is no such thing as a 500-dimensional Halton point:
+    the construction needs a distinct prime base per dimension, and the early
+    terms of the high-base sequences are strongly correlated with each other
+    long before the primes run out. Hashing has neither limit.
+    """
+    from aegis.util.quasirandom import hash_unit
+
+    values = [float(v) for v in values]
+    n = len(values)
+    if n == 0:
+        return (0.0, 0.0)
+    if n == 1:
+        return (values[0], values[0])
+    statistic = statistic or mean
+    resamples = max(1, int(resamples))
+
+    estimates = []
+    for draw in range(resamples):
+        sample = [values[min(n - 1, int(hash_unit("bootstrap", draw, position) * n))]
+                  for position in range(n)]
+        estimates.append(float(statistic(sample)))
+    estimates.sort()
+
+    tail = (1.0 - clamp(float(confidence), 0.0, 1.0)) / 2.0
+    low_index = int(tail * (len(estimates) - 1))
+    high_index = int(math.ceil((1.0 - tail) * (len(estimates) - 1)))
+    return (estimates[low_index], estimates[min(high_index, len(estimates) - 1)])
+
+
+def required_n(effect_size: float, alpha: float = 0.05,
+               power: float = 0.8) -> int:
+    """Observations *per arm* for a two-sample t-test to detect ``effect_size``.
+
+    The normal approximation ``n = 2(z_{α/2} + z_β)²/d²`` — at the sample sizes
+    an experiment here can afford it agrees with the exact t-based figure to
+    within a couple of observations, and it needs no iteration.
+
+    Preregistration is what this is for (M7.6): committing to a sample size
+    *before* seeing the data is what stops an experiment from being stopped the
+    moment it happens to look significant.
+    """
+    effect = abs(float(effect_size))
+    if effect <= 0.0:
+        return 1_000_000              # no effect to find: no n would ever do
+    z_alpha = _normal_quantile(1.0 - clamp(float(alpha), 1e-9, 0.5) / 2.0)
+    z_power = _normal_quantile(clamp(float(power), 0.5, 1.0 - 1e-9))
+    n = 2.0 * (z_alpha + z_power) ** 2 / (effect * effect)
+    return max(2, int(math.ceil(n)))
+
+
+def _normal_quantile(p: float) -> float:
+    """Inverse standard normal CDF, by bisection on ``normal_sf``.
+
+    Bisection rather than a rational approximation: this is called a handful of
+    times per preregistration, forty iterations is exact to machine precision
+    for the purpose, and there is no approximation constant to get wrong.
+    """
+    p = clamp(float(p), 1e-12, 1.0 - 1e-12)
+    low, high = -40.0, 40.0
+    for _ in range(200):
+        middle = (low + high) / 2.0
+        if 1.0 - normal_sf(middle) < p:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2.0
+
+
 def mean(values) -> float:
     values = list(values)
     return sum(values) / len(values) if values else 0.0

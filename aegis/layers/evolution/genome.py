@@ -156,7 +156,11 @@ GENES: tuple[GeneSpec, ...] = (
     # How finely a problem is cut up before it is worked. A chain longer than
     # the cap is answered from a truncated problem, so this gene changes
     # accuracy on multi-step families and not only cost.
-    GeneSpec("reason_decompose_parts", "int", 4, 2, 8,
+    # Default 6, not 4: at 4 the cap cut most of the benchmark's chains short,
+    # which made decomposition look harmful and cost every strategy that used
+    # it. A default that silently discards part of the problem is a bad default
+    # however tunable it is.
+    GeneSpec("reason_decompose_parts", "int", 6, 2, 10,
              reader="DECOMPOSE max_parts", stage=8),
     GeneSpec("reason_ucb_c", "float", 1.4, 0.2, 3.0,
              reader="strategy selection", stage=9),

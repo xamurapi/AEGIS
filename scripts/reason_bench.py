@@ -7,10 +7,14 @@ decide whether a number on that curve means anything:
    walks forward from index zero; the held-out set walks back from ten million.
    They cannot meet within any run length this system will reach, so the
    separation is structural rather than bookkeeping.
-2. **Did abstention do its job?** The rate of *confident errors* — answered,
+2. **Is it what the system knows, or what it happens to be trying?** Scored
+   through ``best_known`` rather than ``select``: the selector deliberately
+   spends traffic on strategies it does not believe in, and reading a held-out
+   set through the exploration schedule measured the schedule.
+3. **Did abstention do its job?** The rate of *confident errors* — answered,
    wrong, and not an abstention — must fall. A system whose accuracy rises
    while its confident errors also rise has learned to guess more.
-3. **Is the ceiling reachable at all?** The harness reports the best single
+4. **Is the ceiling reachable at all?** The harness reports the best single
    built-in and the best hand-written combination, so a gain can be read
    against what is actually available rather than against 100%.
 
@@ -60,7 +64,7 @@ def _score(engine: ReasoningEngine, tasks: list, strategy=None) -> dict:
     """Accuracy and confident-error rate over a fixed set."""
     solved = confident_errors = abstentions = 0
     for task in tasks:
-        chosen = strategy or engine.select(str(task.family), task.id)
+        chosen = strategy or engine.best_known(str(task.family), task.id)
         trace = engine.interpreter.run(chosen, task, budget=engine._budget())
         if trace.solved:
             solved += 1
@@ -74,13 +78,33 @@ def _score(engine: ReasoningEngine, tasks: list, strategy=None) -> dict:
             "abstain_rate": abstentions / total}
 
 
-def run(cycles: int, root: Path, holdout: int) -> dict:
+def run(cycles: int, root: Path, holdout: int, *, synthesis: bool = True) -> dict:
+    """One cycle is: work a block of problems, then try to improve.
+
+    Improvement is the whole loop of M6.6–M6.8 — scan for a weakness, write
+    candidates for it, judge each in the arena, and conclude any trial that has
+    had its run. ``synthesis=False`` runs selection alone, which is what says
+    how much of the curve is synthesis and how much is the selector finding the
+    best of what it already had.
+    """
     engine = ReasoningEngine(store_path=root / "strategies.json")
     tasks = _holdout_tasks(holdout)
 
     curve = [_score(engine, tasks)]
-    for _ in range(cycles):
+    events = []
+    for cycle in range(1, cycles + 1):
         engine.solve(TASKS_PER_CYCLE)
+        if synthesis:
+            engine.scan_weakness()
+            engine.propose_strategy(tick=cycle)
+            while engine.pending_candidates():
+                verdict = engine.evaluate_candidate(tick=cycle)
+                if verdict and verdict["accepted"]:
+                    events.append((cycle, "accepted", verdict["candidate"],
+                                   verdict["holdout_gain"]))
+            for concluded in engine.review_trials(tick=cycle):
+                events.append((cycle, concluded["outcome"],
+                               concluded["strategy"], concluded["reason"]))
         curve.append(_score(engine, tasks))
 
     per_builtin = {
@@ -89,7 +113,10 @@ def run(cycles: int, root: Path, holdout: int) -> dict:
     reachable = _score(engine, tasks, REACHABLE)["accuracy"]
 
     return {"curve": curve, "per_builtin": per_builtin, "reachable": reachable,
-            "weaknesses": engine.weaknesses(), "status": engine.status()}
+            "weaknesses": engine.weaknesses(), "status": engine.status(),
+            "events": events,
+            "synthesised": [row for row in engine.library.table()
+                            if row["origin"] != "builtin"]}
 
 
 def main() -> int:
@@ -98,12 +125,15 @@ def main() -> int:
     parser.add_argument("--holdout", type=int, default=HOLDOUT)
     parser.add_argument("--gain", type=float, default=0.15,
                         help="required rise in held-out accuracy over the start")
+    parser.add_argument("--no-synthesis", action="store_true",
+                        help="selection only — how much of the curve is not synthesis")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         with frozen():
-            result = run(args.cycles, root, args.holdout)
+            result = run(args.cycles, root, args.holdout,
+                         synthesis=not args.no_synthesis)
 
     curve = result["curve"]
     print(f"\nreason bench — {args.cycles} cycles, {args.holdout} held-out "
@@ -119,6 +149,13 @@ def main() -> int:
                               key=lambda row: -row[1])[:3]:
         print(f"    {name:28s} {score:.4f}")
     print(f"  reachable by combining them  {result['reachable']:.4f}")
+    if result["synthesised"]:
+        print("  synthesised strategies:")
+        for row in result["synthesised"]:
+            print(f"    {row['name']:52s} {row['status']:7s} "
+                  f"used {row['used']:4d}  acc {row['accuracy']:.3f}")
+    for cycle, kind, name, detail in result["events"]:
+        print(f"    cycle {cycle:3d}  {kind:8s} {name} ({detail})")
     if result["weaknesses"]:
         worst = result["weaknesses"][0]
         print(f"  weakest class                {worst['family']} "

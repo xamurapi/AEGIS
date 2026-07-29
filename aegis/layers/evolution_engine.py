@@ -463,6 +463,30 @@ class EvolutionEngine:
         except Exception:
             logger.exception("Evolution metric publication failed")
 
+    def population_report(self) -> dict:
+        """The generation in full — the panel of §M10.1.
+
+        Every variant with its fitness and origin, not just the winner. Which
+        slot a genome came from is the part that says whether the composition
+        rules are earning their place: a lineage where the cortex slot never
+        wins is a lineage where that slot is spending tokens for nothing.
+        """
+        reports = [report.as_dict() for report in self.last_reports]
+        for index, report in enumerate(reports):
+            if index < len(self.population.origins):
+                report["origin"] = self.population.origins[index]
+        return {
+            "generation": self.generation,
+            "running": self.generation_running,
+            "champion": self.champion,
+            "valid_test_gap": self.valid_test_gap,
+            "promotions": self.promotions,
+            "rollbacks": self.rollbacks,
+            "variants": reports,
+            "population": self.population.status(),
+            "lineage": self.lineage[-20:],
+        }
+
     def status(self) -> dict:
         return {
             "generation": self.generation,

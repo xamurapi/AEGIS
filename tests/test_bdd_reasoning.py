@@ -174,3 +174,92 @@ def _no_weakness(ctx):
 @pytest.fixture(autouse=True)
 def _quiet_logs(caplog):
     caplog.set_level("ERROR", logger="aegis.reasoning")
+
+
+# ── weakness, synthesis and the arena (stage 9) ──────────────────────
+
+@when(parsers.parse("{count:d} attempts fail at random"))
+def _random_failures(ctx, count):
+    from aegis.util.quasirandom import hash_index
+
+    ctx["rows"] = [
+        {"task": f"t{index}", "family": ("alpha", "beta", "gamma")[index % 3],
+         "solved": hash_index(3, "noise", index) != 0,
+         "features": {"numeric": bool(index % 2), "steps": index % 4}}
+        for index in range(count)]
+
+
+@when(parsers.parse("{failing:d} attempts of one kind fail among {count:d} that "
+                    "mostly do not"))
+def _one_weak_kind(ctx, failing, count):
+    _random_failures(ctx, count)
+    ctx["rows"] += [{"task": f"w{index}", "family": "delta", "solved": False,
+                     "features": {"brittle": True}} for index in range(failing)]
+
+
+@then("no weakness should be reported")
+def _no_weakness_reported(ctx):
+    assert ctx["engine"].detector.scan(ctx["rows"]) == []
+
+
+@then("that kind should be reported as a weakness")
+def _weakness_reported(ctx):
+    found = ctx["engine"].detector.scan(ctx["rows"])
+    assert any("brittle" in weakness.combo for weakness in found)
+
+
+@when(parsers.parse("{rounds:d} rounds of work and improvement are run"))
+def _improvement_rounds(ctx, rounds):
+    engine = ctx["engine"]
+    engine.set_genome({"reason_decompose_parts": 10})
+    for cycle in range(1, rounds + 1):
+        engine.solve(64)
+        engine.scan_weakness()
+        engine.propose_strategy(tick=cycle)
+        while engine.pending_candidates():
+            engine.evaluate_candidate(tick=cycle)
+        engine.review_trials(tick=cycle)
+
+
+@then("a strategy that is not built in should exist")
+def _synthesised_exists(ctx):
+    assert [s for s in ctx["engine"].library.strategies.values() if not s.builtin]
+
+
+@then("every synthesised strategy should be on trial or promoted")
+def _on_trial_or_promoted(ctx):
+    synthesised = [s for s in ctx["engine"].library.strategies.values()
+                   if not s.builtin]
+    assert synthesised
+    assert all(s.status in ("trial", "active", "retired") for s in synthesised)
+
+
+@then("no synthesised strategy should be in service without having run")
+def _no_untested_promotion(ctx):
+    for strategy in ctx["engine"].library.active():
+        if not strategy.builtin:
+            assert strategy.used() > 0, strategy.name
+
+
+@when(parsers.parse('a strategy that always abstains is judged for "{family}"'))
+def _judge_always_abstain(ctx, family):
+    from aegis.layers.reasoning.weakness import Weakness
+
+    engine = ctx["engine"]
+    weakness = Weakness(combo=(f"family={family}",), fail_rate=0.9,
+                        base_rate=0.2, support=40, fails=36, lower=0.7,
+                        excess=0.7, p_value=1e-6, rank=28.0, family=family)
+
+    class Bare:
+        steps = [{"op": "ABSTAIN", "reason": "no"}]
+        name = "always_abstain"
+
+    ctx["verdict"] = engine.arena.evaluate(Bare(), weakness,
+                                           engine.library.get("direct"))
+
+
+@then("it should be refused for regressing the general benchmark")
+def _refused_for_regression(ctx):
+    verdict = ctx["verdict"]
+    assert not verdict.accepted
+    assert any("general benchmark" in reason for reason in verdict.reasons)

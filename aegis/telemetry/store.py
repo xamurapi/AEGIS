@@ -102,6 +102,17 @@ class Telemetry:
         self.flushes = 0
         self.downsamples = 0
         self.dropped = 0
+        #: Rows currently on disk, per file. Counted once when a file is first
+        #: touched and maintained from then on.
+        #:
+        #: This exists because the compaction check used to answer "is this
+        #: series over its cap" by reading the whole file — on every flush, for
+        #: every metric. Compaction almost never fires (the cap is two hundred
+        #: thousand rows) so the read was almost always wasted, and it grew with
+        #: the length of the run: fifty-seven files, read end to end, inside a
+        #: cognitive phase. It was 86% of the tick's measured cost and the
+        #: reason ACT and PERCEIVE sat over their §3.4 budgets.
+        self._rows_on_disk: dict[str, int] = {}
 
     # ── naming ───────────────────────────────────────────────────────
 
@@ -166,13 +177,39 @@ class Telemetry:
             path = self._dir / f"{name}.jsonl"
             try:
                 with path.open("a", encoding="utf-8") as fh:
+                    # A kill during a previous append can leave the last line
+                    # without its newline. Appending straight onto it would
+                    # glue the first new row to the torn one and lose both —
+                    # the tear is already unreadable, and this stops it taking
+                    # a good record with it.
+                    # Checked only on the first flush that touches a file. Past
+                    # that this store wrote the last line itself and knows it
+                    # ended in a newline; asking the file system again on every
+                    # flush costs a stat and a seek per metric per tick — the
+                    # same per-flush IO the row counter exists to avoid, put
+                    # straight back.
+                    if name not in self._rows_on_disk and self._needs_newline(path):
+                        fh.write("\n")
                     for row in rows:
                         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                 written += len(rows)
             except Exception:
                 logger.warning("Failed to write telemetry for %s", name, exc_info=True)
                 continue
-            self._compact_if_needed(path)
+            known = self._rows_on_disk.get(name)
+            # The rows are already in the file by now, so a first count reads
+            # the new total directly; afterwards it is simple arithmetic.
+            self._rows_on_disk[name] = (self._count_file(path) if known is None
+                                        else known + len(rows))
+            # A cheap pre-filter on the in-memory count, deliberately looser
+            # than the real threshold: it only has to be right about when *not*
+            # to look at the file. The exact decision — over the cap or not — is
+            # made inside, from the file itself, because the count kept here is
+            # an estimate and compacting a series that did not need it would
+            # throw away resolution for nothing.
+            if self._rows_on_disk[name] > self._max_rows:
+                if self._compact_if_needed(path):
+                    self._rows_on_disk[name] = self._count_file(path)
         self._buffer.clear()
         self._pending = 0
         self._last_flush = CLOCK.now()
@@ -181,6 +218,42 @@ class Telemetry:
         return written
 
     # ── retention ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _needs_newline(path: Path) -> bool:
+        """Whether the file ends mid-line, which a kill during an append does.
+
+        Reads one byte from the end rather than the file: this runs on every
+        flush, and the whole point of the surrounding work is that the flush
+        does not read files.
+        """
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if size == 0:
+            return False
+        try:
+            with path.open("rb") as handle:
+                handle.seek(-1, 2)
+                return handle.read(1) != b"\n"
+        except OSError:
+            return False
+
+    @staticmethod
+    def _count_file(path: Path) -> int:
+        """Lines in a file, counted without holding it in memory.
+
+        Called once per file per process — on the first flush that touches it,
+        which is the only moment the store cannot know the answer, because the
+        file may have been left by an earlier run — and again after a
+        compaction rewrites it.
+        """
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return sum(1 for _ in handle)
+        except Exception:
+            return 0
 
     def _compact_if_needed(self, path: Path) -> bool:
         """Downsample the older half once a series grows past twice its budget.

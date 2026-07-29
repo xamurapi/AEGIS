@@ -314,6 +314,30 @@ class BehaviourPolicy:
         except Exception:
             logger.exception("Policy metric publication failed")
 
+    def rules_report(self) -> list[dict]:
+        """Every rule with the evidence behind it — the panel of §M10.1.
+
+        All statuses, not only the active ones. A refuted rule is the record
+        of something the system tried and was wrong about, and an operator
+        looking at why behaviour changed needs to see what was rejected as
+        much as what was kept.
+        """
+        return [rule.to_dict() for rule in self.lifecycle.ordered()]
+
+    def effect_report(self) -> dict:
+        """Did the policy change behaviour, and did the change pay (§M3.6)?"""
+        return {
+            "behaviour_delta_rate": self.behaviour_delta_rate(),
+            "shadow": self.shadow.status(),
+            "active_rules": len(self.lifecycle.active()),
+            "suppressions": self.suppressions,
+            "promotions": self.promotions,
+            "by_status": {status: len(self.lifecycle.by_status(status))
+                          for status in sorted(
+                              {rule.status for rule in
+                               self.lifecycle.ordered()})},
+        }
+
     def status(self) -> dict:
         return {
             "preferences": self.store.status(),

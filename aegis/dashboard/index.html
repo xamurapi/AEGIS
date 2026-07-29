@@ -563,6 +563,9 @@ body {
   <div class="tab" onclick="switchTab('events')">Events</div>
   <div class="tab" onclick="switchTab('weights')">Weight Training</div>
   <div class="tab" onclick="switchTab('capability')">Capability</div>
+  <div class="tab" onclick="switchTab('forecast')">Forecast &amp; Plan</div>
+  <div class="tab" onclick="switchTab('behaviour')">Policy &amp; Resources</div>
+  <div class="tab" onclick="switchTab('discovery')">Evolution &amp; Discovery</div>
 </div>
 
 <!-- PAGE: OVERVIEW -->
@@ -980,9 +983,6 @@ body {
   <div class="grid grid-2">
     <div class="card" style="grid-column:1/-1">
       <div class="card-header"><span class="card-title">AEGIS Chat</span></div>
-      <div style="background:rgba(125,164,247,0.1);border:1px solid rgba(125,164,247,0.25);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--text-dim);line-height:1.5">
-        If you want to help this system learn faster, paste your DeepSeek or Claude API key on the <b style="color:var(--primary)">LLM Brain</b> tab for a limited period of time. Afterwards, delete the used key in your DeepSeek/Claude account and create a new one.
-      </div>
       <div class="chat-area" id="chatArea"></div>
       <div class="chat-input-row">
         <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="Voice input">&#127908;</button>
@@ -1138,7 +1138,165 @@ body {
   </div>
 </div>
 
+<!-- PAGE: FORECAST & PLAN  (spec M10.2, panels 1-2) -->
+<div class="page" id="page-forecast">
+  <div class="grid grid-4" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Brier</span>
+        <span class="card-badge badge-primary" id="wm_beats">&mdash;</span>
+      </div>
+      <div class="big-metric" id="wm_brier">&mdash;</div>
+      <div class="big-metric-label">lower is better; measured against two baselines</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Calibration error</span></div>
+      <div class="big-metric" id="wm_ece">&mdash;</div>
+      <div class="big-metric-label">ECE over 10 bins</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Surprise</span></div>
+      <div class="big-metric" id="wm_surprise">&mdash;</div>
+      <div class="big-metric-label">how unexpected the world has been</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Coverage</span></div>
+      <div class="big-metric" id="wm_coverage">&mdash;</div>
+      <div class="big-metric-label">decisions the model knew something about</div>
+    </div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Reliability curve</span>
+        <span class="card-badge" id="wm_samples">0 samples</span>
+      </div>
+      <svg id="wm_curve" viewBox="0 0 300 160"
+           style="width:100%;height:200px;background:rgba(255,255,255,.02);border-radius:8px"></svg>
+      <div class="big-metric-label" style="margin-top:6px">
+        forecast probability against how often it happened &mdash; the diagonal is perfect
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Recent forecasts</span></div>
+      <div id="wm_predictions" class="event-log" style="max-height:240px"></div>
+    </div>
+  </div>
+  <div class="grid grid-2" style="margin-top:16px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Last plan</span>
+        <span class="card-badge badge-primary" id="plan_latency">&mdash; ms</span>
+      </div>
+      <div class="big-metric" id="plan_action">&mdash;</div>
+      <div class="big-metric-label" id="plan_rationale">no plan yet</div>
+      <div id="plan_numbers" class="event-log" style="max-height:150px;margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">What it beat</span>
+        <span class="card-badge" id="plan_override">override &mdash;</span>
+      </div>
+      <div id="plan_alternatives" class="event-log" style="max-height:240px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: POLICY & RESOURCES  (spec M10.2, panels 3-4) -->
+<div class="page" id="page-behaviour">
+  <div class="grid grid-4" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Behaviour changed</span></div>
+      <div class="big-metric" id="pol_delta">&mdash;</div>
+      <div class="big-metric-label">ticks where the policy changed the top choice</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Active rules</span></div>
+      <div class="big-metric" id="pol_active">0</div>
+      <div class="big-metric-label" id="pol_statuses">&mdash;</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Counterfactual regret</span></div>
+      <div class="big-metric" id="pol_regret">&mdash;</div>
+      <div class="big-metric-label">reward given up by the policy's choice</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Leases denied</span></div>
+      <div class="big-metric" id="res_denied">0</div>
+      <div class="big-metric-label">actions deferred for want of budget</div>
+    </div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Rules and their evidence</span></div>
+      <div id="pol_rules" class="event-log" style="max-height:300px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Budgets and spend</span></div>
+      <div id="res_budgets" class="event-log" style="max-height:150px"></div>
+      <div class="card-header" style="margin-top:10px"><span class="card-title">Return on investment</span></div>
+      <div id="res_roi" class="event-log" style="max-height:130px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: EVOLUTION, THINKING & DISCOVERY  (spec M10.2, panels 5-7) -->
+<div class="page" id="page-discovery">
+  <div class="grid grid-4" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Generation</span>
+        <span class="card-badge badge-primary" id="evo_running">idle</span>
+      </div>
+      <div class="big-metric" id="evo_generation">0</div>
+      <div class="big-metric-label" id="evo_gap">valid&minus;test gap &mdash;</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Champion fitness</span></div>
+      <div class="big-metric" id="evo_fitness">&mdash;</div>
+      <div class="big-metric-label" id="evo_promotions">&mdash;</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Reasoning accuracy</span></div>
+      <div class="big-metric" id="rsn_accuracy">&mdash;</div>
+      <div class="big-metric-label" id="rsn_abstain">abstentions &mdash;</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Discoveries</span></div>
+      <div class="big-metric" id="disc_replicated">0</div>
+      <div class="big-metric-label" id="disc_counts">&mdash;</div>
+    </div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Population</span>
+        <button onclick="runGeneration()" style="background:var(--primary);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Run generation</button>
+      </div>
+      <div id="evo_variants" class="event-log" style="max-height:150px"></div>
+      <div class="card-header" style="margin-top:10px"><span class="card-title">Fitness curve</span></div>
+      <svg id="evo_spark" viewBox="0 0 300 90"
+           style="width:100%;height:110px;background:rgba(255,255,255,.02);border-radius:8px"></svg>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Thinking</span>
+        <button onclick="runSynthesis()" style="background:var(--success);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Synthesize</button>
+      </div>
+      <div id="rsn_strategies" class="event-log" style="max-height:150px"></div>
+      <div class="card-header" style="margin-top:10px"><span class="card-title">Weaknesses</span></div>
+      <div id="rsn_weaknesses" class="event-log" style="max-height:130px"></div>
+    </div>
+  </div>
+  <div class="grid grid-2" style="margin-top:16px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Discoveries and their formulas</span>
+        <button onclick="runDiscoveryScan()" style="background:var(--primary);color:#000;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px">Scan now</button>
+      </div>
+      <div id="disc_list" class="event-log" style="max-height:300px"></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">The engine</span></div>
+      <div id="disc_engine" class="event-log" style="max-height:300px"></div>
+    </div>
+  </div>
+</div>
+
 <script>
+
 let ws;
 // kill switch removed
 let lastData = {};
@@ -1210,10 +1368,12 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
-  const tabs = ['overview','mind','memory','llm','ethics','meta','agents','chat','events','weights','capability'];
+  const tabs = ['overview','mind','memory','llm','ethics','meta','agents','chat','events','weights','capability','forecast','behaviour','discovery'];
   const tabEls = document.querySelectorAll('.tab');
   const idx = tabs.indexOf(name);
   if (idx >= 0 && tabEls[idx]) tabEls[idx].classList.add('active');
+  if (name === 'discovery') { loadDiscoveryList(); }
+  if (name === 'forecast') { loadForecastList(); }
   // Close mobile menu
   document.getElementById('tabsMenu').classList.remove('mobile-open');
 }
@@ -1224,8 +1384,306 @@ function toggleMobileMenu() {
 function setText(id, v) { const el = document.getElementById(id); if(el) el.textContent = v; }
 function setBar(id, pct) { const el = document.getElementById(id); if(el) el.style.width = Math.min(100, Math.max(0, pct))+'%'; }
 
+// ── the seven contours of the development spec (M10.2) ──────────────
+//
+// Everything here reads `full_status()`, which already arrives over the
+// WebSocket every tick — no panel adds a poll. The three detail views that
+// need more than the status carries (the reliability curve, the forecast list,
+// the plan's rejected alternatives) fetch their endpoint when their tab is
+// opened, so a tab nobody looks at costs nothing.
+
+function fmt(value, digits) {
+  if (value === null || value === undefined || value === '') return '\u2014';
+  if (typeof value === 'number') return value.toFixed(digits === undefined ? 3 : digits);
+  return String(value);
+}
+
+function pct(value) {
+  if (value === null || value === undefined) return '\u2014';
+  return (Number(value) * 100).toFixed(1) + '%';
+}
+
+function logLines(id, lines) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = lines.length
+    ? lines.map(line => '<div class="event-item">' + line + '</div>').join('')
+    : '<div class="event-item" style="opacity:.55">nothing yet</div>';
+}
+
+function esc(text) {
+  return String(text === undefined || text === null ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function updateContours(d) {
+  updateForecastPanel(d);
+  updatePlanPanel(d);
+  updatePolicyPanel(d);
+  updateResourcePanel(d);
+  updateEvolutionPanel(d);
+  updateReasoningPanel(d);
+  updateDiscoveryPanel(d);
+}
+
+// ── panel 1: forecast and calibration ───────────────────────────────
+
+function updateForecastPanel(d) {
+  // The predictive half lives under `predictive`; the legacy causal-link
+  // status is what sits at the top of `world_model`.
+  const wm = (d.world_model || {}).predictive || {};
+  const cal = wm.calibration || {};
+  setText('wm_brier', fmt(cal.brier, 4));
+  setText('wm_ece', fmt(cal.ece, 4));
+  setText('wm_surprise', fmt(cal.surprise !== undefined ? cal.surprise : wm.surprise, 4));
+  setText('wm_coverage', pct(wm.coverage));
+  setText('wm_samples', (cal.samples || 0) + ' samples');
+  const badge = document.getElementById('wm_beats');
+  if (badge) {
+    const beats = cal.beats_baselines;
+    badge.textContent = beats ? 'beats both baselines' : 'not yet better';
+    badge.className = 'card-badge ' + (beats ? 'badge-success' : 'badge-primary');
+  }
+  drawReliability(cal.curve || []);
+}
+
+function drawReliability(curve) {
+  const svg = document.getElementById('wm_curve');
+  if (!svg) return;
+  const W = 300, H = 160, pad = 8;
+  let out = '<line x1="' + pad + '" y1="' + (H - pad) + '" x2="' + (W - pad) +
+            '" y2="' + pad + '" stroke="rgba(255,255,255,.25)" ' +
+            'stroke-dasharray="4 4" stroke-width="1"/>';
+  (curve || []).forEach(bin => {
+    // The scorer reports `predicted` / `observed` per bin, with `n` for how
+    // much evidence sits behind each — the radius, so a bin holding four
+    // forecasts cannot be mistaken for one holding four hundred.
+    const conf = Number(bin.predicted !== undefined ? bin.predicted : bin.confidence);
+    const acc = Number(bin.observed !== undefined ? bin.observed : bin.accuracy);
+    if (!isFinite(conf) || !isFinite(acc)) return;
+    const x = pad + conf * (W - 2 * pad);
+    const y = (H - pad) - acc * (H - 2 * pad);
+    const n = Number(bin.count || bin.n || 1);
+    const r = Math.max(2.5, Math.min(7, Math.sqrt(n)));
+    out += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="' +
+           r.toFixed(1) + '" fill="var(--primary)" fill-opacity="0.75"/>';
+  });
+  svg.innerHTML = out;
+}
+
+// ── panel 2: the plan ───────────────────────────────────────────────
+
+function updatePlanPanel(d) {
+  const planner = d.planner || {};
+  const plan = planner.last_plan;
+  setText('plan_latency', fmt(planner.last_latency_ms, 1) + ' ms');
+  const ov = document.getElementById('plan_override');
+  if (ov) ov.textContent = 'override ' + pct(planner.override_rate);
+  if (!plan) {
+    setText('plan_action', '\u2014');
+    setText('plan_rationale', 'no plan yet');
+    logLines('plan_numbers', []);
+    logLines('plan_alternatives', []);
+    return;
+  }
+  setText('plan_action', plan.action || plan.objective || '\u2014');
+  setText('plan_rationale', plan.rationale || '');
+  logLines('plan_numbers', [
+    'expected value <b>' + fmt(plan.expected_value, 4) + '</b>',
+    'risk <b>' + fmt(plan.risk, 4) + '</b>',
+    'confidence <b>' + fmt(plan.confidence, 4) + '</b>',
+    'score <b>' + fmt(plan.score, 4) + '</b>',
+    'source <b>' + esc(plan.source) + '</b>',
+    'EV gap <b>' + fmt(planner.ev_gap, 5) + '</b>',
+  ]);
+  logLines('plan_alternatives', (plan.alternatives || []).map(alt =>
+    esc(alt.action || alt.objective) + ' &mdash; EV ' + fmt(alt.expected_value, 4) +
+    ', score ' + fmt(alt.score, 4)));
+}
+
+// ── panel 3: the policy ─────────────────────────────────────────────
+
+function updatePolicyPanel(d) {
+  const policy = d.policy || {};
+  const shadow = policy.shadow || {};
+  const rules = policy.rules || {};
+  setText('pol_delta', pct(shadow.observed_delta_rate !== undefined
+                           ? shadow.observed_delta_rate
+                           : shadow.behaviour_delta_rate));
+  setText('pol_active', rules.active !== undefined ? rules.active : 0);
+  setText('pol_regret', fmt(shadow.counterfactual_regret, 4));
+  const byStatus = rules.by_status || {};
+  setText('pol_statuses', Object.keys(byStatus).length
+    ? Object.keys(byStatus).sort().map(k => k + ' ' + byStatus[k]).join(', ')
+    : (rules.total !== undefined ? rules.total + ' known' : '\u2014'));
+  fetch('/api/policy/rules').then(r => r.json()).then(data => {
+    logLines('pol_rules', (data.rules || []).slice(0, 40).map(rule =>
+      '<b>' + esc(rule.effect) + '</b> ' + esc(rule.id) +
+      ' &mdash; ' + esc(rule.status) +
+      ', support ' + (rule.support || 0) +
+      ', lower bound ' + fmt(rule.wilson_low, 3) +
+      (rule.measured_effect !== null && rule.measured_effect !== undefined
+        ? ', effect ' + fmt(rule.measured_effect, 4) : '')));
+  }).catch(() => {});
+}
+
+// ── panel 4: resources ──────────────────────────────────────────────
+
+function updateResourcePanel(d) {
+  const res = d.resources || {};
+  const roi = d.roi || {};
+  setText('res_denied', res.denied !== undefined ? res.denied : 0);
+  const budgets = res.budgets || {};
+  logLines('res_budgets', Object.keys(budgets).sort().map(kind => {
+    const b = budgets[kind] || {};
+    return esc(kind) + ': <b>' + (b.used || 0) + '</b> / ' + (b.limit || 0) +
+           (b.mode ? ' (' + esc(b.mode) + ')' : '');
+  }));
+  const shares = roi.shares || {};
+  const returns = roi.roi || {};
+  logLines('res_roi', Object.keys(shares).sort().map(drive =>
+    esc(drive) + ': share <b>' + pct(shares[drive]) + '</b>' +
+    (returns[drive] !== undefined ? ', ROI ' + fmt(returns[drive], 4) : '')));
+}
+
+// ── panel 5: evolution ──────────────────────────────────────────────
+
+let evoFitnessCurve = [];
+
+function updateEvolutionPanel(d) {
+  const evo = d.evolution || {};
+  setText('evo_generation', evo.generation || 0);
+  setText('evo_fitness', fmt(evo.champion_fitness, 4));
+  setText('evo_gap', 'valid\u2212test gap ' + fmt(evo.valid_test_gap, 4));
+  setText('evo_promotions', (evo.promotions || 0) + ' promotions, ' +
+                            (evo.rollbacks || 0) + ' rollbacks');
+  const running = document.getElementById('evo_running');
+  if (running) {
+    running.textContent = evo.generation_running ? 'running' : 'idle';
+    running.className = 'card-badge ' +
+      (evo.generation_running ? 'badge-success' : 'badge-primary');
+  }
+  logLines('evo_variants', (evo.last_reports || []).slice(0, 12).map(rep =>
+    esc(rep.genome_id) + ' &mdash; fitness <b>' + fmt(rep.fitness, 4) +
+    '</b>, valid ' + fmt(rep.score_valid, 4) +
+    (rep.score_test !== null && rep.score_test !== undefined
+      ? ', test ' + fmt(rep.score_test, 4) : '')));
+  if (evo.champion_fitness !== null && evo.champion_fitness !== undefined) {
+    const last = evoFitnessCurve[evoFitnessCurve.length - 1];
+    if (last !== evo.champion_fitness) evoFitnessCurve.push(evo.champion_fitness);
+    if (evoFitnessCurve.length > 120) evoFitnessCurve.shift();
+  }
+  drawSpark('evo_spark', evoFitnessCurve);
+}
+
+function drawSpark(id, values) {
+  const svg = document.getElementById(id);
+  if (!svg) return;
+  if (!values.length) { svg.innerHTML = ''; return; }
+  const W = 300, H = 90, pad = 6;
+  const lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
+  const span = (hi - lo) || 1;
+  const points = values.map((v, i) => {
+    const x = pad + (values.length === 1 ? 0 : i * (W - 2 * pad) / (values.length - 1));
+    const y = (H - pad) - ((v - lo) / span) * (H - 2 * pad);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  svg.innerHTML = '<polyline points="' + points + '" fill="none" ' +
+                  'stroke="var(--primary)" stroke-width="2"/>';
+}
+
+// ── panel 6: thinking ───────────────────────────────────────────────
+
+function updateReasoningPanel(d) {
+  const rsn = d.reasoning || {};
+  setText('rsn_accuracy', pct(rsn.accuracy));
+  const attempts = rsn.attempts || 0;
+  setText('rsn_abstain', 'abstentions ' + (rsn.abstentions || 0) +
+                         ' of ' + attempts +
+                         ', confident errors ' + (rsn.confident_errors || 0));
+  // `library` reports counts, not the strategies themselves. The counts are
+  // what belongs in a panel that refreshes every tick; the per-strategy record
+  // is a fetch, below, because it is long and changes slowly.
+  const lib = rsn.library || {};
+  logLines('rsn_strategies', [
+    'active <b>' + (lib.active || 0) + '</b> of ' + (lib.total || 0) +
+      ' (' + (lib.builtin || 0) + ' built in, ' +
+      (lib.synthesised || 0) + ' synthesised)',
+    'on trial <b>' + (lib.trials || 0) + '</b>, retired ' + (lib.retired || 0) +
+      ', refused ' + (lib.refused || 0),
+    'applications <b>' + (lib.used || 0) + '</b>',
+    'candidates awaiting the arena <b>' + (rsn.candidates || 0) + '</b>',
+    'promotions <b>' + (rsn.promotions || 0) + '</b>, demotions ' +
+      (rsn.demotions || 0),
+  ]);
+  const weakness = rsn.weakness;
+  logLines('rsn_weaknesses', weakness
+    ? ['<b>' + esc(weakness.label) + '</b> &mdash; fail rate ' +
+       fmt(weakness.fail_rate, 3) + ' against ' + fmt(weakness.base_rate, 3) +
+       ' over ' + (weakness.support || 0) + ' attempts']
+    : []);
+}
+
+// ── panel 7: discoveries ────────────────────────────────────────────
+
+function updateDiscoveryPanel(d) {
+  const disc = d.discovery || {};
+  const counts = disc.discoveries || {};
+  setText('disc_replicated', disc.replicated || 0);
+  setText('disc_counts', (counts.supported || 0) + ' supported, ' +
+                         (counts.law || 0) + ' laws, ' +
+                         (counts.refuted || 0) + ' refuted');
+  logLines('disc_engine', [
+    'hypotheses tested <b>' + (disc.hypotheses_tested || 0) + '</b>',
+    'rejected by FDR control <b>' + (disc.fdr_rejections || 0) + '</b>',
+    'models fitted <b>' + (disc.fits || 0) + '</b>',
+    'experiments run <b>' + (disc.experiments || 0) + '</b>',
+    'pending hypotheses <b>' + (disc.pending || 0) + '</b>',
+    'observations held <b>' + ((disc.pool || {}).rows
+      ? JSON.stringify((disc.pool || {}).rows) : 0) + '</b>',
+    'intervention <b>' + (disc.intervention
+      ? esc(JSON.stringify(disc.intervention)) : 'none') + '</b>',
+  ]);
+}
+
+function loadDiscoveryList() {
+  fetch('/api/discoveries').then(r => r.json()).then(data => {
+    logLines('disc_list', (data.discoveries || []).slice(0, 40).map(rec =>
+      '<b>' + esc(rec.status) + '</b> ' + esc(rec.id) +
+      (rec.model && rec.model.expr ? ' &mdash; <code>' + esc(rec.model.expr) + '</code>' : '') +
+      ' (effect ' + fmt(rec.effect_size, 4) + ', p ' + fmt(rec.p_value, 5) +
+      (rec.replications ? ', ' + rec.replications + ' replications' : '') + ')'));
+  }).catch(() => {});
+}
+
+function loadForecastList() {
+  fetch('/api/world-model/predictions?limit=30').then(r => r.json()).then(data => {
+    logLines('wm_predictions', (data.predictions || []).slice().reverse().map(rec => {
+      const sc = rec.score || {};
+      return esc(rec.action) + ' @ tick ' + (rec.tick || 0) +
+             ' &mdash; forecast ' + fmt(rec.p_success, 3) +
+             ', actual ' + (sc.success ? 'success' : 'failure') +
+             ', Brier ' + fmt(sc.brier, 4);
+    }));
+  }).catch(() => {});
+}
+
+// ── the three manual triggers (M10.1) ───────────────────────────────
+
+function _post(url, done) {
+  return fetch(url, {method: 'POST'}).then(r => r.json()).then(data => {
+    if (data && data.error) alert(data.error);
+    if (done) done(data);
+  }).catch(err => alert(String(err)));
+}
+
+function runGeneration() { _post('/api/evolution/generation'); }
+function runSynthesis() { _post('/api/reasoning/synthesize'); }
+function runDiscoveryScan() { _post('/api/discovery/scan', loadDiscoveryList); }
+
 function updateDashboard(d) {
   if (!d.substrate) return;
+  try { updateContours(d); } catch (err) { console.error('contour panels', err); }
   const s = d.substrate;
   setText('tickCount', s.tick);
   setText('uptime', s.uptime_formatted);

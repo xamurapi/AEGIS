@@ -127,17 +127,44 @@ def normalize(name: str) -> str:
     return text
 
 
+#: The last dotted segment of every protected name.
+#:
+#: The set spells structural things with an owning prefix —
+#: ``ethics.kill_switch_active``, ``sandbox.SAFE_IMPORTS`` — because that is
+#: what they are called where they live. A contour proposing a change spells it
+#: however the proposal arrived, and ``parametric/kill_switch_active``
+#: normalises to a bare ``kill_switch_active`` that was in no set at all. The
+#: guard said yes.
+#:
+#: So a bare last segment is protected too. This over-matches slightly — a
+#: parameter called ``thresholds`` is refused whoever owns it — and that is the
+#: correct direction for a safety boundary: a refusal that has to be argued
+#: with costs a conversation, a permission that should not have been given
+#: costs the guarantee.
+_PROTECTED_SEGMENTS: frozenset[str] = frozenset(
+    name.rsplit(".", 1)[-1] for name in IMMUTABLE_PARAMS
+)
+
+
 def category_of(name: str) -> str | None:
     """Which protection category a name belongs to, or None if unprotected."""
     key = normalize(name)
     for category, names in CATEGORIES.items():
         if key in names:
             return category
+    # Matched by its last segment — see `_PROTECTED_SEGMENTS`. Reported under
+    # the category that owns the full name, so a refusal still says which
+    # guarantee it is defending.
+    segment = key.rsplit(".", 1)[-1]
+    for category, names in CATEGORIES.items():
+        if any(candidate.rsplit(".", 1)[-1] == segment for candidate in names):
+            return category
     return None
 
 
 def is_immutable(name: str) -> bool:
-    return normalize(name) in IMMUTABLE_PARAMS
+    key = normalize(name)
+    return key in IMMUTABLE_PARAMS or key.rsplit(".", 1)[-1] in _PROTECTED_SEGMENTS
 
 
 def assert_mutable(name: str, context: str = "") -> None:

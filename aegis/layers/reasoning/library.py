@@ -34,6 +34,11 @@ logger = logging.getLogger("aegis.reasoning")
 #: means.
 ORIGINS = ("builtin", "synth", "cortex", "mutation")
 
+#: A strategy's standing. ``trial`` is the important one: a strategy the arena
+#: accepted is not yet trusted, it is *on trial* — it gets a deterministic share
+#: of its class's traffic and is judged again on what happens (M6.8).
+STATUSES = ("active", "trial", "retired")
+
 
 @dataclass
 class Strategy:
@@ -44,7 +49,11 @@ class Strategy:
     origin: str = "synth"
     parent: str = ""
     created_tick: int = 0
-    retired: bool = False
+    status: str = "active"
+    #: What a trial is meant to improve, where, and against whom.
+    weakness: str = ""
+    family: str = ""
+    incumbent: str = ""
     #: family -> {"used", "solved", "abstained", "cost_ms", "steps"}
     record: dict[str, dict] = field(default_factory=dict)
 
@@ -57,6 +66,14 @@ class Strategy:
     @property
     def builtin(self) -> bool:
         return self.origin == "builtin"
+
+    @property
+    def retired(self) -> bool:
+        return self.status == "retired"
+
+    @property
+    def on_trial(self) -> bool:
+        return self.status == "trial"
 
     # ── record keeping ───────────────────────────────────────────────
 
@@ -115,7 +132,9 @@ class Strategy:
     def to_dict(self) -> dict:
         return {"name": self.name, "steps": normalise(self.steps),
                 "origin": self.origin, "parent": self.parent,
-                "created_tick": self.created_tick, "retired": self.retired,
+                "created_tick": self.created_tick, "status": self.status,
+                "weakness": self.weakness, "family": self.family,
+                "incumbent": self.incumbent,
                 "record": {family: dict(row)
                            for family, row in sorted(self.record.items())}}
 
@@ -132,13 +151,21 @@ class Strategy:
                     "steps": int(row.get("steps", 0)),
                 }
         origin = str(data.get("origin", "synth"))
+        # A file written before trials existed carries a boolean instead. Read
+        # it rather than defaulting: dropping it would put every retired
+        # strategy back into rotation on the next restart.
+        status = str(data.get("status")
+                     or ("retired" if data.get("retired") else "active"))
         return cls(
             name=str(data.get("name", "?")),
             steps=list(data.get("steps") or []),
             origin=origin if origin in ORIGINS else "synth",
             parent=str(data.get("parent", "")),
             created_tick=int(data.get("created_tick", 0)),
-            retired=bool(data.get("retired", False)),
+            status=status if status in STATUSES else "active",
+            weakness=str(data.get("weakness", "")),
+            family=str(data.get("family", "")),
+            incumbent=str(data.get("incumbent", "")),
             record=record,
         )
 
@@ -304,12 +331,14 @@ class Library:
             else:
                 existing.steps = list(steps)
                 existing.origin = "builtin"
-                existing.retired = False
+                existing.status = "active"
 
     # ── admission ────────────────────────────────────────────────────
 
     def admit(self, name: str, steps, *, origin: str = "synth",
-              parent: str = "", tick: int = 0) -> Strategy:
+              parent: str = "", tick: int = 0, status: str = "active",
+              weakness: str = "", family: str = "",
+              incumbent: str = "") -> Strategy:
         """Add a strategy, or refuse it with a reason.
 
         Raises :class:`DSLError` on anything the interpreter could not run,
@@ -336,7 +365,10 @@ class Library:
 
         strategy = Strategy(name=name, steps=normalise(steps),
                             origin=origin if origin in ORIGINS else "synth",
-                            parent=str(parent), created_tick=int(tick))
+                            parent=str(parent), created_tick=int(tick),
+                            status=status if status in STATUSES else "active",
+                            weakness=str(weakness), family=str(family),
+                            incumbent=str(incumbent))
         self.strategies[name] = strategy
         self._evict()
         return strategy
@@ -350,7 +382,7 @@ class Library:
         strategy = self.strategies.get(str(name))
         if strategy is None or strategy.builtin:
             return False
-        strategy.retired = True
+        strategy.status = "retired"
         logger.info("Retired strategy %r%s", name, f": {reason}" if reason else "")
         return True
 
@@ -370,7 +402,34 @@ class Library:
         return self.strategies.get(str(name))
 
     def active(self) -> list[Strategy]:
+        """Strategies eligible for ordinary traffic. Trials are not."""
+        return [s for _, s in sorted(self.strategies.items())
+                if s.status == "active"]
+
+    def in_use(self) -> list[Strategy]:
+        """Everything that may run at all — active strategies and live trials."""
         return [s for _, s in sorted(self.strategies.items()) if not s.retired]
+
+    def trials(self, family: str = "") -> list[Strategy]:
+        """Strategies on trial that apply here.
+
+        A trial with no family is class-agnostic — it was written for a weakness
+        that spans several, such as "the data is incomplete" — and applies
+        everywhere. Filtering those out was measured: a trial accepted for such
+        a weakness got no traffic at all, so it sat at zero applications for
+        every cycle of a thirty-cycle run and was never concluded.
+        """
+        return [s for _, s in sorted(self.strategies.items())
+                if s.on_trial and (not family or not s.family
+                                   or s.family == family)]
+
+    def promote(self, name: str) -> bool:
+        """A trial that earned its place takes over."""
+        strategy = self.strategies.get(str(name))
+        if strategy is None or not strategy.on_trial:
+            return False
+        strategy.status = "active"
+        return True
 
     def builtins(self) -> list[Strategy]:
         return [s for _, s in sorted(self.strategies.items()) if s.builtin]
@@ -381,6 +440,14 @@ class Library:
         On the lower bound of the interval, not the point estimate — the whole
         reason to keep the interval is to stop one lucky trial from taking the
         family.
+
+        An empty ``family`` means *overall*, and that is deliberate rather than
+        incidental: a weakness can span families (``incomplete`` covers three of
+        them), and the strategy to improve on there is the one that is best
+        everywhere. Getting this wrong once meant transforming ``direct`` and
+        then judging the result against a far better incumbent, so every
+        candidate lost by a wide margin for a reason that had nothing to do with
+        the candidate.
         """
         candidates = [s for s in self.active() if s.used(family) >= min_used]
         if not candidates:
@@ -405,6 +472,7 @@ class Library:
             "active": len(active),
             "builtin": len(self.builtins()),
             "synthesised": len([s for s in self.strategies.values() if not s.builtin]),
+            "trials": len([s for s in self.strategies.values() if s.on_trial]),
             "retired": len([s for s in self.strategies.values() if s.retired]),
             "refused": self.refused,
             "used": sum(s.used() for s in self.strategies.values()),
@@ -417,7 +485,7 @@ class Library:
             rows.append({
                 "name": strategy.name,
                 "origin": strategy.origin,
-                "retired": strategy.retired,
+                "status": strategy.status,
                 "used": strategy.used(),
                 "accuracy": round(strategy.accuracy(), 4),
                 "lower": round(strategy.lower(), 4),

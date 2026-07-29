@@ -1,0 +1,33 @@
+{
+ "links": {
+  "decision:run_benchmark": {
+   "score_up": {
+    "observations": 70,
+    "successes": 61,
+    "updated": 1759900000.0
+   },
+   "score_flat": {
+    "observations": 24,
+    "successes": 3,
+    "updated": 1759890000.0
+   }
+  },
+  "attempt:learn_external": {
+   "new_concept": {
+    "observations": 56,
+    "successes": 34,
+    "updated": 1759950000.0
+   }
+  }
+ },
+ "chains": [
+  {
+   "objective": "improve_benchmark",
+   "steps": [
+    "run_benchmark",
+    "synthesize_skill"
+   ]
+  }
+ ],
+ "total_observations": 150
+}

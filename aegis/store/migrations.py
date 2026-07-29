@@ -82,14 +82,20 @@ def _v1_to_v2_evolution(data: dict) -> dict:
     are history and are kept; a pending candidate in the old format is dropped
     because there is no way to finish judging it correctly.
     """
-    from aegis.layers.evolution.genome import default_genome  # local: avoids a cycle
+    # Local import to avoid a cycle. It also used to name a function that does
+    # not exist (`default_genome` rather than `defaults`), which meant this
+    # migration raised on every run: `read_store` caught the failure, logged it
+    # and returned empty state, so an upgrade from v1 silently discarded the
+    # champion and the whole lineage. Nothing in the machinery tests noticed,
+    # because none of them ran the migration against a real v1 file.
+    from aegis.layers.evolution.genome import defaults
 
     out = dict(data)
     champion = out.get("champion")
     if isinstance(champion, dict):
         out["champion"] = {
             **champion,
-            "genome": default_genome(),
+            "genome": defaults(),
             "migrated_from": "genome_v1",
         }
     out["candidate"] = None

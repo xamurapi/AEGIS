@@ -358,6 +358,93 @@ Status: ONLINE
 | `LLM_MAX_CALLS_PER_RUN` | Hard cap on LLM calls per run (`0` = unlimited) | `0` |
 | `LLM_MIN_INTERVAL_SECONDS` | Min seconds between LLM calls (`0` = none) | `0` |
 
+### The seven contours of the development spec
+
+Every one of these has a deterministic path that works with no model attached;
+the variables below tune that path rather than switch it on.
+
+**Predictive world model (M1)**
+
+| Variable | What it does | Default |
+|---|---|---|
+| `WM_SMOOTHING` | Additive smoothing for transition and outcome estimates | `1.0` |
+| `WM_MIN_N` | Observations before a `(state, action)` pair is trusted | `3` |
+| `WM_BRANCH` / `WM_BEAM` / `WM_DEPTH` | Successors per node, beam width, rollout depth | `3` / `5` / `3` |
+| `WM_DISCOUNT` | Rollout horizon | `0.9` |
+| `WM_HALF_LIFE` | Observations after which a transition count halves | `500` |
+| `WM_EXPLORE_BONUS` | Reward for going where the model knows little | `0.15` |
+
+**Planner (M2) and behaviour policy (M3)**
+
+| Variable | What it does | Default |
+|---|---|---|
+| `PLAN_ENABLED` | Plan comparison on/off (off = greedy baseline) | `1` |
+| `PLAN_MAX_CANDIDATES` | Objectives considered per tick | `12` |
+| `POLICY_LR` / `POLICY_WEIGHT` | Preference learning rate, and its weight in scoring | `0.15` / `0.3` |
+| `POLICY_MIN_SUPPORT` | Observations before a rule may be mined | `20` |
+| `POLICY_MINE_EVERY_N_TICKS` | Rule mining cadence | `200` |
+| `POLICY_TRIAL_TICKS` / `POLICY_REVIEW_TICKS` | Trial length, and re-judgement interval | `300` / `1000` |
+| `POLICY_MIN_EFFECT` / `POLICY_ALPHA` | Effect and significance a rule must clear | `0.03` / `0.05` |
+
+**Motivation and resources (M4)**
+
+| Variable | What it does | Default |
+|---|---|---|
+| `RES_TOKENS_PER_HOUR` / `RES_CALLS_PER_HOUR` | Token and call allowance | `200000` / `400` |
+| `RES_WALL_MS_PER_TICK` | Wall-clock allowance per tick | `2500` |
+| `RES_SUBPROC_SLOTS` / `RES_TRAINING_SLOTS` | Concurrent subprocesses and training runs | `4` / `1` |
+| `RESOURCE_SAFETY_FLOOR` | Share of budget nothing may take from safety work | `0.15` |
+| `RESOURCE_MIN_SHARE` | Floor under any activity's share, so its ROI can still update | `0.05` |
+| `PRIORITY_AGING` / `PRIORITY_AGING_MAX_TICKS` | Anti-starvation bonus and its cap | `0.01` / `2000` |
+
+**Evolution (M5)**
+
+| Variable | What it does | Default |
+|---|---|---|
+| `EVO_POP_SIZE` | Variants per generation | `10` |
+| `EVO_SIGMA` / `EVO_EPSILON` | Mutation amplitude, and the gain a challenger must show | `0.15` / `0.005` |
+| `EVO_MIN_DISTANCE` | Below this a variant is too similar to be worth evaluating | `0.02` |
+| `EVO_EVERY_N_TICKS` | Minimum interval between generations | `250` |
+| `EVO_WATCH_TICKS` / `EVO_ROLLBACK_DELTA` | Post-promotion watch window and the drop that triggers rollback | `500` / `0.03` |
+
+**Thinking (M6)**
+
+| Variable | What it does | Default |
+|---|---|---|
+| `REASON_MAX_STEPS` | Hard ceiling on interpreter steps per strategy | `24` |
+| `REASON_MIN_GAIN` | Held-out gain a candidate strategy must show | `0.05` |
+| `REASON_COST_TOLERANCE` | How much more a candidate may cost than the incumbent | `1.5` |
+| `REASON_TRIAL_N` | Applications before a trial strategy is judged | `50` |
+| `REASON_SCAN_EVERY_N_TICKS` | Weakness scan cadence | `300` |
+| `REASON_UCB_C` | Exploration constant in strategy selection | `1.4` |
+
+**Discovery (M7)**
+
+| Variable | What it does | Default |
+|---|---|---|
+| `DISC_ALPHA` | False-discovery-rate level for the hypothesis scan | `0.05` |
+| `DISC_MAX_LAG` | How far back a predictor may be lagged | `5` |
+| `DISC_MIN_N` | Telemetry points before the first scan | `100` |
+| `DISC_LAW_REPS` | Confirmations in separate windows before "law" | `3` |
+| `DISC_SCAN_EVERY_N_TICKS` | Scan cadence | `1000` |
+| `DISC_INTERVENTION_ENABLED` | Whether self-experiments may run at all | `1` |
+| `DISC_INTERVENTION_MAX_DELTA` | Intervention amplitude, as a fraction of the range | `0.2` |
+| `DISC_BLOCK_TICKS` | Block length in an ABAB series | `100` |
+
+**Cortex (M8) and infrastructure (M9)**
+
+| Variable | What it does | Default |
+|---|---|---|
+| `CORTEX_ROUTES` | Role → provider failover chains, as JSON | see `docs/ТЗ-РАЗВИТИЕ.md` §5.2 |
+| `CORTEX_DETERMINISTIC` | `temperature=0` for every comparative run | `1` |
+| `CORTEX_CACHE_TTL` / `CORTEX_CACHE_MAX` | Response cache lifetime and size | `3600` / `2000` |
+| `CORTEX_BREAKER_ERRORS` / `CORTEX_BREAKER_COOLDOWN` | Consecutive errors that trip a provider, and for how long | `5` / `300` |
+| `KIMI_API_KEY` / `KIMI_BASE_URL` / `KIMI_MODEL` | Kimi, as a first-class provider | *(none)* |
+| `LOCAL_OPENAI_BASE_URL` / `LOCAL_OPENAI_MODEL` | Ollama / llama.cpp / vLLM for the `fast` role | `http://127.0.0.1:11434/v1` |
+| `LORA_TARGET_MODULES` | LoRA target modules — must match the model's architecture | `q_proj,k_proj,v_proj,o_proj` |
+| `EVAL_POOL_WORKERS` | Processes for isolated variant evaluation | `4` |
+| `TELEMETRY_FLUSH_SECONDS` / `TELEMETRY_MAX_ROWS` | Telemetry buffering and retention | `10` / `200000` |
+
 API keys can also be set at runtime via the dashboard (LLM Brain tab).
 
 ---
@@ -416,6 +503,12 @@ The engineering docs are written in Russian; this README is the English entry po
 | [`docs/АУДИТ.md`](docs/АУДИТ.md) | All three audit rounds — every finding with file:line, risk, failure scenario and the fix, plus the "red before the fix" proof for each regression test |
 | [`docs/QA.md`](docs/QA.md) | Test levels, reproduction commands, coverage gate, mutation-testing methodology, test-isolation rules and the pre-merge checklist |
 | [`docs/СИСТЕМЫ.md`](docs/СИСТЕМЫ.md) | The five higher-order systems in detail — data structures, tick integration, persistence |
+| [`docs/ПРОГНОЗ.md`](docs/ПРОГНОЗ.md) | The predictive world model — forecast written before the action, scored after it, and the error that drives curiosity |
+| [`docs/РЕСУРСЫ.md`](docs/РЕСУРСЫ.md) | Motivation that costs something — priority as a number, resource as something that runs out, and the floors that keep safety funded |
+| [`docs/ЭВОЛЮЦИЯ.md`](docs/ЭВОЛЮЦИЯ.md) | Population evolution — ten variants a generation, isolated evaluation, and a genome made of parameters that actually move the metric |
+| [`docs/МЫШЛЕНИЕ.md`](docs/МЫШЛЕНИЕ.md) | Thinking as data — a strategy DSL that is not Python, weakness detection with false-discovery control, and the three gates of the arena |
+| [`docs/ОТКРЫТИЯ.md`](docs/ОТКРЫТИЯ.md) | The discovery contour — how a hypothesis becomes a formula, an experiment and a registered law, and every gate that stops it registering noise |
+| [`docs/ТЗ-РАЗВИТИЕ.md`](docs/ТЗ-РАЗВИТИЕ.md) | The development specification the seven new contours are built to |
 
 ---
 

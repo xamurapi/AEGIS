@@ -28,6 +28,38 @@ class WorldInterface:
             "external_api": True,
         }
         self._environment_cache: dict = {}
+        #: Cached network counters, and when they were read.
+        #:
+        #: `psutil.net_io_counters()` enumerates every interface on the host and
+        #: costs about 7.5 ms on Windows — measured as 85% of the whole PERCEIVE
+        #: phase, which was the one phase over its §3.4 budget. Nothing in the
+        #: cognitive cycle decides anything on these numbers; they are
+        #: monotonic counters that get displayed. Reading them twenty times a
+        #: minute buys nothing and costs the budget.
+        self._net_cache: tuple[int, int] = (0, 0)
+        self._net_read_at: float = 0.0
+
+    #: How often the network counters are actually read, in seconds. On the
+    #: default tick interval this is roughly every tenth tick.
+    NET_REFRESH_SECONDS = 30.0
+
+    def _network_counters(self) -> tuple[int, int]:
+        """Cumulative network bytes, refreshed on an interval rather than a tick.
+
+        Through ``CLOCK`` so a frozen clock in a test gets one read and then a
+        stable answer — the same reason every other time-dependent thing in the
+        package goes through it.
+        """
+        now = CLOCK.now()
+        if self._net_read_at and now - self._net_read_at < self.NET_REFRESH_SECONDS:
+            return self._net_cache
+        try:
+            counters = psutil.net_io_counters()
+            self._net_cache = (counters.bytes_sent, counters.bytes_recv)
+        except Exception:
+            pass                      # keep the last reading rather than lying
+        self._net_read_at = now
+        return self._net_cache
 
     def perceive(self) -> dict:
         # Real process uptime measured from construction, NOT the time-of-day
@@ -43,13 +75,13 @@ class WorldInterface:
                 disk_free_gb = round(disk.free / (1024 ** 3), 1)
             except Exception:
                 disk_free_gb = 0.0
-            net_io = psutil.net_io_counters()
+            net_sent, net_recv = self._network_counters()
             self.sensors = {
                 "cpu_load": cpu,
                 "memory_usage_pct": mem.percent,
                 "disk_free_gb": disk_free_gb,
-                "network_bytes_sent": net_io.bytes_sent,
-                "network_bytes_recv": net_io.bytes_recv,
+                "network_bytes_sent": net_sent,
+                "network_bytes_recv": net_recv,
                 "uptime_hours": uptime_hours,
                 "process_count": len(psutil.pids()),
             }

@@ -11,7 +11,9 @@ import math
 import pytest
 
 from aegis.util.stats import (
-    TTest, benjamini_hochberg, cohens_d, student_t_sf, welch_t,
+    bic, bootstrap_ci, r_squared, required_n,
+    TTest, benjamini_hochberg, cohens_d, compare_samples, mann_whitney_u,
+    normal_sf, student_t_sf, welch_t,
 )
 
 
@@ -169,3 +171,243 @@ def test_a_stricter_alpha_rejects_less():
     p_values = [0.001, 0.008, 0.039]
     assert sum(benjamini_hochberg(p_values, 0.05)) >= \
         sum(benjamini_hochberg(p_values, 0.005))
+
+
+# ── Mann–Whitney U (M7.7) ────────────────────────────────────────────
+#
+# Required by the spec alongside Welch's t, and reached in exactly the place
+# Welch's t cannot go: two arms with no variance at all. Every expectation below
+# is derived by hand from the definition of U rather than read off the
+# implementation.
+
+def test_two_completely_separated_samples_give_u_of_zero():
+    """a = 1..5, b = 6..10. Every b outranks every a, so the ranks of a are
+    1..5, their sum is 15, and U_a = 15 − 5·6/2 = 0 — the extreme of the
+    statistic. With no ties the variance is n_a·n_b·(n+1)/12 = 25·11/12, and the
+    continuity-corrected z is (12.5 − 0.5)/√22.9166… = 2.50686…
+    """
+    result = mann_whitney_u([1, 2, 3, 4, 5], [6, 7, 8, 9, 10])
+    variance = 25 * 11 / 12
+    expected_z = (12.5 - 0.5) / math.sqrt(variance)
+    assert result.t == pytest.approx(-expected_z)
+    assert result.p_value == pytest.approx(2.0 * normal_sf(expected_z))
+    assert result.effect == pytest.approx(-5.0)
+
+
+def test_the_sign_says_which_sample_ranked_higher():
+    low, high = [1, 2, 3, 4, 5], [6, 7, 8, 9, 10]
+    assert mann_whitney_u(high, low).t > 0
+    assert mann_whitney_u(low, high).t < 0
+
+
+def test_swapping_the_samples_does_not_change_the_p_value():
+    a, b = [3.0, 1.0, 4.0, 1.0, 5.0], [9.0, 2.0, 6.0, 5.0, 3.0]
+    assert mann_whitney_u(a, b).p_value == pytest.approx(
+        mann_whitney_u(b, a).p_value)
+
+
+def test_two_constant_arms_at_different_levels_are_separated_evidence():
+    """The case the docstring stands on. Each arm is three identical readings,
+    so there are two tie groups of three: the correction is 2·(3³−3) = 48, the
+    variance is 9/12·(7 − 48/30) = 4.05, U_a = 0, and z = (4.5 − 0.5)/√4.05.
+
+    Welch's t is undefined here. A comparison that called the cleanest possible
+    evidence insignificant would make consistency count for less than noise.
+    """
+    result = mann_whitney_u([1.0, 1.0, 1.0], [2.0, 2.0, 2.0])
+    expected_z = 4.0 / math.sqrt(4.05)
+    assert result.t == pytest.approx(-expected_z)
+    assert result.p_value == pytest.approx(2.0 * normal_sf(expected_z))
+    assert result.p_value < 0.05
+
+
+def test_the_tie_correction_is_applied_and_not_merely_computed():
+    """Ties shrink the variance, so a tied comparison has a *larger* z than the
+    same comparison would show if the correction were dropped. Checked against
+    the uncorrected variance, which is what a missing correction would produce.
+    """
+    result = mann_whitney_u([1.0, 1.0, 1.0], [2.0, 2.0, 2.0])
+    uncorrected = 3 * 3 * (6 + 1) / 12.0
+    assert abs(result.t) > 4.0 / math.sqrt(uncorrected)
+
+
+def test_two_identical_arms_carry_no_evidence():
+    """Every value tied with every other: the corrected variance is exactly
+    zero, and there is nothing to report but "no difference"."""
+    result = mann_whitney_u([5.0, 5.0, 5.0], [5.0, 5.0, 5.0])
+    assert result.p_value == 1.0
+    assert result.t == 0.0
+    assert result.effect == 0.0
+
+
+def test_an_empty_sample_is_not_a_comparison():
+    result = mann_whitney_u([], [1.0, 2.0])
+    assert result.p_value == 1.0
+    assert result.n_a == 0 and result.n_b == 2
+
+
+def test_one_reading_each_cannot_reach_significance():
+    """n_a = n_b = 1 gives a variance of 2/12 and |U − mean| = 0.5, which the
+    continuity correction takes to zero. Two single observations are not
+    evidence, and the statistic says so on its own."""
+    assert mann_whitney_u([1.0], [2.0]).p_value == pytest.approx(1.0)
+
+
+# ── compare_samples: which test runs, decided on shape ───────────────
+
+def test_a_normal_comparison_goes_to_welch():
+    a, b = [1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 9.0]
+    assert compare_samples(a, b) == welch_t(a, b)
+
+
+def test_two_variance_free_arms_fall_through_to_the_rank_test():
+    """Welch's t divides by a standard error of zero here and reports nothing.
+    The rank test needs no variance estimate and answers the same question."""
+    a, b = [1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0]
+    assert compare_samples(a, b) == mann_whitney_u(a, b)
+    assert compare_samples(a, b).p_value < 0.05
+    assert welch_t(a, b).p_value == 1.0
+
+
+def test_one_variance_free_arm_is_still_welch():
+    """The fallback is for the case Welch's t cannot answer at all. With one arm
+    varying the standard error is positive and the t-test is defined, so the
+    switch must not fire — otherwise which test ran would depend on noise."""
+    a, b = [1.0, 1.0, 1.0, 1.0], [2.0, 3.0, 4.0, 5.0]
+    assert compare_samples(a, b) == welch_t(a, b)
+
+
+def test_a_sample_too_short_to_have_a_variance_goes_to_welch():
+    assert compare_samples([1.0], [2.0, 3.0]) == welch_t([1.0], [2.0, 3.0])
+
+
+# ── model fit and study design (M7.7) ────────────────────────────────
+
+def test_a_perfect_model_explains_everything():
+    assert r_squared([1, 2, 3, 4], [1, 2, 3, 4]) == pytest.approx(1.0)
+
+
+def test_predicting_the_mean_explains_nothing():
+    assert r_squared([1, 2, 3], [2, 2, 2]) == pytest.approx(0.0)
+
+
+def test_a_model_worse_than_the_mean_reports_a_negative_r_squared():
+    """RSS = 2² + 0 + 2² = 8 against TSS = 1 + 0 + 1 = 2, so R² = 1 − 4 = −3.
+
+    Not clamped: "worse than guessing the average" and "no better than it" are
+    different findings, and the symbolic search picks between formulas on this
+    number.
+    """
+    assert r_squared([1, 2, 3], [3, 2, 1]) == pytest.approx(-3.0)
+
+
+def test_constant_data_is_explained_only_by_reproducing_it():
+    assert r_squared([5, 5, 5], [5, 5, 5]) == pytest.approx(1.0)
+    assert r_squared([5, 5, 5], [5, 5, 4]) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("actual,predicted", [([], []), ([1.0], [1.0]),
+                                              ([1, 2, 3], [1, 2])])
+def test_too_little_or_mismatched_data_explains_nothing(actual, predicted):
+    assert r_squared(actual, predicted) == 0.0
+
+
+def test_the_bic_is_the_textbook_expression():
+    """n·ln(RSS/n) + k·ln(n) = 10·ln(0.1) + 2·ln(10) = −18.42068…"""
+    assert bic(1.0, 10, 2) == pytest.approx(
+        10 * math.log(0.1) + 2 * math.log(10))
+
+
+def test_the_bic_charges_for_every_extra_parameter():
+    """The property the symbolic search depends on: same fit, more nodes, worse
+    score — otherwise nothing stops a formula from reproducing noise exactly."""
+    assert bic(1.0, 100, 5) > bic(1.0, 100, 2)
+
+
+def test_a_better_fit_scores_lower():
+    assert bic(0.5, 100, 3) < bic(5.0, 100, 3)
+
+
+def test_the_penalty_for_complexity_grows_with_the_data():
+    """ln(n) is the multiplier, so one extra parameter costs more at n = 1000
+    than at n = 10. More evidence should make an elaborate explanation harder
+    to justify, not easier."""
+    small = bic(1.0, 10, 3) - bic(1.0, 10, 2)
+    large = bic(1.0, 1000, 3) - bic(1.0, 1000, 2)
+    assert large > small
+
+
+def test_no_observations_cannot_be_scored():
+    assert bic(1.0, 0, 2) == float("inf")
+
+
+def test_a_bootstrap_interval_is_the_same_on_every_run():
+    """The property the whole scheme exists for (§3.1). An interval that moved
+    between runs would make replication — which is what the interval supports —
+    impossible to test."""
+    values = [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0]
+    assert bootstrap_ci(values) == bootstrap_ci(values)
+
+
+def test_a_bootstrap_interval_brackets_the_statistic():
+    values = [float(v) for v in range(1, 21)]
+    low, high = bootstrap_ci(values)
+    assert low <= sum(values) / len(values) <= high
+
+
+def test_a_wider_confidence_level_gives_a_wider_interval():
+    values = [float(v) for v in range(1, 41)]
+    narrow = bootstrap_ci(values, confidence=0.50)
+    wide = bootstrap_ci(values, confidence=0.99)
+    assert (wide[1] - wide[0]) >= (narrow[1] - narrow[0])
+
+
+def test_one_observation_is_its_own_interval():
+    assert bootstrap_ci([7.0]) == (7.0, 7.0)
+
+
+def test_no_observations_is_an_empty_interval():
+    assert bootstrap_ci([]) == (0.0, 0.0)
+
+
+def test_a_bootstrap_takes_the_statistic_it_is_given():
+    values = [1.0, 2.0, 3.0, 100.0]
+    assert bootstrap_ci(values, statistic=max)[1] == 100.0
+
+
+def test_the_required_sample_size_matches_the_published_table():
+    """The standard two-sample figures at α = 0.05, power = 0.8: 63 per arm for
+    a medium effect and 25 for a large one under the normal approximation."""
+    assert required_n(0.5) == 63
+    assert required_n(0.8) == 25
+
+
+def test_a_smaller_effect_needs_more_observations():
+    assert required_n(0.2) > required_n(0.5) > required_n(1.0)
+
+
+def test_more_power_costs_more_observations():
+    assert required_n(0.5, power=0.95) > required_n(0.5, power=0.80)
+
+
+def test_a_stricter_alpha_costs_more_observations():
+    assert required_n(0.5, alpha=0.01) > required_n(0.5, alpha=0.05)
+
+
+def test_an_effect_of_zero_can_never_be_established():
+    """No sample size detects nothing. Reporting a finite n here would let a
+    preregistration commit to a study that cannot succeed."""
+    assert required_n(0.0) >= 1_000_000
+
+
+def test_the_direction_of_an_effect_does_not_change_its_cost():
+    assert required_n(-0.5) == required_n(0.5)
+
+
+def test_a_bootstrap_handles_more_observations_than_there_are_prime_bases():
+    """A resample needs one coordinate per observation, and quasirandom points
+    run out of dimensions long before a sample runs out of members. Two hundred
+    observations is an ordinary experiment, not an edge case."""
+    values = [float(v) for v in range(200)]
+    low, high = bootstrap_ci(values)
+    assert low <= sum(values) / len(values) <= high

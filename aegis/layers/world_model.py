@@ -229,6 +229,10 @@ class PredictiveWorldModel:
         report["coverage"] = self.coverage()
         return report
 
+    def recent_predictions(self, limit: int = 50) -> list[dict]:
+        """Closed forecasts with their outcomes — the panel of §M10.1."""
+        return self.scorer.recent(limit)
+
     def surprise(self) -> float:
         return self.scorer.surprise()
 
@@ -321,6 +325,11 @@ class PredictiveWorldModel:
                 "simulator": self.simulator.status(),
                 "calibration": self.calibration(),
                 "decisions": self._decisions,
+                # Published as well as recorded: §3.5 asks that every metric of
+                # Appendix G reach `full_status()`, and coverage was reaching
+                # telemetry only — so the dashboard had no way to show how much
+                # of the model's advice the planner was actually able to use.
+                "coverage": self.coverage(),
             },
         })
         return report

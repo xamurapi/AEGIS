@@ -221,3 +221,87 @@ def test_a_coding_prompt_carries_only_the_visible_tests(substrate):
                 continue                   # the same case is legitimately both
             assert rendered not in blob, (
                 f"a hidden test for {task.id!r} reached the synthesiser")
+
+
+# ── the reasoning strategy synthesiser (M6.7, M9.3) ──────────────────
+#
+# The same leak, one contour along. A weakness carries failing *examples*, and
+# those examples are the text of problems the system attempted — pasted straight
+# into the prompt asking a model for a better strategy. If the attempts a
+# weakness is built from ever came from a set the arena later grades on, the
+# gain the arena measures is the model having been shown the answers.
+#
+# The separation is by construction: the working queue walks up from zero, the
+# arena's sets start at one, two and three million, and the acceptance harness
+# counts down from ten million. Construction is exactly the kind of thing that
+# survives until someone changes an index, so it is asserted rather than trusted.
+
+def _reasoning_engine():
+    from aegis.layers.reasoning import ReasoningEngine
+
+    return ReasoningEngine()
+
+
+def test_the_arena_never_judges_on_problems_the_queue_has_worked():
+    """The queue and the three arena sets must not intersect at all."""
+    from aegis.layers.reasoning import arena as arena_module
+
+    engine = _reasoning_engine()
+    engine.refill(200)
+    worked = {task.id for task in engine.queue}
+
+    from aegis.eval import reasoning_bench as bench
+
+    for base in (arena_module.TRAIN_BASE, arena_module.HOLDOUT_BASE,
+                 arena_module.REGRESSION_BASE):
+        judged = {bench.build(base + offset).id for offset in range(200)}
+        assert not (worked & judged), (
+            f"the queue and the arena set at {base} share problems")
+
+
+def test_the_synthesiser_prompt_carries_no_held_out_problem():
+    """What the model is actually shown, checked against what it is graded on.
+
+    Built the long way — work problems, scan for a weakness, render the prompt —
+    because the leak would live in whatever the *engine* put in the examples,
+    not in whatever a hand-made weakness carries.
+    """
+    from aegis.eval import reasoning_bench as bench
+    from aegis.layers.reasoning import arena as arena_module
+    from aegis.layers.reasoning.synthesis import Synthesiser
+
+    engine = _reasoning_engine()
+    engine.solve(240)
+    weaknesses = engine.detector.scan(engine.results)
+    assert weaknesses, "no weakness to build a prompt from"
+
+    parent = engine.synthesiser.parent_for(weaknesses[0], engine.library)
+    prompt = Synthesiser._prompt(weaknesses[0], parent)
+    assert prompt, "the synthesiser prompt is empty"
+
+    graded = [bench.build(arena_module.HOLDOUT_BASE + offset)
+              for offset in range(240)]
+    graded += [bench.build(10_000_000 - offset) for offset in range(240)]
+    for task in graded:
+        # An attempt record carries the task's id, so this is the check that
+        # bites today: point the queue at the arena's held-out range and these
+        # ids appear in the prompt verbatim.
+        assert task.id not in prompt, (
+            f"held-out {task.id!r} was named to the strategy synthesiser")
+        # A forward guard rather than a live one — the day a record carries the
+        # problem text instead of its id, the leak becomes far worse and this is
+        # what catches it.
+        assert str(task.prompt) not in prompt, (
+            f"held-out problem {task.id!r} reached the strategy synthesiser")
+
+
+def test_the_examples_that_do_reach_it_are_the_ones_it_failed():
+    """The complement of the leak test: a prompt with no examples at all would
+    pass every check above and tell the model nothing."""
+    engine = _reasoning_engine()
+    engine.solve(240)
+    weaknesses = engine.detector.scan(engine.results)
+    assert weaknesses and weaknesses[0].examples, "no failing examples carried"
+
+    worked = {str(row.get("task", "")) for row in engine.results}
+    assert set(weaknesses[0].examples) <= worked

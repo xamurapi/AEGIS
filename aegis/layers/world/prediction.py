@@ -171,6 +171,9 @@ class PredictionScorer:
         self._calibration: deque = deque(maxlen=2000)
         #: recent −log P(actual next state), for surprise
         self._surprise: deque = deque(maxlen=max(2, self.window))
+        #: Closed forecasts kept for the dashboard (§M10.1). Bounded, because
+        #: this is a display buffer and the durable record is the log.
+        self._recent: deque = deque(maxlen=200)
         self.rows_written = 0
 
     # ── opening ──────────────────────────────────────────────────────
@@ -243,10 +246,22 @@ class PredictionScorer:
         self._calibration.append((prediction.p_success, bool(success)))
         self._surprise.append(score.nll_next)
         self.scored += 1
+        self._recent.append({**prediction.to_dict(), "score": score.as_dict()})
         self._append(prediction, score)
         return score
 
     # ── reporting ────────────────────────────────────────────────────
+
+    def recent(self, limit: int = 50) -> list[dict]:
+        """Closed forecasts, newest last, for the dashboard (§M10.1).
+
+        Held in memory as well as on disk because the panel wants the last
+        fifty and the log holds twenty thousand: reading the tail of a JSONL
+        file on every dashboard poll would put file IO on the request path for
+        data the process already had.
+        """
+        limit = max(0, int(limit))
+        return [dict(row) for row in self._recent[-limit:]] if limit else []
 
     def surprise(self) -> float:
         """Mean information content of recent outcomes.

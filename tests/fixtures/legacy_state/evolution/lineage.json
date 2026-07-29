@@ -1,0 +1,474 @@
+{
+ "champion": {
+  "genome": {
+   "learning_rate": 0.0003,
+   "dropout": 0.12,
+   "attention_heads": 8,
+   "temperature": 0.75,
+   "curiosity_weight": 0.4,
+   "memory_decay": 0.02
+  },
+  "fitness": 0.4815,
+  "generation": 87,
+  "created": 1759800000.0
+ },
+ "candidate": {
+  "genome": {
+   "learning_rate": 0.00035,
+   "dropout": 0.12,
+   "attention_heads": 8,
+   "temperature": 0.75,
+   "curiosity_weight": 0.4,
+   "memory_decay": 0.02
+  },
+  "mutated_param": "learning_rate",
+  "generation": 88
+ },
+ "generation": 88,
+ "accepted": 5,
+ "rejected": 83,
+ "lineage": [
+  {
+   "generation": 1,
+   "fitness": 0.302,
+   "accepted": false
+  },
+  {
+   "generation": 2,
+   "fitness": 0.304,
+   "accepted": false
+  },
+  {
+   "generation": 3,
+   "fitness": 0.306,
+   "accepted": false
+  },
+  {
+   "generation": 4,
+   "fitness": 0.308,
+   "accepted": false
+  },
+  {
+   "generation": 5,
+   "fitness": 0.31,
+   "accepted": false
+  },
+  {
+   "generation": 6,
+   "fitness": 0.312,
+   "accepted": false
+  },
+  {
+   "generation": 7,
+   "fitness": 0.314,
+   "accepted": false
+  },
+  {
+   "generation": 8,
+   "fitness": 0.316,
+   "accepted": false
+  },
+  {
+   "generation": 9,
+   "fitness": 0.318,
+   "accepted": false
+  },
+  {
+   "generation": 10,
+   "fitness": 0.32,
+   "accepted": false
+  },
+  {
+   "generation": 11,
+   "fitness": 0.322,
+   "accepted": false
+  },
+  {
+   "generation": 12,
+   "fitness": 0.324,
+   "accepted": false
+  },
+  {
+   "generation": 13,
+   "fitness": 0.326,
+   "accepted": false
+  },
+  {
+   "generation": 14,
+   "fitness": 0.328,
+   "accepted": false
+  },
+  {
+   "generation": 15,
+   "fitness": 0.32999999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 16,
+   "fitness": 0.33199999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 17,
+   "fitness": 0.33399999999999996,
+   "accepted": true
+  },
+  {
+   "generation": 18,
+   "fitness": 0.33599999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 19,
+   "fitness": 0.33799999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 20,
+   "fitness": 0.33999999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 21,
+   "fitness": 0.34199999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 22,
+   "fitness": 0.344,
+   "accepted": false
+  },
+  {
+   "generation": 23,
+   "fitness": 0.346,
+   "accepted": false
+  },
+  {
+   "generation": 24,
+   "fitness": 0.348,
+   "accepted": false
+  },
+  {
+   "generation": 25,
+   "fitness": 0.35,
+   "accepted": false
+  },
+  {
+   "generation": 26,
+   "fitness": 0.352,
+   "accepted": false
+  },
+  {
+   "generation": 27,
+   "fitness": 0.354,
+   "accepted": false
+  },
+  {
+   "generation": 28,
+   "fitness": 0.356,
+   "accepted": false
+  },
+  {
+   "generation": 29,
+   "fitness": 0.358,
+   "accepted": false
+  },
+  {
+   "generation": 30,
+   "fitness": 0.36,
+   "accepted": false
+  },
+  {
+   "generation": 31,
+   "fitness": 0.362,
+   "accepted": false
+  },
+  {
+   "generation": 32,
+   "fitness": 0.364,
+   "accepted": false
+  },
+  {
+   "generation": 33,
+   "fitness": 0.366,
+   "accepted": false
+  },
+  {
+   "generation": 34,
+   "fitness": 0.368,
+   "accepted": true
+  },
+  {
+   "generation": 35,
+   "fitness": 0.37,
+   "accepted": false
+  },
+  {
+   "generation": 36,
+   "fitness": 0.372,
+   "accepted": false
+  },
+  {
+   "generation": 37,
+   "fitness": 0.374,
+   "accepted": false
+  },
+  {
+   "generation": 38,
+   "fitness": 0.376,
+   "accepted": false
+  },
+  {
+   "generation": 39,
+   "fitness": 0.378,
+   "accepted": false
+  },
+  {
+   "generation": 40,
+   "fitness": 0.38,
+   "accepted": false
+  },
+  {
+   "generation": 41,
+   "fitness": 0.382,
+   "accepted": false
+  },
+  {
+   "generation": 42,
+   "fitness": 0.384,
+   "accepted": false
+  },
+  {
+   "generation": 43,
+   "fitness": 0.386,
+   "accepted": false
+  },
+  {
+   "generation": 44,
+   "fitness": 0.388,
+   "accepted": false
+  },
+  {
+   "generation": 45,
+   "fitness": 0.39,
+   "accepted": false
+  },
+  {
+   "generation": 46,
+   "fitness": 0.392,
+   "accepted": false
+  },
+  {
+   "generation": 47,
+   "fitness": 0.394,
+   "accepted": false
+  },
+  {
+   "generation": 48,
+   "fitness": 0.396,
+   "accepted": false
+  },
+  {
+   "generation": 49,
+   "fitness": 0.398,
+   "accepted": false
+  },
+  {
+   "generation": 50,
+   "fitness": 0.4,
+   "accepted": false
+  },
+  {
+   "generation": 51,
+   "fitness": 0.402,
+   "accepted": true
+  },
+  {
+   "generation": 52,
+   "fitness": 0.404,
+   "accepted": false
+  },
+  {
+   "generation": 53,
+   "fitness": 0.40599999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 54,
+   "fitness": 0.408,
+   "accepted": false
+  },
+  {
+   "generation": 55,
+   "fitness": 0.41,
+   "accepted": false
+  },
+  {
+   "generation": 56,
+   "fitness": 0.412,
+   "accepted": false
+  },
+  {
+   "generation": 57,
+   "fitness": 0.414,
+   "accepted": false
+  },
+  {
+   "generation": 58,
+   "fitness": 0.416,
+   "accepted": false
+  },
+  {
+   "generation": 59,
+   "fitness": 0.418,
+   "accepted": false
+  },
+  {
+   "generation": 60,
+   "fitness": 0.42,
+   "accepted": false
+  },
+  {
+   "generation": 61,
+   "fitness": 0.422,
+   "accepted": false
+  },
+  {
+   "generation": 62,
+   "fitness": 0.424,
+   "accepted": false
+  },
+  {
+   "generation": 63,
+   "fitness": 0.426,
+   "accepted": false
+  },
+  {
+   "generation": 64,
+   "fitness": 0.428,
+   "accepted": false
+  },
+  {
+   "generation": 65,
+   "fitness": 0.43,
+   "accepted": false
+  },
+  {
+   "generation": 66,
+   "fitness": 0.432,
+   "accepted": false
+  },
+  {
+   "generation": 67,
+   "fitness": 0.434,
+   "accepted": false
+  },
+  {
+   "generation": 68,
+   "fitness": 0.436,
+   "accepted": true
+  },
+  {
+   "generation": 69,
+   "fitness": 0.438,
+   "accepted": false
+  },
+  {
+   "generation": 70,
+   "fitness": 0.44,
+   "accepted": false
+  },
+  {
+   "generation": 71,
+   "fitness": 0.442,
+   "accepted": false
+  },
+  {
+   "generation": 72,
+   "fitness": 0.444,
+   "accepted": false
+  },
+  {
+   "generation": 73,
+   "fitness": 0.44599999999999995,
+   "accepted": false
+  },
+  {
+   "generation": 74,
+   "fitness": 0.44799999999999995,
+   "accepted": false
+  },
+  {
+   "generation": 75,
+   "fitness": 0.44999999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 76,
+   "fitness": 0.45199999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 77,
+   "fitness": 0.45399999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 78,
+   "fitness": 0.45599999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 79,
+   "fitness": 0.45799999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 80,
+   "fitness": 0.45999999999999996,
+   "accepted": false
+  },
+  {
+   "generation": 81,
+   "fitness": 0.46199999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 82,
+   "fitness": 0.46399999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 83,
+   "fitness": 0.46599999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 84,
+   "fitness": 0.46799999999999997,
+   "accepted": false
+  },
+  {
+   "generation": 85,
+   "fitness": 0.47,
+   "accepted": true
+  },
+  {
+   "generation": 86,
+   "fitness": 0.472,
+   "accepted": false
+  },
+  {
+   "generation": 87,
+   "fitness": 0.474,
+   "accepted": false
+  },
+  {
+   "generation": 88,
+   "fitness": 0.476,
+   "accepted": false
+  }
+ ],
+ "param_idx": 3,
+ "direction_up": true
+}

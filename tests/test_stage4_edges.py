@@ -913,6 +913,131 @@ def test_the_consolidate_adapter_forgets_before_it_ingests():
     assert order == ["forget", "ingest"]
 
 
+def test_the_mine_rules_adapter_hands_the_policy_the_protected_set():
+    """What may never be suppressed is a property of the registry (M3.5). A
+    policy that looked the set up itself could look up a different one."""
+    from aegis.layers.executors import adapter_for
+
+    seen = {}
+
+    class _S:
+        tick_count = 41
+        actions = type("A", (), {"safety_critical": staticmethod(
+            lambda: [type("Spec", (), {"name": "checkpoint"})(),
+                     type("Spec", (), {"name": "health_check"})()])})()
+        policy = type("P", (), {"mine": staticmethod(
+            lambda tick, safety_critical: seen.update(
+                tick=tick, protected=safety_critical) or ["rule"])})()
+
+    assert adapter_for("mine_rules")(_S(), None) == ["rule"]
+    assert seen["tick"] == 41
+    assert seen["protected"] == ["checkpoint", "health_check"]
+
+
+def test_the_review_rules_adapter_reviews_at_the_current_tick():
+    from aegis.layers.executors import adapter_for
+
+    seen = {}
+
+    class _S:
+        tick_count = 907
+        policy = type("P", (), {"review": staticmethod(
+            lambda tick: seen.update(tick=tick) or {"retired": 1})})()
+
+    assert adapter_for("review_rules")(_S(), None) == {"retired": 1}
+    assert seen["tick"] == 907
+
+
+# ── evolve_generation: scheduled, never run inline ───────────────────
+#
+# §3.4 says no heavy activity runs in the body of a tick, and a generation is
+# the heaviest thing the system does — ten variants, each a benchmark in another
+# process, against a 20 ms ACT budget. The adapter's whole job is to *schedule*
+# it. These tests are about that job, because an adapter that quietly awaited
+# the generation would still return the right answer and still be a defect.
+
+class _Evolution:
+    def __init__(self, running=False):
+        self.generation_running = running
+        self.calls = []
+
+    def run_generation(self, tick):
+        self.calls.append(tick)
+        return {"generation": 1}
+
+
+class _EvoSubstrate:
+    def __init__(self, running=False):
+        self.evolution = _Evolution(running)
+        self.tick_count = 250
+
+
+def test_a_generation_is_scheduled_and_not_awaited_in_the_tick():
+    from aegis.layers.executors import adapter_for
+
+    substrate = _EvoSubstrate()
+
+    async def _scenario():
+        task = adapter_for("evolve_generation")(substrate, None)
+        assert task is not None
+        # Nothing has run yet: the adapter returned before the generation
+        # started, which is the whole point of the action.
+        assert substrate.evolution.calls == []
+        return await task
+
+    assert _run(_scenario()) == {"generation": 1}
+    assert substrate.evolution.calls == [250]
+
+
+def test_a_generation_already_running_is_not_started_again():
+    from aegis.layers.executors import adapter_for
+
+    substrate = _EvoSubstrate(running=True)
+
+    async def _scenario():
+        return adapter_for("evolve_generation")(substrate, None)
+
+    assert _run(_scenario()) is None
+    assert substrate.evolution.calls == []
+
+
+def test_a_second_generation_waits_for_the_first_task_to_finish():
+    """Guarded by the task as well as by the flag. The flag is set inside
+    ``run_generation``, which runs in another thread — between scheduling and
+    that assignment there is a window where the flag still reads false."""
+    from aegis.layers.executors import adapter_for
+
+    substrate = _EvoSubstrate()
+
+    async def _scenario():
+        first = adapter_for("evolve_generation")(substrate, None)
+        second = adapter_for("evolve_generation")(substrate, None)
+        await first
+        return second
+
+    assert _run(_scenario()) is None
+    assert substrate.evolution.calls == [250]
+
+
+def test_a_generation_that_raises_is_contained():
+    """A detached task whose exception nobody retrieves is an exception nobody
+    sees. The adapter logs it and reports nothing rather than letting it warn
+    its way out at interpreter shutdown."""
+    from aegis.layers.executors import adapter_for
+
+    class _Boom(_Evolution):
+        def run_generation(self, tick):
+            raise RuntimeError("the pool died")
+
+    substrate = _EvoSubstrate()
+    substrate.evolution = _Boom()
+
+    async def _scenario():
+        return await adapter_for("evolve_generation")(substrate, None)
+
+    assert _run(_scenario()) is None
+
+
 # ── the planner's own empty cases ────────────────────────────────────
 
 class _NoSequence:

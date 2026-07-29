@@ -38,7 +38,7 @@ UNAVAILABLE = "__unavailable__"
 
 #: Hard ceiling on how finely a problem may be cut up. The gene asks; this
 #: decides, for the same reason every other gene is clamped at the reader.
-MAX_DECOMPOSE_PARTS = 8
+MAX_DECOMPOSE_PARTS = 10
 
 
 def _clauses(text: str) -> list[str]:
@@ -244,7 +244,7 @@ class Interpreter:
         # granularity is evolvable even for strategies that never mention it —
         # otherwise only strategies written to ask for it could be tuned.
         limit = self._resolve_int(
-            step.get("max_parts", "$gene:reason_decompose_parts"), 4, 2,
+            step.get("max_parts", "$gene:reason_decompose_parts"), 6, 2,
             MAX_DECOMPOSE_PARTS)
         text = str(getattr(task, "prompt", ""))
         parts = _clauses(text)[:limit]

@@ -36,6 +36,7 @@ from aegis.layers.motivation import (
 )
 from aegis.layers.planner import Planner
 from aegis.layers.policy import BehaviourPolicy
+from aegis.layers.discovery import DiscoveryEngine
 from aegis.layers.reasoning import ReasoningEngine
 from aegis.layers.memory import MemorySystem
 from aegis.layers.introspection import IntrospectionEngine
@@ -184,6 +185,14 @@ class Substrate:
         # else writes to, or its cost would be the one thing with no history.
         self.llm.cortex.telemetry = self.telemetry
         self.world_model.telemetry = self.telemetry
+        # Evolution is built before the telemetry exists, so it has to be
+        # handed the store here. Without this its `publish_metrics` returns on
+        # the first line and all six metrics of Appendix G that describe the
+        # evolutionary contour — generation, champion fitness, the valid/test
+        # gap, promotions, rollbacks, novelty skips — are never written at all.
+        # Nothing errors: the dashboard shows the panel and the series behind
+        # it is simply empty.
+        self.evolution.telemetry = self.telemetry
 
         # ── Motivation with teeth (spec M4) ──────────────────────────
         # The chain the development text asks for is goal → value → priority →
@@ -230,6 +239,13 @@ class Substrate:
             cortex=self.llm.cortex, world_model=self.world_model,
             memory=self.memory, graph=self.cognitive_graph, solver=self.solver,
             sandbox=run_skill, telemetry=self.telemetry)
+        # The discovery contour (M7). Its only source of observations is the
+        # telemetry this substrate writes, which is why it is built after it:
+        # the engine explains the system's own history, and there is nothing
+        # else it is allowed to read.
+        self.discovery = DiscoveryEngine(
+            telemetry=self.telemetry, world_model=self.world_model,
+            cortex=self.llm.cortex)
 
         # The genome the contours booted with, recorded once so every later
         # apply/revert has something exact to go back to.
@@ -388,7 +404,7 @@ class Substrate:
         for system in (self.world_model, self.cognitive_graph, self.evolution,
                        self.goal_intelligence, self.feedback_loop,
                        self.resources, self.roi, self.policy,
-                       self.reasoning):
+                       self.reasoning, self.discovery):
             try:
                 system.save()
             except Exception:
@@ -628,6 +644,7 @@ class Substrate:
             self.planner.publish_metrics(tick)
             self.policy.publish_metrics(tick)
             self.reasoning.publish_metrics(tick)
+            self.discovery.publish_metrics(tick)
         except Exception:
             logger.exception("Telemetry publication failed")
 
@@ -1470,6 +1487,8 @@ class Substrate:
             "action_space": self.actions.status(self),
             "planner": self.planner.status(),
             "policy": self.policy.status(),
+            "reasoning": self.reasoning.status(),
+            "discovery": self.discovery.status(),
             "reward_signal": round(self._compute_reward(), 4),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),

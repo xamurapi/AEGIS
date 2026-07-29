@@ -473,3 +473,64 @@ def test_status_reports_counters(tel):
     st = tel.status()
     assert st["records_written"] == 1 and st["flushes"] == 1 and st["metrics"] == 1
     assert st["schema_version"] == 2
+
+
+# ── the retention gate is two checks, and both have to be right ──────
+#
+# Answering "is this series over its cap" by reading the whole file — on every
+# flush, for every metric — cost 86% of the tick and grew with the length of
+# the run. The count is now kept in memory, so the check is a pre-filter that
+# only has to be right about when *not* to look at the file, and the exact
+# decision is still made from the file itself.
+
+def test_a_series_under_its_cap_is_not_compacted(tmp_path):
+    store = Telemetry(tmp_path, max_rows=10, flush_rows=1)
+    for index in range(8):
+        store.record("aegis.tick.duration_ms", float(index), tick=index)
+    store.flush()
+    assert store.downsamples == 0
+    assert len(store.series("aegis.tick.duration_ms")) == 8
+
+
+def test_a_series_between_the_pre_filter_and_the_cap_is_not_compacted(tmp_path):
+    """The gap between the two thresholds, which is the whole reason there are
+    two. The pre-filter opens here and the exact check declines — a series in
+    this range must keep every row it has."""
+    store = Telemetry(tmp_path, max_rows=10, flush_rows=1)
+    for index in range(15):
+        store.record("aegis.tick.duration_ms", float(index), tick=index)
+    store.flush()
+    assert store.downsamples == 0, "a series inside its cap was downsampled"
+    assert len(store.series("aegis.tick.duration_ms")) == 15
+
+
+def test_a_series_past_twice_its_cap_is_compacted(tmp_path):
+    """And the other side of it: past the real threshold the older half is
+    averaged down, so the file stops growing without the trend being lost."""
+    store = Telemetry(tmp_path, max_rows=10, flush_rows=1)
+    for index in range(30):
+        store.record("aegis.tick.duration_ms", float(index), tick=index)
+    store.flush()
+    assert store.downsamples >= 1
+    assert len(store.series("aegis.tick.duration_ms")) < 30
+
+
+def test_the_row_count_survives_a_restart(tmp_path):
+    """The count is read from disk once, on the first flush that touches a
+    file. A store that assumed zero would let a file left by an earlier run
+    grow past its cap for as long as the process lived."""
+    first = Telemetry(tmp_path, max_rows=10, flush_rows=1)
+    for index in range(25):
+        first.record("aegis.tick.duration_ms", float(index), tick=index)
+    first.flush()
+    on_disk = len(first.series("aegis.tick.duration_ms"))
+
+    second = Telemetry(tmp_path, max_rows=10, flush_rows=1)
+    second.record("aegis.tick.duration_ms", 99.0, tick=99)
+    second.flush()
+    assert second._rows_on_disk["aegis.tick.duration_ms"] >= on_disk
+
+
+def test_counting_a_file_that_is_not_there_is_zero(tmp_path):
+    store = Telemetry(tmp_path)
+    assert store._count_file(tmp_path / "absent.jsonl") == 0

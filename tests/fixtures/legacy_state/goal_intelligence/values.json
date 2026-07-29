@@ -1,0 +1,15 @@
+{
+ "values": {
+  "knowledge": 0.61,
+  "competence": 0.55,
+  "coherence": 0.48,
+  "stability": 0.52
+ },
+ "drives": {
+  "knowledge": 0.4,
+  "competence": 0.3,
+  "coherence": 0.2,
+  "stability": 0.1
+ },
+ "total_reward": 812.4
+}

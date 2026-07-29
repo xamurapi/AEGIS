@@ -64,3 +64,28 @@ Feature: Thinking is a strategy, and a strategy is data
     Scenario: A class with too little evidence is not called weak
       When 4 problems with missing data are worked by "direct"
       Then there should be no weakness
+
+  Rule: A weakness has to be real before anything is written for it
+
+    Scenario: A system failing at random is not weak anywhere in particular
+      When 600 attempts fail at random
+      Then no weakness should be reported
+
+    Scenario: A class that really does fail is found
+      When 60 attempts of one kind fail among 400 that mostly do not
+      Then that kind should be reported as a weakness
+
+  Rule: A candidate proves itself before it gets any traffic
+
+    Scenario: The system writes a strategy nobody gave it
+      When 3 rounds of work and improvement are run
+      Then a strategy that is not built in should exist
+
+    Scenario: An accepted strategy starts on trial, not in service
+      When 3 rounds of work and improvement are run
+      Then every synthesised strategy should be on trial or promoted
+      And no synthesised strategy should be in service without having run
+
+    Scenario: A strategy that wins its class by losing elsewhere is refused
+      When a strategy that always abstains is judged for "missing_data"
+      Then it should be refused for regressing the general benchmark

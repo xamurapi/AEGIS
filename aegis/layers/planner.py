@@ -460,6 +460,26 @@ class Planner:
         except Exception:
             logger.exception("Planner metric publication failed")
 
+    def last_plan_report(self) -> dict:
+        """The last plan and what it beat — the panel of §M10.1.
+
+        Separate from :meth:`status` because the plan panel wants the losing
+        alternatives and their values, and a status dict that always carried
+        the whole shortlist would put it in every WebSocket frame.
+        """
+        if self.last_plan is None:
+            return {"plan": None, "alternatives": [], "explanation": "",
+                    "latency_ms": round(self.last_latency_ms, 3)}
+        return {
+            "plan": self.last_plan.as_dict(),
+            "alternatives": list(self.last_plan.alternatives),
+            "explanation": self.explain(self.last_plan),
+            "latency_ms": round(self.last_latency_ms, 3),
+            "override_rate": self.override_rate(),
+            "ev_gap": round(self.ev_gap, 5) if self.ev_gap is not None else None,
+            "blocked": dict(sorted(self.blocked.items())),
+        }
+
     def status(self) -> dict:
         return {
             "enabled": cfg.PLAN_ENABLED,

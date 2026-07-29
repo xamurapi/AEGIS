@@ -859,3 +859,171 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         if ws in connected_ws:
             connected_ws.remove(ws)
+
+
+# ── the seven contours of the development spec (§M10.1) ──────────────
+#
+# Read endpoints are plain GETs: the dashboard polls them and the WebSocket
+# carries `full_status()`. The three POSTs run work on demand and are gated
+# twice — once by the token middleware above, and once here on the kill switch,
+# because "the operator asked for it" is not a reason to start a generation on
+# a system that has been stopped.
+
+
+def _kill_switch_guard():
+    """Refuse a manual trigger while the kill switch is active (§M10.1)."""
+    if substrate is None:
+        return {"error": "runtime not started"}
+    if getattr(substrate.ethics, "kill_switch_active", False):
+        return {"error": "kill switch is active"}
+    return None
+
+
+@app.get("/api/world-model/calibration")
+async def world_model_calibration():
+    """Brier, ECE, the reliability curve, and how much of it the model knew."""
+    return {
+        **substrate.world_model.calibration(),
+        "surprise": round(substrate.world_model.surprise(), 6),
+        "coverage": substrate.world_model.coverage(),
+    }
+
+
+@app.get("/api/world-model/predictions")
+async def world_model_predictions(limit: int = 50):
+    """The most recent forecasts with the outcomes they were closed against."""
+    return {"predictions": substrate.world_model.recent_predictions(limit)}
+
+
+@app.get("/api/planner/last")
+async def planner_last():
+    """The last plan: its value, its alternatives, and why it won."""
+    return substrate.planner.last_plan_report()
+
+
+@app.get("/api/policy/rules")
+async def policy_rules():
+    """Every rule, its status, and the evidence behind it."""
+    return {"rules": substrate.policy.rules_report()}
+
+
+@app.get("/api/policy/effect")
+async def policy_effect():
+    """Did the policy change behaviour, and did the change pay?"""
+    return substrate.policy.effect_report()
+
+
+@app.get("/api/resources")
+async def resources_status():
+    return {"resources": substrate.resources.status(),
+            "roi": substrate.roi.status(),
+            "leases": [lease.to_dict() for lease in substrate.resources.open_leases()]}
+
+
+@app.get("/api/motivation/priorities")
+async def motivation_priorities():
+    return substrate.priority.status()
+
+
+@app.get("/api/evolution/population")
+async def evolution_population():
+    """The current generation, the fitnesses, and the novelty archive."""
+    return substrate.evolution.population_report()
+
+
+@app.get("/api/evolution/lineage.csv")
+async def evolution_lineage_csv():
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(
+        substrate.evolution.lineage_csv(),
+        headers={"Content-Disposition": "attachment; filename=aegis_lineage.csv"},
+    )
+
+
+@app.get("/api/reasoning/strategies")
+async def reasoning_strategies():
+    return {"strategies": substrate.reasoning.strategies_report(),
+            "engine": substrate.reasoning.status()}
+
+
+@app.get("/api/reasoning/weaknesses")
+async def reasoning_weaknesses():
+    return {"weaknesses": substrate.reasoning.weaknesses_report()}
+
+
+@app.get("/api/reasoning/trace/{trace_id}")
+async def reasoning_trace(trace_id: str):
+    trace = substrate.reasoning.trace(trace_id)
+    if trace is None:
+        return {"error": "no such trace"}
+    return trace
+
+
+@app.get("/api/discoveries")
+async def discoveries():
+    """The register: what is known, what was refuted, and the formulas."""
+    return {"discoveries": [record.as_dict() for record in
+                            sorted(substrate.discovery.ledger.entries.values(),
+                                   key=lambda entry: entry.id)],
+            "engine": substrate.discovery.status()}
+
+
+@app.get("/api/discoveries/{discovery_id}")
+async def discovery_detail(discovery_id: str):
+    record = substrate.discovery.ledger.get(discovery_id)
+    if record is None:
+        return {"error": "no such discovery"}
+    return record.as_dict()
+
+
+@app.get("/api/telemetry/{metric}.csv")
+async def telemetry_csv(metric: str, window: int = 5000):
+    from fastapi.responses import PlainTextResponse
+
+    series = substrate.telemetry.series(metric, window=window)
+    lines = ["tick,tick_end,value,count"]
+    for index in range(len(series)):
+        lines.append(f"{series.ticks[index]},{series.ends[index]},"
+                     f"{series.values[index]},{series.counts[index]}")
+    safe = substrate.telemetry.safe_name(metric)
+    return PlainTextResponse(
+        "\n".join(lines) + "\n",
+        headers={"Content-Disposition": f"attachment; filename={safe}.csv"},
+    )
+
+
+@app.post("/api/evolution/generation")
+async def run_generation():
+    """Run one generation now. Detached from the tick, as it always is."""
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    report = await asyncio.get_running_loop().run_in_executor(
+        None, substrate.evolution.run_generation, substrate.tick_count)
+    return report or {"status": "a generation is already running"}
+
+
+@app.post("/api/discovery/scan")
+async def run_discovery_scan():
+    """Scan for hypotheses now, and fit whatever the scan turned up."""
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    found = substrate.discovery.scan(tick=substrate.tick_count)
+    fitted = substrate.discovery.fit(tick=substrate.tick_count)
+    return {"hypotheses": [item.as_dict() for item in found], "model": fitted,
+            "engine": substrate.discovery.status()}
+
+
+@app.post("/api/reasoning/synthesize")
+async def run_strategy_synthesis():
+    """Scan for a weakness and propose strategies against it."""
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    substrate.reasoning.scan_weakness()
+    proposed = await substrate.reasoning.propose_strategy_async(
+        tick=substrate.tick_count)
+    return {"candidates": proposed,
+            "weaknesses": substrate.reasoning.weaknesses_report()}
