@@ -655,6 +655,7 @@ The engineering docs are written in Russian; this README is the English entry po
 | [`docs/ОТКРЫТИЯ.md`](docs/ОТКРЫТИЯ.md) | The discovery contour — how a hypothesis becomes a formula, an experiment and a registered law, and every gate that stops it registering noise |
 | [`docs/ТЗ-РАЗВИТИЕ.md`](docs/ТЗ-РАЗВИТИЕ.md) | The development specification the seven new contours are built to |
 | [`docs/ПЛАН-ЭТАПОВ.md`](docs/ПЛАН-ЭТАПОВ.md) | Its twelve stages — what each one delivered, and the acceptance number it had to clear |
+| [`docs/ТЗ-МЕТАКОГНИЦИЯ.md`](docs/%D0%A2%D0%97-%D0%9C%D0%95%D0%A2%D0%90%D0%9A%D0%9E%D0%93%D0%9D%D0%98%D0%A6%D0%98%D0%AF.md) | Specification for M11 — attribution of *why* a strategy won, verified by ablation, and deliberate invention of structurally different ones |
 
 ---
 
