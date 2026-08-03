@@ -1,10 +1,12 @@
 """Layer 0: Substrate — persistent runtime with PERCEIVE-EVALUATE-DECIDE-ACT-REFLECT cycle (S-001..S-006).
 
 The core cognitive cycle (reward, confidence, importance, goal progress) is
-deterministic and driven by real system metrics. Knowledge-acquisition helpers
-(ExternalLearning, AgentSystem) still pick topics with `random` when none is
-supplied, so the runtime as a whole is not fully deterministic.
-Code self-modification is integrated via CodeModifier + LLM proposals.
+deterministic and driven by real system metrics. So is everything around it:
+the knowledge-acquisition helpers that used to reach for `random` when no topic
+was supplied now rotate through fixed lists or index by a hash of their own
+inputs, and `tests/test_zero_randomness.py` walks every file under `aegis/` to
+keep it that way. Code self-modification is integrated via CodeModifier + LLM
+proposals.
 """
 import asyncio
 import logging
