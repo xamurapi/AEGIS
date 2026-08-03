@@ -150,6 +150,12 @@ async def run(substrate, ctx: TickContext) -> None:
             )
             # System 4: credit realized reward to the chosen objective.
             substrate.goal_intelligence.reward(realized)
+            # Layer 2: the same outcome closes the calibration loop. DECIDE
+            # recorded how confident this tick was BEFORE acting; this is the
+            # first point where it is known whether that confidence was
+            # deserved. Without this pairing the engine has confidences and no
+            # outcomes, which is why its ECE used to be a constant.
+            substrate.introspection.record_outcome(success)
             # System 1: the decision's outcome is causal data too.
             if experience is not None:
                 substrate.world_model.observe(

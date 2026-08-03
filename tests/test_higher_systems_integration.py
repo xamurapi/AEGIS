@@ -6,12 +6,30 @@ without blocking or crashing the loop. Network/LLM/sandbox are neutralized so
 the test is deterministic and offline.
 """
 import asyncio
+import tempfile
+from pathlib import Path
 
+from aegis.layers.evolution_engine import EvolutionEngine
 from aegis.layers.substrate import Substrate
 
 
 def _make_substrate():
     s = Substrate()
+
+    # Substrate() reads the developer's working `data/` directory, so an
+    # evolution candidate left there by ANY earlier run — a real session, a
+    # soak, someone poking at a REPL — is restored on construction, and the
+    # cadence tick then finds a candidate already pending and proposes nothing.
+    # The tests below assert on evolution state, so per the rule in docs/QA.md
+    # §6 they have to own that state. This gave a genuine false failure once
+    # the round-5 fix made persisted candidates survive a restart, which is
+    # exactly when a shared-state test starts lying.
+    s.evolution = EvolutionEngine(
+        store_path=Path(tempfile.mkdtemp(prefix="aegis_evo_test_")) / "lineage.json")
+    # Re-do what Substrate.__init__ does for a fresh engine: without a champion
+    # there is nothing for a mutation to be proposed against.
+    s.evolution.evaluator.pool = s.eval_pool
+    s.evolution.register_champion(s._genome.to_dict(), 0.0)
 
     async def _noop_agents():
         return []

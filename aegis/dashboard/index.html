@@ -819,7 +819,8 @@ body {
       <div class="metric"><span class="metric-label">Decisions Traced</span><span class="metric-value" id="intro_decisions">0</span></div>
       <div class="metric"><span class="metric-label">Avg Confidence</span><span class="metric-value" id="intro_confidence">0</span></div>
       <div class="metric"><span class="metric-label">Bias Warnings</span><span class="metric-value" id="intro_biasWarnings">0</span></div>
-      <div class="metric"><span class="metric-label">ECE</span><span class="metric-value" id="intro_ece">0</span></div>
+      <div class="metric"><span class="metric-label">Calibration (ECE)</span><span class="metric-value" id="intro_ece">—</span></div>
+      <div class="metric"><span class="metric-label">Confidence bias</span><span class="metric-value" id="intro_bias">—</span></div>
     </div>
     <div class="card">
       <div class="card-header"><span class="card-title">Autobiography</span></div>
@@ -1982,7 +1983,19 @@ function updateDashboard(d) {
     const avgConf = recentDec.length > 0 ? (recentDec.reduce((s,d) => s + d.confidence, 0) / recentDec.length).toFixed(3) : '0';
     setText('intro_confidence', avgConf);
     setText('intro_biasWarnings', i.bias_reports_count || 0);
-    setText('intro_ece', i.calibration ? i.calibration.ece : 0);
+    // Calibration is absent until enough decisions have been paired with
+    // their outcomes. Show the dash and the progress, never a placeholder
+    // number — this tile used to display a hardcoded 0.05 forever.
+    const cal = i.calibration || {};
+    if (cal.ece === null || cal.ece === undefined) {
+      setText('intro_ece', '— (' + (cal.samples || 0) + '/' + (cal.needed || 20) + ')');
+      setText('intro_bias', '—');
+    } else {
+      setText('intro_ece', fmt(cal.ece, 4));
+      const bias = cal.bias;
+      setText('intro_bias', bias === null || bias === undefined ? '—'
+        : (bias > 0 ? '+' : '') + fmt(bias, 4) + (bias > 0 ? ' overconfident' : ' underconfident'));
+    }
   }
   if (d.autobiography) {
     const a = d.autobiography;

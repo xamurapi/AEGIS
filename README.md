@@ -1,6 +1,6 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
-[![tests](https://img.shields.io/badge/tests-4603%20passing-2ea44f)](#testing--quality)
+[![tests](https://img.shields.io/badge/tests-4611%20passing-2ea44f)](#testing--quality)
 [![coverage](https://img.shields.io/badge/branch%20coverage-95%25-2ea44f)](#testing--quality)
 [![mutation score](https://img.shields.io/badge/mutation-100%25%20on%20round--5%20modules-2ea44f)](#testing--quality)
 [![audit](https://img.shields.io/badge/audit-5%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
@@ -9,7 +9,7 @@
 
 > A self-developing AI that predicts before it acts, changes its behaviour from measured experience, evolves a genome that provably moves its own benchmark, improves its own reasoning strategies, and derives laws about itself that it then has to defend against an experiment.
 > **7-layer architecture + 5 higher-order systems + 7 contours of the development spec · provider-agnostic cortex · deterministic core cycle.**
-> **4603 tests · 95% branch coverage · 5 audit rounds, 34 findings closed in the fifth.**
+> **4611 tests · 95% branch coverage · 5 audit rounds, 34 findings closed in the fifth.**
 > **Safe defaults:** source self-rewriting is opt-in (`AEGIS_CODE_SELF_MOD_ENABLED=1`), the control plane binds to `127.0.0.1`, and self-written skills run only in a child-process sandbox.
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
@@ -327,7 +327,7 @@ AEGIS/
 │   ├── soak.py                # VII.5 — the 24-hour run
 │   ├── check_no_stubs.py      # no `pass`-bodied production code
 │   └── check_undefined_names.py
-├── tests/                      # 4603 tests
+├── tests/                      # 4611 tests
 │   └── features/              # 9 executable Gherkin specifications
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
@@ -582,7 +582,7 @@ API keys can also be set at runtime via the dashboard (LLM Brain tab).
 ```bash
 pip install -r requirements-dev.txt
 
-python -m pytest -q                                    # 4603 tests, ~5.5 min
+python -m pytest -q                                    # 4611 tests, ~5.5 min
 python -m coverage run -m pytest -q && python -m coverage report   # gate: 90%
 python scripts/mutation_test.py                        # gate: no survivors
 python scripts/check_no_stubs.py                       # no `pass`-bodied production code
@@ -592,10 +592,10 @@ No ML dependencies are required — the whole suite runs offline (no network, no
 
 | Metric | Value | Gate |
 |---|---:|---:|
-| Tests | **4603** passing (+2 skipped) | all green |
+| Tests | **4611** passing (+2 skipped) | all green |
 | Branch coverage (whole package) | **95%** | **90%** |
 | Mutation score, modules verified at 100% | sandbox · policy (all four) · world/simulate · world/prediction · quasirandom · store/migrations · discovery · telemetry/store · safety/immutable · reasoning DSL, interpreter, library, weakness, synthesis, arena | no survivors |
-| Mutation score over the modules round 5 changed | **100%** (236 mutants, 9 modules) | no survivors |
+| Mutation score over the modules round 5 changed | **100%** (286 mutants, 10 modules) | no survivors |
 | Executable Gherkin specifications | **9 feature files · 92 scenarios** | — |
 
 **Levels.** Unit tests per module · integration tests running the five systems
@@ -625,7 +625,7 @@ Four kinds of test earn their place by catching what unit tests cannot:
   state or the new one, never half of each.
 
 The sweep is a gate. Every module audit round 5 touched has been swept and is
-clean — 236 mutants across nine modules, no survivors — and the round before it
+clean — 286 mutants across ten modules, no survivors — and the round before it
 found real gaps in modules that predate the development spec: `world_model.py`
 scored 33% on twelve mutants. Two of them were decorative genes: `synth_attempts` bounded a loop whose repair branch was
 capped by a literal, and `mem_retention_bias` was written onto `MemorySystem`,

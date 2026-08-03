@@ -235,6 +235,10 @@ TARGETS = [
      "tests/test_goal_engine.py tests/test_goal_engine_mut.py"),
     ("aegis/layers/emotions.py",
      "tests/test_emotions.py tests/test_behaviour_mutation.py"),
+    # Introspection publishes the calibration number the dashboard shows. It
+    # was a hardcoded constant until audit R5, so it is exactly the module
+    # where a surviving mutant would mean the measurement is decorative again.
+    ("aegis/layers/introspection.py", "tests/test_introspection.py"),
     ("aegis/layers/health_monitor.py",
      "tests/test_health_monitor.py tests/test_behaviour_mutation.py"),
     ("aegis/layers/meta_regulation.py",
