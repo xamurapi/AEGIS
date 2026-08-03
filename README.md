@@ -18,11 +18,18 @@
 
 ## What is AEGIS?
 
-AEGIS is not a chatbot wrapper. It is a stateful, continuously running cognitive system that executes a full loop every 3 seconds:
+AEGIS is not a chatbot wrapper. It is a stateful, continuously running cognitive system that runs a loop every 3 seconds:
 
 ```
 PERCEIVE → EVALUATE → DECIDE → ACT → REFLECT
 ```
+
+The five phases run in that order, unconditionally — but *completes* would be the
+wrong word, and the difference is load-bearing. A phase that raises takes the rest
+of the cycle with it, and the tick is recorded as failed rather than counted as
+work done. That is not a defect to paper over: audit round 5 found a list-shaped
+model reply aborting EVALUATE and silently costing that tick its DECIDE, ACT and
+REFLECT. A loop that always claimed to finish would have hidden it.
 
 The **whole system is deterministic**, not just its core. Reward, confidence, importance, emotions, goals, dreams and self-modification are driven by real system metrics (`success_rate`, `energy`, `error_rate`, `goal_completion`); the last places that still called an RNG — topic selection, agent staggering, id assignment, dataset shuffling — now rotate through fixed lists or index by a `blake2b` hash of their own inputs, and quasi-random sampling uses Halton sequences. A test walks every file under `aegis/` and fails on an `import random`, an `np.random`, or any RNG call, and a second test proves the replacements still do real work rather than returning a constant.
 
