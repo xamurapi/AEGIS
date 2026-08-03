@@ -63,6 +63,12 @@ EVO_NOVELTY_SKIPS = "aegis.evo.novelty_skips"
 
 # ── M6 reasoning ─────────────────────────────────────────────────────
 REASON_PASS_HOLDOUT = "aegis.reason.pass_holdout"
+#: In-sample accuracy over the live queue — deliberately a SEPARATE name from
+#: the holdout above. The two were published under one name for a long time,
+#: which made every downstream claim about held-out reasoning performance a
+#: claim about the data the engine trains on (audit R5). Both are worth having:
+#: the gap between them is what overfitting looks like from the outside.
+REASON_ACCURACY = "aegis.reason.accuracy"
 REASON_STRATEGIES_ACTIVE = "aegis.reason.strategies_active"
 REASON_WIN_RATE = "aegis.reason.win_rate"          # tag: strategy
 REASON_ABSTAIN_RATE = "aegis.reason.abstain_rate"
@@ -117,7 +123,7 @@ REQUIRED_METRICS: tuple[str, ...] = (
     RES_SPENT, RES_DENIED, RES_STARVATION_TICKS, RES_ROI, RES_SHARE,
     EVO_GENERATION, EVO_CHAMPION_FITNESS, EVO_VALID_TEST_GAP, EVO_PROMOTIONS,
     EVO_ROLLBACKS, EVO_NOVELTY_SKIPS,
-    REASON_PASS_HOLDOUT, REASON_STRATEGIES_ACTIVE, REASON_WIN_RATE,
+    REASON_PASS_HOLDOUT, REASON_ACCURACY, REASON_STRATEGIES_ACTIVE, REASON_WIN_RATE,
     REASON_ABSTAIN_RATE, REASON_CONFIDENT_ERROR,
     DISC_HYPOTHESES_TESTED, DISC_SUPPORTED, DISC_REPLICATED,
     DISC_FDR_REJECTIONS, DISC_EXPERIMENTS,

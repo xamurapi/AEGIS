@@ -161,9 +161,16 @@ async def run(substrate, ctx: TickContext) -> None:
             _, llm_warnings = substrate.self_preservation.filter_llm_response(result["response"])
             if llm_warnings:
                 substrate.autobiography.log_event("llm_danger", str(llm_warnings[:2]), 0.9)
-        if result["success"] and "parsed" in result:
+        # The parsed payload may be a JSON array rather than an object (audit
+        # M5): _parse_json_response returns whatever json.loads produced, and a
+        # truthy list sails through the `parsed or {...}` fallback. Calling
+        # .get on it aborted EVALUATE — and with it DECIDE/ACT/REFLECT — for
+        # the tick. Same guard as reflect.py and decide.py.
+        if result["success"] and isinstance(result.get("parsed"), dict):
             llm_eval = result["parsed"]
-            insight = llm_eval.get("insight", "")
+            # A model may return a number or object here — coerce before
+            # slicing, as reflect.py does for its learning field.
+            insight = str(llm_eval.get("insight", "") or "")
             if insight:
                 substrate.memory.add_episodic(
                     f"LLM Insight: {insight}",
@@ -194,7 +201,7 @@ async def run(substrate, ctx: TickContext) -> None:
             await substrate.event_bus.publish(Event(
                 source=Layer.INTROSPECTION, target=None,
                 event_type="llm_evaluation",
-                payload={"assessment": llm_eval.get("assessment", "")[:100]}
+                payload={"assessment": str(llm_eval.get("assessment", "") or "")[:100]}
             ))
 
     substrate.memory.add_working({

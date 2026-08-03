@@ -543,6 +543,11 @@ class WeightModifier:
 
             return {
                 "success": False,
+                # Structured flag for callers: SelfModification classifies this
+                # outcome by it. Substring-matching the error text broke once
+                # already (the caller looked for "rolled_back", the text says
+                # "rolled back"), so the wording must not be load-bearing.
+                "rolled_back": True,
                 "error": "Training caused degradation — rolled back",
                 "train_loss": round(train_result.training_loss, 4),
                 "val_loss": round(val_loss, 4) if val_loss is not None else None,
@@ -614,17 +619,24 @@ class WeightModifier:
         if not cp.exists():
             return {"success": False, "error": f"Checkpoint not found: {checkpoint_path}"}
 
+        # Verify the load BEFORE persisting the new pointer. Persisting first
+        # meant a failed load left an unusable checkpoint on disk — and lost
+        # the working pointer — so every later start reloaded the broken one.
+        previous_checkpoint = self.current_checkpoint
         try:
             self.model_loaded = False
             self.peft_model = None
+            self.model = None
             self.current_checkpoint = checkpoint_path
-            self._save_stats()
             result = self.load_model()
             if result["success"]:
                 self.total_rollbacks += 1
                 self._save_stats()
+            else:
+                self.current_checkpoint = previous_checkpoint
             return result
         except Exception as e:
+            self.current_checkpoint = previous_checkpoint
             return {"success": False, "error": str(e)}
 
     def rollback_to_base(self) -> dict:

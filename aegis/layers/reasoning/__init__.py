@@ -67,6 +67,15 @@ MIN_RESULTS_FOR_WEAKNESS = 8
 #: problems in memory for hundreds of ticks.
 REFILL_SIZE = 16
 
+#: How often the holdout score is measured for telemetry, in ticks. A holdout
+#: run solves 32 problems the engine never queued, which is far too much work
+#: to do on every publication — and far too important to fake: between
+#: measurements the metric is simply *absent*, never substituted with the
+#: in-sample accuracy, because a gap in a series is honest and a wrong value
+#: in it becomes somebody's "law" downstream (the discovery engine mines this
+#: exact metric).
+HOLDOUT_METRIC_EVERY = 200
+
 
 class _WeaknessRef:
     """What the arena needs to know about a weakness: its name and its class.
@@ -132,6 +141,9 @@ class ReasoningEngine:
         #: Answered confidently and wrongly. The number that matters most: a
         #: system that is wrong while sure is worse than one that is silent.
         self.confident_errors = 0
+        #: When the holdout score was last measured for telemetry, so the
+        #: expensive measurement runs on its cadence rather than every tick.
+        self._holdout_published_tick: int | None = None
 
     # ── configuration ────────────────────────────────────────────────
 
@@ -615,7 +627,24 @@ class ReasoningEngine:
         try:
             self.telemetry.record(M.REASON_STRATEGIES_ACTIVE,
                                   len(self.library.active()), tick)
-            self.telemetry.record(M.REASON_PASS_HOLDOUT, self.accuracy(), tick)
+            # The genuine holdout under REASON_PASS_HOLDOUT. For a long time
+            # this name carried `accuracy()` — the in-sample, live-queue
+            # number — so every downstream claim about "holdout reasoning
+            # performance", including the laws the discovery engine mined over
+            # aegis.reason.pass_holdout, was actually about the data the
+            # engine trains on. In-sample accuracy now has a name of its own
+            # (REASON_ACCURACY) and is published every tick — it is a counter
+            # read, and the gap between the two series is what overfitting
+            # looks like from outside the system.
+            # Measured on a cadence because it is a 32-problem run, not a
+            # counter read — see HOLDOUT_METRIC_EVERY for why the series
+            # stays absent in between rather than approximated.
+            if self._holdout_published_tick is None or \
+                    int(tick) - self._holdout_published_tick >= HOLDOUT_METRIC_EVERY:
+                self.telemetry.record(M.REASON_PASS_HOLDOUT,
+                                      self.holdout_score(), tick)
+                self._holdout_published_tick = int(tick)
+            self.telemetry.record(M.REASON_ACCURACY, self.accuracy(), tick)
             self.telemetry.record(M.REASON_ABSTAIN_RATE,
                                   self.abstentions / self.attempts
                                   if self.attempts else 0.0, tick)

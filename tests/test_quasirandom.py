@@ -156,3 +156,34 @@ def test_bootstrap_resamples_with_replacement():
 def test_bootstrap_degenerate_inputs_are_empty():
     assert bootstrap_indices(0, 5) == []
     assert bootstrap_indices(5, 0) == []
+
+
+def test_bootstrap_resample_means_have_with_replacement_spread():
+    """The property a bootstrap exists for. Low-discrepancy draws covered
+    nearly every index exactly once, so every "resample" was almost the
+    original sample — the SD of resample means collapsed to 0.28 against the
+    correct ~1.29 and any CI built on it was ~4.5x too narrow. Genuine
+    with-replacement resampling must reproduce the theoretical sigma/sqrt(n)
+    spread, not merely stay in range."""
+    import math
+    import statistics
+
+    data = list(range(20))
+    means = [statistics.mean(data[i] for i in bootstrap_indices(20, 20, replicate=r))
+             for r in range(200)]
+    spread = statistics.pstdev(means)
+    theoretical = statistics.pstdev(data) / math.sqrt(20)
+    assert spread > 0.75 * theoretical, (spread, theoretical)
+    assert spread < 1.50 * theoretical, (spread, theoretical)
+
+
+def test_bootstrap_draws_leave_gaps_like_a_real_resample():
+    """With replacement, each of n items is missed with probability
+    (1-1/n)^n ~ 36% per resample. Near-complete coverage of the index space is
+    the signature of the old quasirandom bug."""
+    distinct = [len(set(bootstrap_indices(20, 20, replicate=r)))
+                for r in range(100)]
+    average = sum(distinct) / len(distinct)
+    # True with-replacement expectation is ~12.6 of 20; the broken version
+    # measured ~16.6. Split the difference with margin on both sides.
+    assert 10.5 < average < 15.0, average

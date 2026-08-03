@@ -5,12 +5,11 @@ Runs the benchmark through the multi-agent solver and produces a score in
 history over time and persists it. This score is the external ground truth the
 whole system optimizes toward; ``Substrate._compute_reward`` reads it.
 """
-import json
 import logging
 from collections import deque
 from pathlib import Path
 
-from aegis._atomic import atomic_write_text
+from aegis.store.migrations import read_store, write_store
 from aegis.eval.benchmark import Task, DEFAULT_BENCHMARK, all_kinds
 from aegis.eval.coding import CodingTask, CODING_BENCHMARK, verify_solution
 from aegis.eval.composite import CompositeTask, COMPOSITE_BENCHMARK
@@ -47,26 +46,56 @@ class Evaluator:
         self._load()
 
     def _load(self):
+        """Load through the versioned-store layer (spec §3.2).
+
+        The ("eval_history", 1) migration is registered in
+        aegis/store/migrations.py but could never fire while this loader used
+        raw ``json.loads`` — the registration was decoration (audit: store
+        routing). Per-record tolerance matters for the same reason as in the
+        skill library: one malformed history row must cost that row, not the
+        whole fitness history, and an unreadable file is preserved on disk
+        rather than silently overwritten by the next save.
+        """
         if not self._store_path or not self._store_path.exists():
             return
+        data = read_store(self._store_path, store="eval_history")
+        rows = data.get("history")
+        if not isinstance(rows, list):
+            self._preserve_unreadable()
+            return
         try:
-            data = json.loads(self._store_path.read_text(encoding="utf-8"))
             self.last_score = data.get("last_score")
-            self.total_runs = data.get("total_runs", 0)
-            for h in data.get("history", [])[-200:]:
+            self.total_runs = int(data.get("total_runs", 0) or 0)
+        except (TypeError, ValueError):
+            self.total_runs = 0
+        for h in rows[-200:]:
+            if isinstance(h, dict):
                 self.history.append(h)
+
+    def _preserve_unreadable(self):
+        """Copy an unreadable history file to ``<name>.corrupt`` — once, so the
+        next _save() cannot destroy the only copy of the accumulated fitness
+        record. The earliest preserved snapshot wins."""
+        backup = self._store_path.with_name(self._store_path.name + ".corrupt")
+        if backup.exists():
+            return
+        try:
+            backup.write_bytes(self._store_path.read_bytes())
+            logger.warning("Eval history %s was unreadable — preserved a copy at %s",
+                           self._store_path, backup)
         except Exception:
-            logger.warning("Failed to load eval history", exc_info=True)
+            logger.warning("Could not preserve unreadable eval history %s",
+                           self._store_path, exc_info=True)
 
     def _save(self):
         if not self._store_path:
             return
         try:
-            atomic_write_text(self._store_path, json.dumps({
+            write_store(self._store_path, {
                 "last_score": self.last_score,
                 "total_runs": self.total_runs,
                 "history": list(self.history),
-            }))
+            })
         except Exception:
             logger.warning("Failed to save eval history", exc_info=True)
 
@@ -180,29 +209,47 @@ class Evaluator:
     def split_sizes(self) -> dict[str, int]:
         return {name: len(tasks) for name, tasks in self.splits().items()}
 
-    def score_on_split(self, split: str) -> float:
-        """Pass-rate on one split.
+    def score_on_split(self, split: str) -> float | None:
+        """Pass-rate on one split, or None when the split has no tasks.
 
         Selection reads ``valid``; ``test`` confirms a champion once and is
         never selected on (§M5.5). Keeping them separate methods rather than one
         flag is deliberate — the distinction is the whole protection against
         overfitting, and it should be visible at the call site.
-        """
-        return self.pass_rate_on(self.splits().get(str(split), []))
 
-    def valid_test_gap(self) -> float:
+        None, not 0.0, for an empty split: the default benchmark has at most
+        three tasks per kind, so its ``test`` split is empty by construction,
+        and "scored zero on nothing" is a fabricated measurement — it made
+        ``valid_test_gap`` report the entire valid score as an overfitting gap.
+        """
+        tasks = self.splits().get(str(split), [])
+        if not tasks:
+            return None
+        return self.pass_rate_on(tasks)
+
+    def valid_test_gap(self) -> float | None:
         """How much better the selected-on split looks than the untouched one.
 
         The overfitting indicator of §M5.8. A gap that grows while `valid`
         improves is evolution learning the validation set rather than the task.
+        None when either split is empty — "not measurable" is the honest
+        answer there, and the dashboards already render a null gap.
         """
-        return round(self.score_on_split("valid") - self.score_on_split("test"), 6)
+        valid = self.score_on_split("valid")
+        test = self.score_on_split("test")
+        if valid is None or test is None:
+            return None
+        return round(valid - test, 6)
 
     def pass_rate_on(self, tasks: list[Task]) -> float:
         """Pass-rate over an explicit task list (e.g. a held-out split).
 
         Used by the synthesis gate to measure GENERALIZATION: the candidate
-        skill is scored on tasks it was not shown during proposal."""
+        skill is scored on tasks it was not shown during proposal. An empty
+        list scores 0.0 here because the gate reads it as "no evidence of
+        improvement" (which correctly rejects the candidate); the honest
+        "not measurable" answer for empty SPLITS lives in ``score_on_split``,
+        whose callers are reporting a measurement rather than gating one."""
         if not tasks:
             return 0.0
         passed = sum(1 for t in tasks if self.solver.solve(t).solved)

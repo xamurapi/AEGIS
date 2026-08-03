@@ -32,10 +32,25 @@ DANGEROUS_CALL_NAMES = {
 DANGEROUS_ATTR_CALLS = {
     ("os", "system"), ("os", "popen"), ("os", "remove"), ("os", "unlink"),
     ("os", "rmdir"), ("os", "kill"), ("os", "_exit"),
+    # The process-execution family (audit C4): each of these runs — or turns
+    # the current process into — an arbitrary program, which is exactly what
+    # blocking os.system/subprocess was supposed to prevent. Every exec*/
+    # spawn* variant is listed because they differ only in argument shape.
+    ("os", "execv"), ("os", "execve"), ("os", "execl"), ("os", "execle"),
+    ("os", "execlp"), ("os", "execlpe"), ("os", "execvp"), ("os", "execvpe"),
+    ("os", "spawnv"), ("os", "spawnve"), ("os", "spawnl"), ("os", "spawnle"),
+    ("os", "spawnlp"), ("os", "spawnlpe"), ("os", "spawnvp"), ("os", "spawnvpe"),
+    ("os", "posix_spawn"), ("os", "posix_spawnp"),
+    ("os", "fork"), ("os", "forkpty"), ("os", "startfile"),
     ("subprocess", "run"), ("subprocess", "Popen"), ("subprocess", "call"),
     ("subprocess", "check_output"), ("subprocess", "check_call"),
     ("shutil", "rmtree"), ("sys", "exit"),
 }
+
+# Method names that write a file no matter what object they hang off —
+# Path(x).write_text(...) never reaches the Name-based `open` check because
+# its receiver is a Call, not a Name (audit C4).
+FILE_WRITE_METHOD_NAMES = {"write_text", "write_bytes"}
 # Imports that modified code may not introduce. importlib/builtins are included
 # because they are generic escape hatches (importlib.import_module("subprocess"),
 # builtins.__import__) around the direct-import block.
@@ -65,18 +80,27 @@ IMMUTABLE_FILES = {
 MAX_MODIFICATION_SIZE = 5000
 
 
-def _open_write_mode(call: ast.Call) -> str | None:
-    """For an ``open(...)`` Call, return a reason string if the call opens a file
-    for WRITING/APPENDING (arbitrary-file-write risk), else None.
+def _open_write_mode(call: ast.Call, *, mode_arg_index: int = 1,
+                     strict: bool = True) -> str | None:
+    """For an ``open(...)``-shaped Call, return a reason string if the call
+    opens a file for WRITING/APPENDING (arbitrary-file-write risk), else None.
 
-    Read-only opens (no mode, or a literal 'r'/'rb'/'rt') are allowed. A mode
-    that cannot be resolved to a read-only string literal is treated as unsafe —
-    a self-modifying module has no business writing arbitrary files, and a
-    dynamic mode (variable/expression) cannot be verified. (Audit A1.)
+    Read-only opens (no mode, or a literal 'r'/'rb'/'rt') are allowed. In
+    strict mode a mode that cannot be resolved to a read-only string literal is
+    treated as unsafe — a self-modifying module has no business writing
+    arbitrary files, and a dynamic mode (variable/expression) cannot be
+    verified. (Audit A1.)
+
+    ``mode_arg_index`` is 1 for the builtin signature ``open(file, mode)`` and
+    0 for the method form ``Path(...).open(mode)``, where the receiver carries
+    the file. ``strict=False`` is for that method form: any ``.open`` method is
+    matched by name alone (``scorer.open(prediction)`` is not a file API), so
+    only a string literal is evidence of a write there — treating every
+    non-literal argument as unsafe would reject legitimate code.
     """
     mode_node = None
-    if len(call.args) >= 2:
-        mode_node = call.args[1]
+    if len(call.args) > mode_arg_index:
+        mode_node = call.args[mode_arg_index]
     else:
         for kw in call.keywords:
             if kw.arg == "mode":
@@ -88,7 +112,9 @@ def _open_write_mode(call: ast.Call) -> str | None:
         if any(c in mode for c in "wax+"):
             return f"open() in write/append mode ('{mode}')"
         return None  # read-only literal -> allowed
-    return "open() with a non-literal mode (cannot verify it is read-only)"
+    if strict:
+        return "open() with a non-literal mode (cannot verify it is read-only)"
+    return None
 
 
 class CodeModifier:
@@ -284,19 +310,39 @@ class CodeModifier:
                         if reason:
                             warnings.append(f"BLOCKED: {reason}")
                     # Attribute call: os.system(...), subprocess.run(...),
-                    # resolving any import alias to the real module first.
-                    elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                        module = alias_to_module.get(func.value.id, func.value.id)
-                        pair = (module, func.attr)
-                        if pair in DANGEROUS_ATTR_CALLS:
-                            warnings.append(f"BLOCKED: dangerous call '{pair[0]}.{pair[1]}(...)'")
-                        # io.open(..., 'w') / os.open(...) — write via a module
-                        # aliasing the builtin open (audit: open() bypass).
-                        elif func.attr == "open" and module in ("io", "os"):
-                            reason = _open_write_mode(node)
-                            if reason or module == "os":
-                                warnings.append(
-                                    f"BLOCKED: {reason or f'{module}.open() (file write)'}")
+                    # resolving any import alias to the real module first. The
+                    # receiver may also be an arbitrary expression —
+                    # Path(x).write_text(...) — so the write-mode checks below
+                    # must not depend on it being a Name (audit C4).
+                    elif isinstance(func, ast.Attribute):
+                        module = (alias_to_module.get(func.value.id, func.value.id)
+                                  if isinstance(func.value, ast.Name) else None)
+                        if module is not None and (module, func.attr) in DANGEROUS_ATTR_CALLS:
+                            warnings.append(
+                                f"BLOCKED: dangerous call '{module}.{func.attr}(...)'")
+                        elif func.attr in FILE_WRITE_METHOD_NAMES:
+                            # A file write by name alone, whatever the receiver.
+                            warnings.append(
+                                f"BLOCKED: file write via '.{func.attr}(...)'")
+                        elif func.attr == "open":
+                            # os.open takes numeric flags, not a mode string,
+                            # and can always write — blocked outright. A call
+                            # through an imported module (io.open) has the
+                            # builtin's signature and gets the strict check;
+                            # any other .open(...) — Path(...).open('w'), a
+                            # variable holding a Path — is the method form,
+                            # mode first (audit C4: non-Name receiver bypass).
+                            if module == "os":
+                                warnings.append("BLOCKED: os.open() (file write)")
+                            else:
+                                module_style = (isinstance(func.value, ast.Name)
+                                                and func.value.id in alias_to_module)
+                                reason = _open_write_mode(
+                                    node,
+                                    mode_arg_index=1 if module_style else 0,
+                                    strict=module_style)
+                                if reason:
+                                    warnings.append(f"BLOCKED: {reason}")
         except SyntaxError:
             pass  # already caught by validate_syntax
 

@@ -119,6 +119,33 @@ def test_a_series_cannot_be_started_twice():
     assert series.start(1) is False
 
 
+def test_a_series_that_cannot_be_restored_never_starts():
+    """Gate 4 is "capture and restore", and it has to be real. A caller that
+    supplied only `apply` used to get a running series whose restore() was
+    silently a no-op — the experimental level stayed in force forever on
+    every exit path, which is the exact failure the fence exists to prevent."""
+    knob = _Knob()
+    prereg = preregister(_Hypothesis(), _Model(), design="interventional_abab",
+                         variable="explore_bonus", levels=(0.1, 0.2),
+                         block_ticks=4)
+    series = Intervention(prereg, apply=knob.apply)       # no read supplied
+    assert series.start(0) is False
+    assert series.aborted is True
+    assert "restored" in series.abort_reason
+    assert knob.writes == []                              # nothing was touched
+
+
+def test_a_reader_that_captures_nothing_also_refuses_the_start():
+    """A reader that answers None is a restore that would restore nothing —
+    the same void guarantee by a different road."""
+    knob = _Knob(value=None)
+    series = _series(knob)
+    assert series.start(0) is False
+    assert series.aborted is True
+    assert "captured" in series.abort_reason
+    assert knob.writes == []
+
+
 # ── the ABAB schedule ────────────────────────────────────────────────
 
 def test_blocks_alternate_between_the_two_levels():
@@ -139,12 +166,14 @@ def test_the_parameter_is_written_once_per_block_not_once_per_tick():
 
 
 def test_observations_are_split_between_the_two_arms():
+    # Three per block, not four: the boundary tick's reward was produced under
+    # the level in force before the switch, so it belongs to neither arm.
     knob = _Knob()
     series = _series(knob, block_ticks=4)
     series.start(0)
     for tick in range(8):
         series.step(tick, reward=float(tick))
-    assert len(series.samples[0]) == 4 and len(series.samples[1]) == 4
+    assert len(series.samples[0]) == 3 and len(series.samples[1]) == 3
 
 
 def test_a_series_runs_at_least_the_minimum_number_of_blocks():
@@ -165,6 +194,34 @@ def test_a_step_on_an_inactive_series_does_nothing():
     knob = _Knob()
     series = _series(knob)
     assert series.step(0, reward=1.0) == {"state": "inactive"}
+
+
+def test_the_boundary_tick_of_a_block_contributes_no_observation():
+    """The reward handed to the first tick of a block was produced under the
+    level in force *before* the switch — the previous arm's level, or, for the
+    very first block, no experimental level at all. Recording it used to put
+    one old-level sample into every block's arm, a systematic dilution of the
+    contrast that biased analyse() toward "refuted" on every series."""
+    knob = _Knob()
+    series = _series(knob, block_ticks=4)
+    series.start(0)
+
+    # First block's boundary: the level is applied, the reward is dropped.
+    outcome = series.step(0, reward=123.0)
+    assert outcome.get("boundary") is True
+    assert knob.writes and knob.writes[-1] == ("explore_bonus", 0.10)
+    assert series.samples[0] == [] and series.samples[1] == []
+
+    for tick in (1, 2, 3):
+        series.step(tick, reward=1.0)
+    assert series.samples[0] == [1.0, 1.0, 1.0]
+
+    # The A→B switch: tick 4's reward was produced under level A and must not
+    # land in B's arm.
+    outcome = series.step(4, reward=999.0)
+    assert outcome.get("boundary") is True
+    assert 999.0 not in series.samples[1]
+    assert knob.writes[-1] == ("explore_bonus", 0.20)
 
 
 # ── it always gives the parameter back ───────────────────────────────
@@ -421,12 +478,15 @@ def test_a_tick_before_the_start_is_still_the_first_block():
 
 
 def test_each_block_counts_its_own_observations():
+    # The boundary tick opens the block but contributes no observation — its
+    # reward was produced under the previous level — so a four-tick block
+    # carries three samples.
     knob = _Knob()
     series = _series(knob, block_ticks=4)
     series.start(0)
     for tick in range(4):
         series.step(tick, reward=1.0)
-    assert series.blocks[0]["n"] == 4
+    assert series.blocks[0]["n"] == 3
 
 
 def test_a_series_finishes_on_a_block_boundary_of_the_first_arm():
@@ -479,11 +539,11 @@ def test_one_arm_with_too_little_data_is_pending(monkeypatch):
     knob = _Knob()
     series = _series(knob, block_ticks=4)
     series.start(0)
-    for tick in range(5):                     # four in arm A, one in arm B
+    for tick in range(5):     # three in arm A (boundary dropped), none in B
         series.step(tick, reward=float(tick))
     result = series.analyse()
     assert result["status"] == "pending"
-    assert result["n"] == 5
+    assert result["n"] == 3
 
 
 def test_the_rank_test_and_the_t_test_give_different_numbers():

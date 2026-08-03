@@ -445,7 +445,15 @@ class DiscoveryEngine:
         self._publish(tick)
 
     def save(self) -> bool:
-        return bool(self.pool.save()) and bool(self.ledger.save())
+        # Both stores are written whatever the other reports: `and` would
+        # short-circuit, and a pool write that failed quietly (write_store
+        # returns False rather than raising) would then skip the ledger save
+        # too — losing recorded statuses and refutations on top of the rows
+        # already lost. The return value is still the conjunction, because
+        # "saved" means both of them.
+        pool_saved = bool(self.pool.save())
+        ledger_saved = bool(self.ledger.save())
+        return pool_saved and ledger_saved
 
     def status(self) -> dict:
         counts = self.ledger.counts()

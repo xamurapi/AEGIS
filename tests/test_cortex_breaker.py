@@ -89,6 +89,43 @@ def test_half_open_allows_exactly_one_probe(frozen):
     assert breaker.probes == 1
 
 
+def test_half_open_refuses_a_second_caller_until_the_probe_reports(frozen):
+    """"Exactly one probe" has to mean exactly one: every additional caller
+    admitted during half-open paid a full LLM timeout against a provider
+    already known to be dead."""
+    breaker = CircuitBreaker("p", threshold=1, cooldown=60)
+    breaker.record_failure()
+    frozen.advance(61)
+    assert breaker.allows() is True       # the probe is handed out
+    assert breaker.allows() is False      # everyone else waits for its outcome
+    assert breaker.allows() is False
+    assert breaker.probes == 1
+
+
+def test_a_failed_probe_frees_the_slot_for_the_next_cooldown(frozen):
+    breaker = CircuitBreaker("p", threshold=1, cooldown=60)
+    breaker.record_failure()
+    frozen.advance(61)
+    breaker.allows()
+    breaker.record_failure()              # probe failed -> re-open
+    frozen.advance(61)
+    assert breaker.allows() is True       # a fresh probe after the cool-down
+    assert breaker.probes == 2
+
+
+def test_would_allow_reports_without_consuming_the_probe(frozen):
+    """The read paths (status(), available_roles(), the dashboard poll) need
+    to ASK, not to claim — asking used to increment the probe counters."""
+    breaker = CircuitBreaker("p", threshold=1, cooldown=60)
+    breaker.record_failure()
+    frozen.advance(61)
+    assert breaker.would_allow() is True
+    assert breaker.would_allow() is True
+    assert breaker.probes == 0            # nothing was consumed
+    assert breaker.allows() is True       # the probe is still available
+    assert breaker.would_allow() is False  # and now it is honestly in flight
+
+
 def test_a_successful_probe_closes_the_circuit(frozen):
     breaker = CircuitBreaker("p", threshold=1, cooldown=60)
     breaker.record_failure()
@@ -220,3 +257,29 @@ def test_a_recovered_provider_is_used_again(frozen):
     completion = _run(cortex.call(Role.DEEP, [{"role": "user", "content": "q2"}]))
     assert completion.text == "back"
     assert cortex.breakers["a"].state == CLOSED
+
+
+def test_read_paths_do_not_consume_the_half_open_probe(frozen):
+    """status(), available_roles() and every dashboard poll go through
+    chain_for, which used to call the MUTATING allows() inside a list
+    comprehension — a status page left open overnight was silently exercising
+    the breaker's probe machinery."""
+    provider = ScriptedProvider("a", fail=True)
+    cortex = Cortex(providers={"a": provider}, routes={"deep": ["a"]})
+    cortex.breakers["a"].threshold = 1
+    cortex.breakers["a"].cooldown = 60
+    _run(cortex.call(Role.DEEP, [{"role": "user", "content": "q"}]))   # trips it
+    frozen.advance(61)                                                 # half-open
+
+    for _ in range(5):
+        cortex.available_roles()
+        cortex.status()
+        cortex.role_available(Role.DEEP)
+    assert cortex.breakers["a"].probes == 0
+
+    # The probe the reads did not consume is still there for the real call.
+    provider._fail = False
+    provider._responses = ["back"]
+    completion = _run(cortex.call(Role.DEEP, [{"role": "user", "content": "q2"}]))
+    assert completion.text == "back"
+    assert cortex.breakers["a"].probes == 1

@@ -30,6 +30,18 @@ Feature: Safety and resilience of the cognitive core
       When the skill is executed in the sandbox
       Then the skill should return 4
 
+    Scenario: An attribute reached by string rather than by syntax is rejected
+      Given a self-written skill that reaches the interpreter through a string
+      When the safety gate inspects the skill
+      Then the skill should be rejected
+      And the reason should mention "attrgetter"
+
+    Scenario: The string-based escape never reaches the child process
+      Given a self-written skill that reaches the interpreter through a string
+      When the skill is executed in the sandbox
+      Then the execution should fail as unsafe
+      And nothing about this machine should have been returned
+
   # ── Control plane: internal state is not public ──────────────────────
   Rule: Internal state reaches only authenticated operators
 

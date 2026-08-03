@@ -176,12 +176,19 @@ class Cortex:
         return bool(self.chain_for(role))
 
     def chain_for(self, role: Role | str, *, exclude: tuple[str, ...] = ()) -> list[str]:
-        """Providers to try for this role, in order, skipping open circuits."""
+        """Providers to try for this role, in order, skipping open circuits.
+
+        Uses the breaker's NON-mutating check: this method serves read paths
+        too (``status()``, ``available_roles()``, every dashboard poll), and
+        calling ``allows()`` here consumed half-open probes on every status
+        read. The actual claim happens in ``_call_chain``, immediately before
+        a provider is really called.
+        """
         role = Role(role) if not isinstance(role, Role) else role
         return [name for name in self.routes.get(role, [])
                 if name not in exclude
                 and self.providers[name].available
-                and self.breakers[name].allows()]
+                and self.breakers[name].would_allow()]
 
     @property
     def enabled(self) -> bool:
@@ -235,21 +242,35 @@ class Cortex:
             key = cache_key(name, provider.model, messages, params.cache_key_part())
 
             cached = self.cache.get(key)
-            if cached is not None:
+            # An EMPTY cached text is never served. A server that answers
+            # ok/null-content (length truncation, a content filter) used to be
+            # cached and then replayed for the whole TTL — persisted across
+            # restarts — so the role was silently dead for an hour while
+            # failover never ran and the breaker recorded nothing (audit:
+            # cache poisoning). Skipping the entry re-runs the real chain.
+            if cached is not None and cached.text.strip():
                 return Completion(
                     text=cached.text, provider=cached.provider, model=cached.model,
                     tokens_in=cached.tokens_in, tokens_out=cached.tokens_out,
                     cached=True, role=role.value,
                 )
 
+            # Claim the breaker NOW, not in chain_for: the chain is computed
+            # with a non-mutating check, and the half-open probe must be
+            # consumed only by the caller actually about to pay for the call.
+            if not breaker.allows():
+                continue
+
             completion = await provider.call(messages, params)
             completion.role = role.value
             if completion.ok:
                 breaker.record_success()
-                self.cache.put(key, CacheEntry(
-                    text=completion.text, provider=completion.provider,
-                    model=completion.model, tokens_in=completion.tokens_in,
-                    tokens_out=completion.tokens_out, stored_at=CLOCK.now()))
+                # Cache only completions that carry text — see above.
+                if completion.text.strip():
+                    self.cache.put(key, CacheEntry(
+                        text=completion.text, provider=completion.provider,
+                        model=completion.model, tokens_in=completion.tokens_in,
+                        tokens_out=completion.tokens_out, stored_at=CLOCK.now()))
                 return completion
 
             breaker.record_failure()

@@ -242,9 +242,11 @@ def test_dataset_carries_experience_causes(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(dataset_builder, "WEIGHT_DATASETS_DIR", tmp_path / "datasets")
     fl = FeedbackLoop(store_path=tmp_path / "experience.jsonl")
-    for _ in range(4):
+    # Distinct metrics -> distinct completions: identical rows would dedup to a
+    # single sample, which the builder now (correctly) refuses to split.
+    for i in range(4):
         exp_id = fl.record_situation("energy=0.2 err=0.40", "explore_topic")
-        fl.record_result(exp_id, success=False, metric=0.1)
+        fl.record_result(exp_id, success=False, metric=0.05 * i)
 
     result = DatasetBuilder().build_from_memory(_isolated_memory(), None, feedback_loop=fl)
 
@@ -311,6 +313,12 @@ def test_dataset_without_feedback_loop_still_builds(tmp_path, monkeypatch):
     memory.add_semantic("cellular automata", {
         "type": "external_learning",
         "summary": "Discrete models evolving on a grid by local rules.",
+    })
+    # A second concept keeps the build above the minimum-samples guard (one
+    # sample alone would leave the training split empty and be refused).
+    memory.add_semantic("strange attractors", {
+        "type": "external_learning",
+        "summary": "Fractal sets that chaotic trajectories settle onto.",
     })
 
     result = DatasetBuilder().build_from_memory(memory)

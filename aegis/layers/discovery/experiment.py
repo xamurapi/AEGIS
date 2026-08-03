@@ -320,7 +320,22 @@ class Intervention:
             self.abort_reason = "interventions are disabled by configuration"
             self.aborted = True
             return False
-        self.original = self._read() if self._read else None
+        # Gate 4 is "capture and restore", and both halves have to be real. A
+        # caller that supplies only `apply` used to get a series whose
+        # restore() was silently a no-op — the experimental level stayed in
+        # force forever on every exit path, which is the exact failure the
+        # fence exists to prevent. An intervention that cannot give the
+        # parameter back must not be allowed to take it.
+        if self._read is None:
+            self.abort_reason = ("no reader for the original value — a series "
+                                 "that cannot be restored must not start")
+            self.aborted = True
+            return False
+        self.original = self._read()
+        if self.original is None:
+            self.abort_reason = "the original value could not be captured"
+            self.aborted = True
+            return False
         self.started_tick = int(tick)
         self.active = True
         self._current_block = -1
@@ -377,6 +392,14 @@ class Intervention:
             self.blocks.append({"block": block, "level": self.level_for(tick),
                                 "start_tick": int(tick), "n": 0})
             self._apply(self.variable, self.level_for(tick))
+            # The boundary tick's reward is dropped, not recorded: it was
+            # produced under the level in force *before* this switch (the
+            # first block's under no experimental level at all). Filing it in
+            # the new block's arm put one old-level sample into every block —
+            # a systematic dilution of the contrast that biased analyse()
+            # toward "refuted" on every series.
+            return {"state": "running", "block": block, "arm": block % 2,
+                    "level": self.level_for(tick), "boundary": True}
 
         arm = block % 2
         self.samples[arm].append(value)

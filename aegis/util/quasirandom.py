@@ -124,15 +124,21 @@ def hash_choice(options, *material):
 def bootstrap_indices(n: int, draws: int, replicate: int = 0) -> list[int]:
     """Indices for one deterministic bootstrap resample of ``n`` items.
 
-    A bootstrap needs resampling *with replacement* and only needs the resamples
-    to be spread over the index space — which the Halton sequence provides, with
-    the bonus that a confidence interval computed twice is the same interval.
-    ``replicate`` shifts the sequence so successive replicates differ.
+    A bootstrap needs genuinely independent-looking draws *with replacement*.
+    A low-discrepancy sequence is precisely the wrong tool here: consecutive
+    van der Corput points are engineered to cover the index space evenly, so a
+    "resample" built from them contained nearly every index exactly once — the
+    resampling distribution collapsed and any interval built on it came out
+    ~4.5x too narrow (measured SD of resample means 0.28 against the correct
+    1.29). Even coverage is the Halton sequence's virtue for mutation steps and
+    its bug for bootstraps.
+
+    So each draw is an independent blake2b hash of ``(replicate, position)``:
+    still fully deterministic (the same CI computed twice is the same CI, per
+    the zero-randomness guarantee §3.1), but with no structure tying one draw
+    to the next — duplicates and gaps appear at the with-replacement rate.
     """
     if n <= 0 or draws <= 0:
         return []
-    offset = replicate * draws + 1
-    # No clamp is needed: van_der_corput returns a value strictly below 1, so
-    # int(v * n) can never reach n. A `min(n - 1, ...)` guard here would be
-    # unreachable code that no test could ever distinguish from its absence.
-    return [int(van_der_corput(offset + i, 2) * n) for i in range(draws)]
+    return [hash_index(n, "bootstrap_resample", replicate, position)
+            for position in range(draws)]

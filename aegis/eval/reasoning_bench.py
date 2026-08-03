@@ -90,7 +90,15 @@ class ReasoningTask:
                 return isinstance(answer, bool) and answer == self.expected
             if isinstance(self.expected, (int, float)):
                 number = _as_number(answer)
-                return number is not None and abs(number - self.expected) < 1e-6
+                if number is None:
+                    return False
+                # RELATIVE tolerance with an absolute floor. A flat 1e-6 was
+                # fine for answers near 1 but let a mm->km conversion (expected
+                # values down to 2e-6) verify answers wrong by up to 50% — the
+                # tolerance has to scale with the answer it is judging. The
+                # floor keeps an expected value of exactly 0 comparable.
+                tolerance = max(1e-9, abs(float(self.expected)) * 1e-6)
+                return abs(number - self.expected) <= tolerance
             return str(answer).strip().casefold() == str(self.expected).strip().casefold()
         except Exception:
             return False
@@ -237,7 +245,15 @@ def _rule_chain(index: int) -> ReasoningTask:
     """
     length = _number(index, 2, 4, "len")
     letters = [chr(ord("A") + (index + offset) % 26) for offset in range(length + 1)]
-    missing = hash_index(3, "reason_gap", index)      # 0 = the chain is whole
+    # One case in three, the same way _arithmetic_chain engineers it: the draw
+    # ranges over 3*length values of which only 1..length name a removable
+    # link, so P(broken) = 1/3 and the gap can fall on ANY link. The old
+    # ``hash_index(3, ...)`` drew from {0, 1, 2} where BOTH 1 and 2 remove a
+    # link — 2/3 of chains were broken, an always-abstain strategy scored ~2/3
+    # on this family, and strategy selection was skewed toward abstention
+    # (audit: rule_chain mix).
+    gap = hash_index(3 * length, "reason_gap", index)
+    missing = gap if gap <= length else 0             # 0 = the chain is whole
     rules = " ".join(f"If {letters[i]} then {letters[i + 1]}."
                      for i in range(length) if i + 1 != missing)
     return ReasoningTask(

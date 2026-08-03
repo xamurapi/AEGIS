@@ -278,6 +278,37 @@ def test_a_world_model_that_raises_yields_nothing():
     assert from_world_model(_Broken(), ["a", "y"]) == []
 
 
+def test_the_production_world_model_feeds_the_theory_path(tmp_path):
+    """Against the real `PredictiveWorldModel`, not a fake.
+
+    Every earlier test here defined `strongest_links` on its stand-in — and the
+    production facade did not have the method, so in the running system this
+    source was permanently dead: the AttributeError vanished into the blanket
+    `except` and the theory path returned [] forever while this suite passed.
+    """
+    from aegis.layers.world_model import PredictiveWorldModel
+
+    model = PredictiveWorldModel(store_path=tmp_path / "model.json")
+    for _ in range(4):
+        model.observe("a", "y", success=True)
+
+    found = from_world_model(model, ["a", "y"], tick=5)
+    assert len(found) == 1
+    assert found[0].target == "y" and found[0].predictors == ("a",)
+    assert found[0].origin == "theory"
+
+
+def test_an_absent_strongest_links_api_fails_loudly():
+    """A model that *raises* is a world-model problem the scan may shrug off;
+    a model that lacks the API is a wiring bug in this codebase, and hiding it
+    behind an empty list is how the theory source died the first time."""
+    class _NoSuchApi:
+        causal = object()          # no strongest_links anywhere
+
+    with pytest.raises(AttributeError):
+        from_world_model(_NoSuchApi(), ["a", "y"])
+
+
 def test_the_theory_path_is_capped():
     model = _WorldModel([{"cause": f"c{k}", "effect": "y", "strength": 0.9}
                          for k in range(20)])

@@ -260,6 +260,19 @@ class SelfPreservation:
 
     # ── File integrity ───────────────────────────────────────────
 
+    # Severity ranking for verify_integrity. `status` is a single field, so a
+    # later, milder finding must never overwrite an earlier, graver one — a
+    # MISSING file followed by a merely MODIFIED one used to downgrade
+    # "compromised" to "modified". Higher rank wins.
+    _INTEGRITY_SEVERITY = {"intact": 0, "modified": 1, "unverifiable": 2,
+                           "compromised": 3}
+
+    @classmethod
+    def _escalate_status(cls, current: str, new: str) -> str:
+        if cls._INTEGRITY_SEVERITY.get(new, 0) > cls._INTEGRITY_SEVERITY.get(current, 0):
+            return new
+        return current
+
     def verify_integrity(self) -> dict:
         """Verify SHA-256 hashes of critical files haven't changed."""
         result = {
@@ -273,15 +286,20 @@ class SelfPreservation:
             result["checked"] += 1
             if not full.exists():
                 result["issues"].append(f"MISSING: {rel_path}")
-                result["status"] = "compromised"
+                result["status"] = self._escalate_status(result["status"], "compromised")
             else:
                 try:
                     current_hash = hashlib.sha256(full.read_bytes()).hexdigest()
                     if current_hash != original_hash:
                         result["issues"].append(f"MODIFIED: {rel_path}")
-                        result["status"] = "modified"
+                        result["status"] = self._escalate_status(result["status"], "modified")
                 except Exception as e:
+                    # A critical file that cannot even be READ is not "intact":
+                    # the check's only consumer looks at the status field, so
+                    # recording the issue without changing the status reported
+                    # no threat for an unreadable watchdog file.
                     result["issues"].append(f"READ ERROR: {rel_path}: {e}")
+                    result["status"] = self._escalate_status(result["status"], "unverifiable")
 
         self.integrity_checks.append({
             "time": CLOCK.now(),

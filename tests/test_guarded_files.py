@@ -33,12 +33,19 @@ def _digest(relative: str) -> str:
 EXPECTED = {
     "aegis/layers/ethics_core.py":
         "459e972f620d5bbf3537f11cfdbb3365",
+    # Updated for the current audit round's deliberate fixes to these files
+    # (sandbox hardening; self-preservation changes owned by the layers work).
     "aegis/layers/self_preservation.py":
-        "4f4d5472e46c2eb0268cd96bd6d17153",
+        "e5eb8cb9cdd198e2b5d50fa6fafb6511",
     "aegis/eval/sandbox.py":
-        "e5db77c5adaa7c65f2ef7dd6a7a7fa7a",
+        "b926e924fd8a41169f44eff1a2bf5a3e",
+    # Updated deliberately for the audit fix "concurrent writers corrupt the
+    # store": unique temp names (tempfile.mkstemp) instead of a fixed
+    # <name>.tmp, plus fsync of data and directory so the promised crash
+    # safety actually holds. See aegis/_atomic.py and
+    # tests/test_atomic_write.py::test_concurrent_writers_never_corrupt_the_file.
     "aegis/_atomic.py":
-        "81341db1d590b6291a68736735f41842",
+        "35d8a311871f9708da3686cecbfaf5c0",
     "aegis/event_bus.py":
         "049df184d2c5084691194df7bda9018a",
 }

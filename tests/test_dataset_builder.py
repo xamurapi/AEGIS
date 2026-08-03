@@ -111,13 +111,16 @@ def test_build_covers_all_sample_sources(datasets_dir):
 
 def test_build_deduplicates_by_output(datasets_dir):
     # Two concepts with identical output -> only one sample survives dedup.
+    # A third, distinct concept keeps the build above the minimum-samples
+    # guard so the dedup itself stays observable through total_size.
     semantic = {
         "a": _sem({"type": "external_learning", "summary": "Identical output text repeated here."}),
         "b": _sem({"type": "external_learning", "summary": "Identical output text repeated here."}),
+        "c": _sem({"type": "external_learning", "summary": "A different summary that survives dedup."}),
     }
     b = DatasetBuilder()
     res = b.build_from_memory(make_memory(semantic))
-    assert res["total_size"] == 1
+    assert res["total_size"] == 2
 
 
 def test_build_no_samples_returns_failure(datasets_dir):
@@ -133,11 +136,13 @@ def test_build_without_agent_system(datasets_dir):
     semantic = {
         "topic": _sem({"type": "external_learning",
                        "summary": "A sufficiently long summary about a topic here."}),
+        "other": _sem({"type": "external_learning",
+                       "summary": "A second summary so the split has a train half."}),
     }
     b = DatasetBuilder()
     res = b.build_from_memory(make_memory(semantic), agent_system=None)
     assert res["success"] is True
-    assert res["total_size"] == 1
+    assert res["total_size"] == 2
 
 
 def test_build_learned_concept_summary_fallback(datasets_dir):
@@ -145,11 +150,30 @@ def test_build_learned_concept_summary_fallback(datasets_dir):
     semantic = {
         "c": _sem({"type": "learned_concept",
                    "summary": "Summary doubling as the definition text here."}),
+        "d": _sem({"type": "external_learning",
+                   "summary": "Filler concept keeping the build above the minimum."}),
     }
     b = DatasetBuilder()
     res = b.build_from_memory(make_memory(semantic))
     assert res["success"] is True
     assert res["source_distribution"].get("self_reflection") == 1
+
+
+def test_build_refuses_a_dataset_with_an_empty_train_split(datasets_dir):
+    """One sample used to land entirely in val (val_size = max(1, ...)),
+    leaving train.jsonl EMPTY — yet the build reported success with
+    train_size 0 and get_latest_dataset() still selected it."""
+    semantic = {
+        "only": _sem({"type": "external_learning",
+                      "summary": "The single sample this whole build produces."}),
+    }
+    b = DatasetBuilder()
+    res = b.build_from_memory(make_memory(semantic))
+    assert res["success"] is False
+    assert "few samples" in res["error"].lower() or "training set" in res["error"]
+    # Nothing was written, so nothing unusable can be selected later.
+    assert list(datasets_dir.glob("dataset_*")) == []
+    assert b.get_latest_dataset() is None
 
 
 # ── get_latest_dataset ────────────────────────────────────────────────────
@@ -201,6 +225,8 @@ def test_status_report(datasets_dir):
     semantic = {
         "topic": _sem({"type": "external_learning",
                        "summary": "A sufficiently long summary about the topic here."}),
+        "other": _sem({"type": "external_learning",
+                       "summary": "A second summary so the split has a train half."}),
     }
     b = DatasetBuilder()
     b.build_from_memory(make_memory(semantic))
@@ -208,4 +234,4 @@ def test_status_report(datasets_dir):
     assert st["builds_total"] == 1
     assert st["datasets_on_disk"] == 1
     assert st["latest_dataset"] is not None
-    assert st["last_dataset_size"] == 1
+    assert st["last_dataset_size"] == 2

@@ -5,16 +5,15 @@ declaring which task kinds it can attempt. Skills are added only after passing
 the sandbox safety check; capability compounds because a useful skill is reused
 forever (unlike fine-tuning a model on its own text, which drifts/collapses).
 """
-import json
 import hashlib
 import logging
 import threading
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 
-from aegis._atomic import atomic_write_text
 from aegis.clock import CLOCK
 from aegis.eval.sandbox import check_safe
+from aegis.store.migrations import read_store, write_store
 
 logger = logging.getLogger("aegis.skills")
 
@@ -107,6 +106,12 @@ class SkillLibrary:
         self.skills: dict[str, Skill] = {}
         self._store_path = store_path
         self._lock = threading.RLock()
+        # Records the load could not turn into Skill objects. They are carried
+        # verbatim and written back on every save: a record this build cannot
+        # parse may still be a learned skill a newer (or repaired) build can,
+        # and destroying it because one field looked unfamiliar is exactly the
+        # failure mode this library exists to avoid.
+        self._quarantine: list = []
         if seed:
             for s in _SEED_SKILLS:
                 self.skills[s.name] = Skill(**asdict(s))
@@ -114,25 +119,72 @@ class SkillLibrary:
 
     # ── persistence ──────────────────────────────────────────────
     def _load(self):
+        """Load through the versioned-store layer, one record at a time.
+
+        The old path was ``Skill(**d)`` over raw JSON inside one broad except:
+        a single unknown per-skill field raised TypeError, the whole load was
+        abandoned (library reset to the 10 seeds), and the next save()
+        rewrote the file — permanently destroying every learned skill (audit:
+        skill-store data loss). Now each record is repaired (unknown fields
+        dropped) or quarantined individually, and a file that cannot be read
+        at all is preserved on disk before anything may overwrite it.
+        """
         if not self._store_path or not self._store_path.exists():
             return
+        data = read_store(self._store_path, store="skills")
+        rows = data.get("skills")
+        if not isinstance(rows, list):
+            # The file exists but yielded nothing usable (corrupt JSON, wrong
+            # shape, a future schema). Continuing with seeds is survivable;
+            # letting the next save() overwrite the only copy of the operator's
+            # data is not — park the original bytes beside the store first.
+            self._preserve_unreadable()
+            return
+        known = {f.name for f in fields(Skill)}
+        with self._lock:
+            for row in rows:
+                if not isinstance(row, dict):
+                    self._quarantine.append(row)
+                    continue
+                # Repair: keep only the fields this build's Skill declares.
+                # `success_rate` (a derived value to_dict adds) and any field a
+                # newer build wrote are dropped from the OBJECT, not the file —
+                # unknown-but-parseable records still load.
+                repaired = {k: v for k, v in row.items() if k in known}
+                try:
+                    skill = Skill(**repaired)
+                except Exception:
+                    logger.warning("Quarantining unreadable skill record %r",
+                                   row.get("name", "<unnamed>"), exc_info=True)
+                    self._quarantine.append(row)
+                    continue
+                self.skills[skill.name] = skill
+
+    def _preserve_unreadable(self):
+        """Copy a store that failed to load to ``<name>.corrupt`` — once.
+
+        The first preserved copy wins: if the store is corrupt across several
+        restarts, the earliest snapshot is the one closest to the good data.
+        """
+        backup = self._store_path.with_name(self._store_path.name + ".corrupt")
+        if backup.exists():
+            return
         try:
-            data = json.loads(self._store_path.read_text(encoding="utf-8"))
-            with self._lock:
-                for d in data.get("skills", []):
-                    d.pop("success_rate", None)
-                    self.skills[d["name"]] = Skill(**d)
+            backup.write_bytes(self._store_path.read_bytes())
+            logger.warning("Skill store %s was unreadable — preserved a copy at %s",
+                           self._store_path, backup)
         except Exception:
-            logger.warning("Failed to load skill library from %s", self._store_path, exc_info=True)
+            logger.warning("Could not preserve unreadable skill store %s",
+                           self._store_path, exc_info=True)
 
     def save(self):
         if not self._store_path:
             return
         try:
             with self._lock:
-                payload = json.dumps(
-                    {"skills": [s.to_dict() for s in self.skills.values()]}, indent=1)
-            atomic_write_text(self._store_path, payload)
+                payload = {"skills": [s.to_dict() for s in self.skills.values()]
+                           + list(self._quarantine)}
+            write_store(self._store_path, payload)
         except Exception:
             logger.warning("Failed to save skill library", exc_info=True)
 

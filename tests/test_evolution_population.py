@@ -557,7 +557,112 @@ def test_nothing_to_roll_back_to_is_not_a_rollback(tmp_path):
     assert engine.watch(tick=150, live_metric=0.0) is None
 
 
+def test_the_baseline_is_the_metric_before_the_promotion(tmp_path):
+    """A champion that degrades the metric *immediately* is the most common
+    failure mode — and the one a first-reading-after baseline can never catch,
+    because the genome's own damage becomes the reference it is measured
+    against. The reading before the promotion is the honest baseline.
+    """
+    engine = _engine(tmp_path)
+    engine.register_champion(Genome().to_dict(), fitness=0.5)
+    engine.watch(tick=99, live_metric=0.80)      # life before the promotion
+    engine._promote({"genome": Genome({"w_ev": 2.0}).to_dict(), "fitness": 0.9,
+                     "generation": 1, "created": 0.0}, tick=100)
+
+    # The very first post-promotion reading is already degraded. The old code
+    # adopted it as the baseline and returned None here forever.
+    record = engine.watch(tick=101,
+                          live_metric=0.80 - cfg.EVO_ROLLBACK_DELTA - 0.01)
+    assert record is not None and record["decision"] == "rolled_back"
+    assert engine.champion["fitness"] == pytest.approx(0.5)
+
+
+def test_the_watch_survives_a_restart(tmp_path):
+    """The watch fields are state, not scratch. `save()` used to persist
+    previous_champion without promoted_at_tick / metric_at_promotion, so any
+    restart inside the watch window disarmed the rollback permanently — watch()
+    saw None and returned None for the rest of the champion's life."""
+    engine = _engine(tmp_path)
+    engine.register_champion(Genome().to_dict(), fitness=0.5)
+    engine.watch(tick=99, live_metric=0.80)
+    engine._promote({"genome": Genome({"w_ev": 2.0}).to_dict(), "fitness": 0.9,
+                     "generation": 1, "created": 0.0}, tick=100)
+    engine.save()
+
+    restored = _engine(tmp_path)
+    assert restored.previous_champion is not None
+    assert restored.promoted_at_tick == 100
+    assert restored.metric_at_promotion == pytest.approx(0.80)
+
+    record = restored.watch(tick=150,
+                            live_metric=0.80 - cfg.EVO_ROLLBACK_DELTA - 0.01)
+    assert record is not None and record["decision"] == "rolled_back"
+    assert restored.champion["fitness"] == pytest.approx(0.5)
+
+
+def test_a_refused_promotion_restores_the_previous_champion(tmp_path):
+    """§M5.6 routes the application of a champion through the safety pipeline;
+    when the pipeline says no, the champion record has to follow — a refused
+    genome left as champion would seed every later generation without ever
+    having run."""
+    engine = _engine(tmp_path)
+    engine.register_champion(Genome().to_dict(), fitness=0.5)
+    engine._promote({"genome": Genome({"w_ev": 2.0}).to_dict(), "fitness": 0.9,
+                     "generation": 1, "created": 0.0}, tick=100)
+    record = engine.refuse_promotion("blocked by the safety pipeline")
+    assert record is not None and record["decision"] == "promotion_refused"
+    assert engine.champion["fitness"] == pytest.approx(0.5)
+    assert engine.previous_champion is None
+    assert engine.promoted_at_tick is None
+
+
 # ── persistence ──────────────────────────────────────────────────────
+
+def test_a_pending_v2_candidate_survives_a_restart(tmp_path):
+    """The v2 save format writes the candidate; the load has to read it back.
+
+    Dropping every stored candidate on load — the v1 rule applied to v2 data —
+    made the restart guard in `Substrate._restore_checkpoint` unreachable: by
+    the time the checkpoint was read, `candidate` was always None, so the
+    checkpointed genome (the unjudged mutation) was silently adopted as the
+    running baseline while the champion record still held the measured one.
+    """
+    engine = _engine(tmp_path)
+    engine.register_champion(Genome().to_dict(), fitness=0.5)
+    mutation = engine.propose_mutation(tick=7)
+    assert mutation is not None
+    pending = dict(engine.candidate)
+    engine.save()
+
+    restored = _engine(tmp_path)
+    assert restored.candidate is not None
+    assert restored.candidate["mutated_param"] == pending["mutated_param"]
+    # Per-gene, with float tolerance: reloading re-normalises the simplex
+    # shares, which is canonical-form maintenance, not data loss.
+    assert set(restored.candidate["genome"]) == set(pending["genome"])
+    for name, value in pending["genome"].items():
+        got = restored.candidate["genome"][name]
+        if isinstance(value, float):
+            assert got == pytest.approx(value), name
+        else:
+            assert got == value, name
+    assert restored.candidate["proposed_at_tick"] == 7
+
+
+def test_a_v1_candidate_is_still_dropped_on_load(tmp_path):
+    """A v1 candidate's genome is the retired schema and the benchmark that
+    would have judged it is gone — that one really cannot be half-played."""
+    import json
+
+    store = tmp_path / "lineage.json"
+    store.write_text(json.dumps({
+        # no schema_version — that is what marks a v1 file
+        "champion": {"genome": {"lora_rank": 8}, "fitness": 0.4},
+        "candidate": {"genome": {"lora_rank": 16}, "mutated_param": "lora_rank",
+                      "old_value": 8, "new_value": 16},
+    }), encoding="utf-8")
+    assert _engine(tmp_path).candidate is None
+
 
 def test_the_engine_survives_a_restart(tmp_path):
     engine = _engine(tmp_path)

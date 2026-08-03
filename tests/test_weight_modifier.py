@@ -568,6 +568,42 @@ def test_rollback_checkpoint_load_fails_no_increment(wm, monkeypatch, tmp_path):
     assert wm.total_rollbacks == 0
 
 
+def test_rollback_checkpoint_load_fails_keeps_working_pointer(wm, monkeypatch, tmp_path):
+    """The pointer used to be set — and PERSISTED via _save_stats — before
+    load_model was even attempted, so a failed load left an unusable
+    checkpoint on disk and lost the working one for every later start."""
+    good = tmp_path / "lora_good"
+    good.mkdir()
+    bad = tmp_path / "lora_bad"
+    bad.mkdir()
+    wm.current_checkpoint = str(good)
+    wm._save_stats()
+    monkeypatch.setattr(wm, "load_model",
+                        lambda: {"success": False, "error": "corrupt adapter"})
+
+    res = wm.rollback_to_checkpoint(str(bad))
+
+    assert res["success"] is False
+    # In memory: the working pointer survived the failed rollback.
+    assert wm.current_checkpoint == str(good)
+    # On disk: the broken pointer was never persisted.
+    persisted = json.loads(wm._stats_path.read_text(encoding="utf-8"))
+    assert persisted["current_checkpoint"] == str(good)
+
+
+def test_rollback_checkpoint_exception_restores_pointer(wm, monkeypatch, tmp_path):
+    good = tmp_path / "lora_good"
+    good.mkdir()
+    bad = tmp_path / "lora_bad"
+    bad.mkdir()
+    wm.current_checkpoint = str(good)
+    monkeypatch.setattr(wm, "load_model",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    res = wm.rollback_to_checkpoint(str(bad))
+    assert res["success"] is False and "boom" in res["error"]
+    assert wm.current_checkpoint == str(good)
+
+
 def test_rollback_checkpoint_exception(wm, monkeypatch, tmp_path):
     cp = tmp_path / "lora_1"
     cp.mkdir()

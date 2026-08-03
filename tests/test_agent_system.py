@@ -233,6 +233,30 @@ def test_execute_agent_reassigns_topic_from_blueprint(monkeypatch):
     assert ag.topic != ""  # picked from blueprint topics
 
 
+def test_execute_agent_rotates_topic_for_evolved_agents(monkeypatch):
+    """Evolved replacements are named "{blueprint}_vN" (see evolve()), so an
+    exact-name match against the blueprint never hit and an evolved agent
+    re-fetched its initial topic forever. The blueprint is matched by
+    source_type, exactly as evolve() itself matches it."""
+    s = AgentSystem()
+    fetched = []
+
+    async def f(topic):
+        fetched.append(topic)
+        return [{"topic": topic}]
+
+    monkeypatch.setattr(s, "_fetch_wikipedia", f)
+    ag = SpiderAgent(agent_id="i", name="wiki_explorer_v3", source_type="wikipedia",
+                     task_description="t", topic="stale_initial_topic")
+    run(s._execute_agent(ag))
+    run(s._execute_agent(ag))
+
+    bp = next(b for b in AGENT_BLUEPRINTS if b["source_type"] == "wikipedia")
+    assert ag.topic in bp["topics"]        # rotated onto the blueprint's list
+    assert fetched[0] != "stale_initial_topic"
+    assert fetched[0] != fetched[1]        # and it keeps rotating
+
+
 # ── Fetchers with mocked httpx ────────────────────────────────────────────
 
 def test_fetch_arxiv_parses_entries(monkeypatch):

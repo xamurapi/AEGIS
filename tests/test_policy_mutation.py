@@ -275,13 +275,17 @@ def test_a_significant_but_negligible_effect_still_retires_an_active_rule(tmp_pa
 
 # ── which arm a sample lands in ──────────────────────────────────────
 
-def test_a_withheld_rule_records_into_the_withheld_arm(tmp_path):
-    """`setdefault(rule.id, False)` — the default is *did not act*.
+def test_a_withheld_rule_records_only_when_its_action_was_on_offer(tmp_path):
+    """Both arms are gathered under the SAME condition: the rule's action was
+    among the candidate plans.
 
-    A rule held back for its ABAB block that matches nothing on offer this tick
-    is still part of the trial, and its reward belongs to the arm it was in.
-    Defaulting to True would file every such tick as evidence that the rule
-    acted, which is the one mistake that makes a trial argue for itself.
+    This test used to assert the opposite — that a withheld rule whose action
+    was never offered still filed the tick's reward into its withheld arm. That
+    behaviour was the selection bias this suite exists to catch: an acting rule
+    is recorded only on ticks where its action was a candidate, so crediting
+    the withheld arm on ticks where it was *not* made the trial compare arms
+    drawn from different tick populations, and conclude_trial measured which
+    kinds of ticks offer the action rather than what the rule does to them.
     """
     policy = BehaviourPolicy(store_dir=tmp_path, min_support=10, trial_ticks=40)
     condition = {"state": {"energy": "lo"}, "action": BAD}
@@ -289,12 +293,18 @@ def test_a_withheld_rule_records_into_the_withheld_arm(tmp_path):
                 effect=SUPPRESS, status="trial", trial_started=0)
     policy.lifecycle.rules[rule.id] = rule
 
-    # Tick 10 falls in a withheld block, and nothing on offer is the rule's
-    # action — so the rule is eligible-but-inert and matched no plan.
+    # Tick 10 falls in a withheld block. The rule's action is not on offer, so
+    # this tick belongs to NEITHER arm — an acting rule could not have been
+    # recorded here either.
     assert policy.shadow.applies_this_tick(rule, 10) is False
     policy.apply_rules(LOW, plans(GOOD), tick=10)
     policy.observe(LOW, GOOD, reward=0.9, success=True, tick=10)
+    assert policy.shadow.arms(rule.id) == ([], [])
 
+    # Still tick 10's block, but now the action IS a candidate: the reward
+    # belongs to the withheld arm, because the rule was eligible and held back.
+    policy.apply_rules(LOW, plans(GOOD, BAD), tick=11)
+    policy.observe(LOW, GOOD, reward=0.9, success=True, tick=11)
     applied, withheld = policy.shadow.arms(rule.id)
     assert applied == []
     assert withheld == [0.9]

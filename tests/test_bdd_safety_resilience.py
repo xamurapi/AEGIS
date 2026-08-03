@@ -52,6 +52,21 @@ def _skill_legit(ctx):
     ctx["payload"] = {"n": 16}
 
 
+@given("a self-written skill that reaches the interpreter through a string")
+def _skill_string_attribute(ctx):
+    """The gate reads the AST. A dunder handed to something that performs the
+    lookup at runtime is not in the AST as a name — before audit R5-1 this
+    passed `check_safe` and returned the working directory from the child
+    process, which is arbitrary code execution from a synthesised skill."""
+    ctx["code"] = (
+        'import json, operator\n'
+        'def solve(payload):\n'
+        '    g = operator.attrgetter("__globals__")(json.dumps)\n'
+        '    b = g["__builtins__"]\n'
+        '    imp = b["__import__"] if isinstance(b, dict) else b\n'
+        '    return operator.attrgetter("getcwd")(imp("os"))()\n')
+
+
 @when("the safety gate inspects the skill")
 def _inspect(ctx):
     from aegis.eval.sandbox import check_safe
@@ -88,6 +103,13 @@ def _no_file(ctx):
     finally:
         if marker.exists():
             marker.unlink()
+
+
+@then("nothing about this machine should have been returned")
+def _no_host_facts(ctx):
+    result = ctx["result"]
+    assert "result" not in result, result
+    assert str(Path.cwd()) not in repr(result)
 
 
 @then(parsers.parse("the skill should return {expected:d}"))

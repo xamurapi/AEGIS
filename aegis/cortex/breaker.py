@@ -38,6 +38,12 @@ class CircuitBreaker:
         self.trips = 0
         self.probes = 0
         self._state = CLOSED
+        # Whether the single half-open probe has been handed out and its
+        # outcome not yet recorded. Without this flag every caller that asked
+        # during half-open was admitted, and N concurrent callers each paid a
+        # full LLM timeout against a provider already known to be dead — the
+        # "exactly one probe" the module docstring promises was fiction.
+        self._probe_in_flight = False
 
     # ── state ────────────────────────────────────────────────────────
 
@@ -50,12 +56,37 @@ class CircuitBreaker:
         return self._state
 
     def allows(self) -> bool:
-        """Whether a call may be attempted right now."""
+        """Claim permission to attempt a call right now. MUTATING.
+
+        In half-open this hands out the one probe and refuses everyone else
+        until ``record_success``/``record_failure`` reports how it went. Read
+        paths that only want to know whether a call *would* be admitted must
+        use :meth:`would_allow` — a status poll that consumed the probe would
+        block the actual recovery attempt.
+        """
         state = self.state
         if state == OPEN:
             return False
         if state == HALF_OPEN:
+            if self._probe_in_flight:
+                return False
+            self._probe_in_flight = True
             self.probes += 1
+        return True
+
+    def would_allow(self) -> bool:
+        """Whether a call would currently be admitted. NON-mutating.
+
+        For availability reporting (``status()``, ``available_roles()``, the
+        dashboard poll): those paths were calling ``allows()`` inside a list
+        comprehension and silently incrementing the probe counters on every
+        read (audit: read paths mutate the breaker).
+        """
+        state = self.state
+        if state == OPEN:
+            return False
+        if state == HALF_OPEN:
+            return not self._probe_in_flight
         return True
 
     def remaining_cooldown(self) -> float:
@@ -70,6 +101,7 @@ class CircuitBreaker:
             logger.info("Circuit for %s closed after a successful probe", self.name)
         self.consecutive_errors = 0
         self._state = CLOSED
+        self._probe_in_flight = False
 
     def record_failure(self) -> None:
         # A probe that fails re-opens immediately: the cool-down just proved
@@ -90,11 +122,13 @@ class CircuitBreaker:
                            self.name, self.consecutive_errors, self.cooldown)
         self._state = OPEN
         self.opened_at = CLOCK.now()
+        self._probe_in_flight = False
 
     def reset(self) -> None:
         self.consecutive_errors = 0
         self._state = CLOSED
         self.opened_at = 0.0
+        self._probe_in_flight = False
 
     # ── reporting ────────────────────────────────────────────────────
 

@@ -462,6 +462,39 @@ def test_the_held_out_score_never_meets_the_queue(engine):
     assert 0.0 <= engine.holdout_score(8) <= 1.0
 
 
+def test_the_holdout_metric_is_the_holdout_score_not_the_live_accuracy(engine,
+                                                                       monkeypatch):
+    """`aegis.reason.pass_holdout` used to carry `accuracy()` — the in-sample,
+    live-queue number — while the genuine `holdout_score()` was called by
+    nobody. The discovery engine mines laws over exactly this metric, so every
+    "law" about holdout reasoning performance was actually about the data the
+    engine trains on. The metric must carry the holdout, and between cadence
+    points it stays absent rather than substituted.
+    """
+    from aegis.telemetry import metrics as M
+
+    class _Telemetry:
+        def __init__(self):
+            self.rows = []
+
+        def record(self, metric, value, tick, tags=None):
+            self.rows.append((metric, value))
+
+    engine.telemetry = _Telemetry()
+    engine.attempts, engine.solved_count = 10, 10       # in-sample accuracy 1.0
+    monkeypatch.setattr(engine, "holdout_score", lambda count=32: 0.25)
+
+    engine.publish_metrics(tick=1)
+    recorded = dict(engine.telemetry.rows)
+    assert recorded[M.REASON_PASS_HOLDOUT] == 0.25      # holdout, not accuracy
+
+    # Inside the cadence window: absent, not approximated with something else.
+    engine.telemetry.rows.clear()
+    engine.publish_metrics(tick=2)
+    assert all(metric != M.REASON_PASS_HOLDOUT
+               for metric, _ in engine.telemetry.rows)
+
+
 def test_the_held_out_set_walks_backwards_from_its_far_index(engine, monkeypatch):
     """Walking forward from ten million would still be held out today and would
     quietly stop being so the moment the working cursor was given a head start.

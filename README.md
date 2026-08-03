@@ -1,15 +1,15 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
-[![tests](https://img.shields.io/badge/tests-4463%20passing-2ea44f)](#testing--quality)
+[![tests](https://img.shields.io/badge/tests-4603%20passing-2ea44f)](#testing--quality)
 [![coverage](https://img.shields.io/badge/branch%20coverage-95%25-2ea44f)](#testing--quality)
-[![mutation score](https://img.shields.io/badge/mutation-round%205%20sweeping%2065%20targets-yellow)](#testing--quality)
-[![audit](https://img.shields.io/badge/audit-4%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
+[![mutation score](https://img.shields.io/badge/mutation-100%25%20on%20round--5%20modules-2ea44f)](#testing--quality)
+[![audit](https://img.shields.io/badge/audit-5%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#requirements)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > A self-developing AI that predicts before it acts, changes its behaviour from measured experience, evolves a genome that provably moves its own benchmark, improves its own reasoning strategies, and derives laws about itself that it then has to defend against an experiment.
 > **7-layer architecture + 5 higher-order systems + 7 contours of the development spec · provider-agnostic cortex · deterministic core cycle.**
-> **4463 tests · 95% branch coverage · 4 audit rounds, a fifth in progress.**
+> **4603 tests · 95% branch coverage · 5 audit rounds, 34 findings closed in the fifth.**
 > **Safe defaults:** source self-rewriting is opt-in (`AEGIS_CODE_SELF_MOD_ENABLED=1`), the control plane binds to `127.0.0.1`, and self-written skills run only in a child-process sandbox.
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
@@ -213,7 +213,7 @@ When enabled, every 500 ticks AEGIS rewrites one of its own `.py` source files
 (only files small enough to regenerate whole — see `CODE_MOD_MAX_FILE_CHARS`):
 1. Ethics core evaluates the **full** proposed change and system stability
 2. LLM analyzes the current code and proposes a specific improvement
-3. `code_modifier.py` validates syntax, then runs **AST-based** detection of dangerous calls/imports (`eval`, `exec`, `compile`, `__import__`, `os.system`, `subprocess`, `shutil.rmtree`, …) that cannot be fooled by spacing tricks, import aliases (`import os as o; o.kill(...)`), or indirect escape hatches (`importlib`, `builtins`)
+3. `code_modifier.py` validates syntax, then runs **AST-based** detection of dangerous calls/imports (`eval`, `exec`, `compile`, `__import__`, `os.system`, `subprocess`, `shutil.rmtree`, …) that cannot be fooled by spacing tricks, import aliases (`import os as o; o.kill(...)`), or indirect escape hatches (`importlib`, `builtins`). The list knew `os.system` but **no member of the process-execution family** until audit R5-2: `os.execv`, `os.spawnl`, `os.posix_spawn`, `os.fork` and `os.startfile` all passed the gate that exists to stop exactly that, and `Path(x).write_text(y)` never reached the write-mode check because it required the receiver to be a plain name. Both are closed, on any receiver
 4. The `SelfPreservation` watchdog gates the change (AST + substring lethal-pattern scan that is whitespace- and alias-proof, critical-element retention, drastic-shrink detection)
 5. A backup is taken, the new code is written, and it is **compile-checked with `py_compile`** — no live `importlib.reload`, so self-written code is never executed into the running process; verified changes take effect on the next restart
 6. On any failure — automatic rollback from the backup stack
@@ -255,10 +255,11 @@ Axiom integrity is checked on every evaluation against an out-of-band fingerprin
 The control plane can toggle the kill switch, grant permissions, and trigger self-modification — so it is **not** exposed by default:
 
 - Binds to **`127.0.0.1`** only (override with `AEGIS_API_HOST`). Binding elsewhere without a token logs a loud warning at import.
-- Set **`AEGIS_API_TOKEN`** to require an `X-API-Token` header on every mutating request (POST/PUT/PATCH/DELETE) and on privileged WebSocket actions. Comparison is constant-time.
+- Set **`AEGIS_API_TOKEN`** to require an `X-API-Token` header on **every** `/api` request — reads included — and on privileged WebSocket actions. Comparison is constant-time. It gated only mutating methods until audit R5-4: `GET /api/status` serves `full_status()`, i.e. memory contents, goals and ethics state, and `network_exposure_warning()` was calling a token-plus-`0.0.0.0` bind *safe* while that was readable by anyone on the network.
 - **Only authenticated WebSocket clients join the state broadcast.** The handshake check alone was not enough: an unauthorized socket used to stay in the fan-out list and receive the periodic `full_status()` push, so simply connecting and waiting leaked internal state past the token gate (audit R3-2).
 - WebSockets are not covered by CORS, so the `Origin` header is checked **before** the handshake is accepted — a hostile page cannot open `ws://127.0.0.1:8888/ws` (CSWSH).
 - Cross-origin access is off unless `AEGIS_API_CORS_ORIGINS` is set. A wildcard (`*`) origin automatically **disables credentials**, so a permissive CORS config can never be combined with credentialed cross-site calls.
+- **The kill switch stops state-changing endpoints, not just the tick loop.** It used to guard three POSTs out of twenty, and neither `evaluate_action` nor `evaluate_weight_modification` consults it — so a "stopped" system still accepted `/api/self-mod/propose` and could start a LoRA run. Every mutating endpoint now answers `423` while the switch is active, except the switch and lockdown themselves (audit R5-3).
 
 **Using the dashboard with a token.** Open it as `http://127.0.0.1:8888/?token=YOUR_TOKEN`.
 The token is remembered in `localStorage` and attached to every `/api` request;
@@ -274,8 +275,17 @@ parameter/return **annotations**. That last one matters: an unchecked annotation
 (`def solve(p, _z: __import__('os').system('...'))`) passed the old gate and then
 executed arbitrary code in the child (audit R3-1, fixed and proven by test).
 
-This is defense-in-depth, **not** an OS-level jail. Two escapes were found in this
-layer across two audit rounds, which is itself the argument: a production
+The gate also refuses a **name spelled as data**. Reading the AST is not enough:
+`operator.attrgetter("__globals__")(json.dumps)` never mentions a dunder as a
+name or an attribute, and it walked straight through to `__builtins__`,
+`__import__` and `os` — verified end to end, with the child process returning
+this machine's working directory (audit R5-1). Any dunder-shaped string literal,
+and `operator.attrgetter`/`methodcaller` themselves, are now rejected outright;
+`operator.add`, ordinary dict keys and non-dunder strings are untouched.
+
+This is defense-in-depth, **not** an OS-level jail. Three escapes have been found
+in this layer across three audit rounds, each one a different way for a static
+gate to be looking at the wrong thing, which is itself the argument: a production
 deployment should add a container/seccomp sandbox with network egress blocked.
 
 ---
@@ -290,7 +300,7 @@ AEGIS/
 ├── requirements-ml.txt         # local model + LoRA (multi-GB, pinned)
 ├── requirements-dev.txt        # pytest, pytest-bdd, coverage, httpx
 ├── docs/
-│   ├── АУДИТ.md               # 4 audit rounds — every finding, fix and test
+│   ├── АУДИТ.md               # 5 audit rounds — every finding, fix and test
 │   ├── QA.md                  # QA procedures, quality metrics, gates
 │   ├── СИСТЕМЫ.md             # the five higher-order systems in detail
 │   ├── ТЗ-РАЗВИТИЕ.md         # the development specification
@@ -310,7 +320,7 @@ AEGIS/
 │   ├── soak.py                # VII.5 — the 24-hour run
 │   ├── check_no_stubs.py      # no `pass`-bodied production code
 │   └── check_undefined_names.py
-├── tests/                      # 4463 tests
+├── tests/                      # 4603 tests
 │   └── features/              # 9 executable Gherkin specifications
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
@@ -565,7 +575,7 @@ API keys can also be set at runtime via the dashboard (LLM Brain tab).
 ```bash
 pip install -r requirements-dev.txt
 
-python -m pytest -q                                    # 4463 tests, ~4.5 min
+python -m pytest -q                                    # 4603 tests, ~5.5 min
 python -m coverage run -m pytest -q && python -m coverage report   # gate: 90%
 python scripts/mutation_test.py                        # gate: no survivors
 python scripts/check_no_stubs.py                       # no `pass`-bodied production code
@@ -575,11 +585,11 @@ No ML dependencies are required — the whole suite runs offline (no network, no
 
 | Metric | Value | Gate |
 |---|---:|---:|
-| Tests | **4463** passing (+2 skipped) | all green |
+| Tests | **4603** passing (+2 skipped) | all green |
 | Branch coverage (whole package) | **95%** | **90%** |
-| Mutation score, modules verified at 100% | discovery · telemetry/store · safety/immutable · store/migrations · reasoning DSL, interpreter, library, weakness, synthesis, arena | no survivors |
-| Mutation sweep over all **65** targets | round 5, in progress | no survivors |
-| Executable Gherkin specifications | **9 feature files** | — |
+| Mutation score, modules verified at 100% | sandbox · policy (all four) · world/simulate · world/prediction · quasirandom · store/migrations · discovery · telemetry/store · safety/immutable · reasoning DSL, interpreter, library, weakness, synthesis, arena | no survivors |
+| Mutation score over the modules round 5 changed | **100%** (236 mutants, 9 modules) | no survivors |
+| Executable Gherkin specifications | **9 feature files · 92 scenarios** | — |
 
 **Levels.** Unit tests per module · integration tests running the five systems
 and the seven contours inside a real `Substrate` tick · executable **Gherkin**
@@ -607,10 +617,10 @@ Four kinds of test earn their place by catching what unit tests cannot:
   schema version. The system must come back up with either the old complete
   state or the new one, never half of each.
 
-The sweep is a gate, and right now it is red. A full run over all 65 targets is
-under way as audit round 5, and it is finding real gaps in modules that predate
-the development spec — `world_model.py` scored 33% on twelve mutants. Two of them
-were decorative genes: `synth_attempts` bounded a loop whose repair branch was
+The sweep is a gate. Every module audit round 5 touched has been swept and is
+clean — 236 mutants across nine modules, no survivors — and the round before it
+found real gaps in modules that predate the development spec: `world_model.py`
+scored 33% on twelve mutants. Two of them were decorative genes: `synth_attempts` bounded a loop whose repair branch was
 capped by a literal, and `mem_retention_bias` was written onto `MemorySystem`,
 which never read it, while its declared reader lived in the causal model. Both
 passed the gate that exists to forbid exactly that, because the gate read the
@@ -630,11 +640,26 @@ veto (`allowed = False` → `True`) — i.e. *a crashed safety check now lets th
 through* — left the entire suite green. Coverage measures execution; mutation score
 measures whether anything actually asserts.
 
-**Audit.** Three rounds are documented in [`docs/АУДИТ.md`](docs/АУДИТ.md), with every
+**Audit.** Five rounds are documented in [`docs/АУДИТ.md`](docs/АУДИТ.md), with every
 finding tied to a test that was verified **red before the fix**. Round 3 found a
 critical sandbox escape (proven RCE), an unauthenticated state leak over WebSocket,
 and two dead API endpoints — all four in files that were excluded from the coverage
-gate at the time. Those exclusions are gone. QA procedures and metrics live in
+gate at the time. Those exclusions are gone.
+
+Round 5 swept the whole tree and closed **34 findings**, two of them critical, and
+both of those were the same shape: *a gate that reads syntax cannot see a name
+spelled as data.* `operator.attrgetter("__globals__")` walked straight past the
+sandbox's AST checks to `__builtins__`, `__import__` and `os` — verified end to
+end, with the child process returning the host's working directory — and the
+self-modification blocklist knew `os.system` but not one member of the
+`exec`/`spawn`/`fork`/`startfile` family, nor `Path(x).write_text(y)`.
+
+The round also asked a question static analysis cannot: **which tests are closed
+on themselves** — graded by the system's own output, with no external reference.
+One assertion turned out to be a tautology by construction, and the two hardest
+reasoning families had no answer anywhere that a human had worked out. Both are
+now anchored by a hand-solved table with the prompts pinned verbatim. QA
+procedures, metrics and the rule for anchoring a new test live in
 [`docs/QA.md`](docs/QA.md).
 
 ---
@@ -645,7 +670,7 @@ The engineering docs are written in Russian; this README is the English entry po
 
 | Document | What is in it |
 |---|---|
-| [`docs/АУДИТ.md`](docs/АУДИТ.md) | All four audit rounds — every finding with file:line, risk, failure scenario and the fix, plus the "red before the fix" proof for each regression test |
+| [`docs/АУДИТ.md`](docs/АУДИТ.md) | All five audit rounds — every finding with file:line, risk, failure scenario and the fix, plus the "red before the fix" proof for each regression test |
 | [`docs/QA.md`](docs/QA.md) | Test levels, reproduction commands, coverage gate, mutation-testing methodology, test-isolation rules and the pre-merge checklist |
 | [`docs/СИСТЕМЫ.md`](docs/СИСТЕМЫ.md) | The five higher-order systems in detail — data structures, tick integration, persistence |
 | [`docs/ПРОГНОЗ.md`](docs/ПРОГНОЗ.md) | The predictive world model — forecast written before the action, scored after it, and the error that drives curiosity |

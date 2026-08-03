@@ -225,6 +225,41 @@ def test_verify_integrity_read_error(tmp_path):
     assert any("READ ERROR" in i for i in result["issues"])
 
 
+def test_self_preservation_read_error_is_not_reported_intact(tmp_path):
+    """The except branch appended an issue but never touched ``status``, so an
+    unreadable critical file came back "intact" — and check_vital_signs, which
+    looks ONLY at the status field, reported no threat."""
+    rel = "aegis/config.py"
+    full = tmp_path / rel
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text("A = 1\n", encoding="utf-8")
+    sp = SelfPreservation(base_dir=tmp_path)
+    full.unlink()
+    full.mkdir()  # exists, but read_bytes raises
+    result = sp.verify_integrity()
+    assert result["status"] == "unverifiable"
+    assert result["status"] != "intact"
+
+
+def test_self_preservation_severity_is_never_downgraded(tmp_path):
+    """``status`` is a single field: a MISSING file (compromised) followed by
+    a merely MODIFIED one used to end the check reported as "modified" — the
+    graver finding overwritten by the milder one."""
+    missing_rel = "aegis/layers/memory.py"    # iterated BEFORE config.py
+    modified_rel = "aegis/config.py"
+    for rel in (missing_rel, modified_rel):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("A = 1\n", encoding="utf-8")
+    sp = SelfPreservation(base_dir=tmp_path)
+    (tmp_path / missing_rel).unlink()                                  # graver
+    (tmp_path / modified_rel).write_text("A = 2\n", encoding="utf-8")  # milder
+    result = sp.verify_integrity()
+    assert result["status"] == "compromised"
+    assert any("MISSING" in i for i in result["issues"])
+    assert any("MODIFIED" in i for i in result["issues"])
+
+
 # ── status ───────────────────────────────────────────────────────
 
 def test_status_reports(tmp_path):

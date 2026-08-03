@@ -74,6 +74,10 @@ class Rule:
     measured_effect: float | None = None
     provenance: list[str] = field(default_factory=list)
     trial_started: int | None = None
+    #: How many times a retired rule has re-entered trial. Part of the record
+    #: an operator reads: a rule on its third re-trial is a claim the world
+    #: keeps half-agreeing with, which is worth seeing as such.
+    retrials: int = 0
 
     # ── matching ─────────────────────────────────────────────────────
 
@@ -125,6 +129,7 @@ class Rule:
                                 if self.measured_effect is not None else None),
             "provenance": list(self.provenance[:10]),
             "trial_started": self.trial_started,
+            "retrials": self.retrials,
         }
 
     @classmethod
@@ -165,6 +170,7 @@ class Rule:
                 provenance=[str(p) for p in (data.get("provenance") or [])][:10],
                 trial_started=(int(data["trial_started"])
                                if data.get("trial_started") is not None else None),
+                retrials=max(0, int(data.get("retrials", 0))),
             )
         except (KeyError, TypeError, ValueError):
             logger.debug("Discarding unreadable rule row", exc_info=True)
@@ -386,6 +392,7 @@ class RuleLifecycle:
         self.activations = 0
         self.retirements = 0
         self.refutations = 0
+        self.retrials = 0
         self._load()
 
     # ── persistence ──────────────────────────────────────────────────
@@ -401,7 +408,7 @@ class RuleLifecycle:
         for row in (data.get("refuted") or []):
             if isinstance(row, dict) and row.get("id"):
                 self.refuted[str(row["id"])] = dict(row)
-        for name in ("activations", "retirements", "refutations"):
+        for name in ("activations", "retirements", "refutations", "retrials"):
             try:
                 setattr(self, name, max(0, int(data.get(name, 0))))
             except (TypeError, ValueError):
@@ -416,6 +423,7 @@ class RuleLifecycle:
             "activations": self.activations,
             "retirements": self.retirements,
             "refutations": self.refutations,
+            "retrials": self.retrials,
         })
 
     # ── admission ────────────────────────────────────────────────────
@@ -435,7 +443,7 @@ class RuleLifecycle:
                 continue                       # already disproved; do not re-open
             existing = self.rules.get(candidate.id)
             if existing is not None:
-                # Refresh the evidence but never the status: a rule already on
+                # Refresh the evidence but not a live status: a rule already on
                 # trial keeps its trial, or a re-mine would restart the clock
                 # forever and nothing would ever activate.
                 existing.support = candidate.support
@@ -444,6 +452,26 @@ class RuleLifecycle:
                 existing.wilson_high = candidate.wilson_high
                 existing.base_rate = candidate.base_rate
                 existing.p_value = candidate.p_value
+                # Retirement, though, must be reversible (the module docstring
+                # promises a two-way lifecycle). The miner re-finds a retired
+                # rule every generation; with no path back to trial, one
+                # inconclusive review made retirement permanent however strong
+                # the evidence became afterwards. The bar for re-entry is
+                # deliberately *stricter* than a first admission — half the
+                # mining alpha — so a rule cannot thrash between retired and
+                # trial on the same borderline evidence that retired it.
+                if existing.status == RETIRED \
+                        and candidate.p_value <= self.retrial_alpha():
+                    existing.status = TRIAL
+                    existing.trial_started = tick
+                    existing.activated_tick = None
+                    existing.measured_effect = None
+                    existing.retrials += 1
+                    self.retrials += 1
+                    logger.info("Retired rule %s re-entered trial on fresh "
+                                "evidence (p=%.6f)", existing.id,
+                                candidate.p_value)
+                    accepted.append(existing)
                 continue
             candidate.status = TRIAL
             candidate.trial_started = tick
@@ -451,6 +479,17 @@ class RuleLifecycle:
             accepted.append(candidate)
         self._evict_if_needed()
         return accepted
+
+    @staticmethod
+    def retrial_alpha() -> float:
+        """The significance a retired rule must clear to re-enter trial.
+
+        Half the mining alpha: the miner's own bar admitted the rule once and
+        the world then failed to confirm it, so the second admission has to be
+        on evidence that would have survived a harsher correction — not merely
+        the same borderline signal found again.
+        """
+        return float(cfg.POLICY_ALPHA) / 2.0
 
     # ── the trial verdict ────────────────────────────────────────────
 
@@ -555,5 +594,6 @@ class RuleLifecycle:
             "activations": self.activations,
             "retirements": self.retirements,
             "refutations": self.refutations,
+            "retrials": self.retrials,
             "rules": [rule.to_dict() for rule in self.ordered()[:20]],
         }

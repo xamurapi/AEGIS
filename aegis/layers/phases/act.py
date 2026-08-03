@@ -200,16 +200,23 @@ async def run(substrate, ctx: TickContext) -> None:
         known = list(substrate.memory.semantic.keys())
         ctx.mark_external("act")
         result = await substrate.llm.generate_curiosity(known, lease=curiosity_lease)
+        # Extract the topic BEFORE settling, and defensively: the reply may
+        # parse to a JSON array rather than an object, and `(... or {}).get`
+        # let a truthy list through. The AttributeError then fired while the
+        # settle argument was being evaluated — so the lease was never settled,
+        # finalize_tick charged the full estimate, and the rest of ACT was
+        # skipped. With the extraction made total, the settle always runs.
+        parsed = result.get("parsed")
+        if not isinstance(parsed, dict):
+            parsed = {}
+        topic = str(parsed.get("topic", "") or "")
+        question = str(parsed.get("question", "") or "")
         # Value here is a new concept actually entering memory — not merely a
         # successful call, since an answer nobody stores bought nothing.
         substrate.settle(
             curiosity_lease,
-            value=1.0 if (result.get("success")
-                          and (result.get("parsed") or {}).get("topic")) else 0.0)
-        if result["success"] and "parsed" in result:
-            parsed = result["parsed"]
-            topic = parsed.get("topic", "")
-            question = parsed.get("question", "")
+            value=1.0 if (result.get("success") and topic) else 0.0)
+        if result.get("success"):
             if topic:
                 substrate.memory.add_semantic(topic[:50], {
                     "type": "curiosity_exploration",

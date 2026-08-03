@@ -118,6 +118,52 @@ def test_a_refuted_rule_is_never_re_admitted(lifecycle):
     assert lifecycle.admit([make_rule()], tick=800) == []
 
 
+def test_a_retired_rule_re_enters_trial_on_stronger_evidence(lifecycle):
+    """Retirement is reversible, refutation is not — that is the two-way
+    lifecycle the module docstring promises. Before this, admit() refreshed a
+    retired rule's numbers and never its status: the miner re-found the rule
+    every generation and no strength of new evidence could ever return it to
+    trial, so one inconclusive review was a life sentence.
+    """
+    rule = make_rule()
+    lifecycle.admit([rule], tick=100)
+    lifecycle.conclude_trial(rule, applied=[0.5, 0.52, 0.48, 0.51],
+                             withheld=[0.5, 0.49, 0.51, 0.5], tick=400)
+    assert rule.status == RETIRED
+
+    again = make_rule()
+    again.p_value = RuleLifecycle.retrial_alpha() / 10   # clearly past the bar
+    readmitted = lifecycle.admit([again], tick=900)
+
+    held = lifecycle.rules[rule.id]
+    assert readmitted == [held]
+    assert held.status == TRIAL
+    assert held.trial_started == 900          # a fresh trial, a fresh clock
+    assert held.activated_tick is None
+    assert held.retrials == 1
+    assert lifecycle.retrials == 1
+
+
+def test_borderline_evidence_does_not_reopen_a_retired_rule(lifecycle):
+    """The re-entry bar is *stricter* than a first admission (half the mining
+    alpha), or the same borderline signal that failed its trial would bounce
+    the rule between retired and trial every generation."""
+    import aegis.config as cfg
+
+    rule = make_rule()
+    lifecycle.admit([rule], tick=100)
+    lifecycle.conclude_trial(rule, applied=[0.5, 0.52, 0.48, 0.51],
+                             withheld=[0.5, 0.49, 0.51, 0.5], tick=400)
+    assert rule.status == RETIRED
+
+    again = make_rule()
+    # Would clear a first admission, but not the re-trial bar.
+    again.p_value = (RuleLifecycle.retrial_alpha() + cfg.POLICY_ALPHA) / 2
+    assert lifecycle.admit([again], tick=900) == []
+    assert lifecycle.rules[rule.id].status == RETIRED
+    assert lifecycle.rules[rule.id].retrials == 0
+
+
 # ── the trial verdict ────────────────────────────────────────────────
 
 def test_a_rule_that_helped_becomes_active(lifecycle):

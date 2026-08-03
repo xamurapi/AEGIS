@@ -296,20 +296,33 @@ class CausalLinks:
             self.chains = self.chains[-MAX_CHAINS:]
         return chain
 
-    # ── status ───────────────────────────────────────────────────────
+    # ── reading ──────────────────────────────────────────────────────
 
-    def status(self) -> dict:
+    def strongest_links(self, limit: int = 5) -> list[dict]:
+        """The best-evidenced links, strongest first, as plain dicts.
+
+        This used to exist only as a *key* inside :meth:`status`, which meant
+        the discovery engine's theory path — which needs more than the five
+        rows a status panel shows — called a method that was not there and
+        silently got nothing. It is a real API now, so a caller states which
+        slice it wants and a rename cannot hide behind a dict key.
+        """
         flat = [(c, e, self._strength(l), l["observations"])
                 for c, effects in self.links.items() for e, l in effects.items()]
         flat.sort(key=lambda x: (x[3], x[2]), reverse=True)
+        return [
+            {"cause": c, "effect": e, "strength": round(s, 3), "observations": n}
+            for c, e, s, n in flat[:max(0, int(limit))]
+        ]
+
+    # ── status ───────────────────────────────────────────────────────
+
+    def status(self) -> dict:
         return {
             "causes": len(self.links),
             "links": sum(len(v) for v in self.links.values()),
             "total_observations": self.total_observations,
             "chains_built": len(self.chains),
-            "strongest_links": [
-                {"cause": c, "effect": e, "strength": round(s, 3), "observations": n}
-                for c, e, s, n in flat[:5]
-            ],
+            "strongest_links": self.strongest_links(5),
             "latest_chain": self.chains[-1] if self.chains else None,
         }

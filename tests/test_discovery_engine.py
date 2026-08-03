@@ -57,6 +57,24 @@ def engine(tmp_path, telemetry):
                            watched=("aegis.wm.surprise", "aegis.wm.brier"))
 
 
+# ── persistence ──────────────────────────────────────────────────────
+
+def test_a_failed_pool_save_does_not_skip_the_ledger(engine, monkeypatch):
+    """`pool.save() and ledger.save()` short-circuited: write_store reports a
+    failed write by returning False rather than raising, so one bad pool write
+    silently skipped the ledger save too — losing recorded statuses and
+    refutations on top of the pool rows already lost. Both must be attempted;
+    the report stays the conjunction."""
+    ledger_saved = []
+    real_ledger_save = engine.ledger.save
+    monkeypatch.setattr(engine.pool, "save", lambda: False)
+    monkeypatch.setattr(engine.ledger, "save",
+                        lambda: ledger_saved.append(True) or real_ledger_save())
+
+    assert engine.save() is False       # a failure is still reported
+    assert ledger_saved                 # but the ledger was written anyway
+
+
 # ── the recovery test ────────────────────────────────────────────────
 
 def test_a_planted_law_is_recovered_and_registered(engine, telemetry):

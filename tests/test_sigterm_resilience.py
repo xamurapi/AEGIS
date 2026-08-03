@@ -37,21 +37,26 @@ class _Killed(Exception):
 
 def test_a_kill_before_the_rename_leaves_the_old_file_whole(tmp_path, monkeypatch):
     """The window that matters. Everything the new content needs is already on
-    disk in the temp file, and the target has not been touched at all."""
-    from pathlib import Path
+    disk in the temp file, and the target has not been touched at all.
+
+    The kill is aimed at ``os.replace`` — the primitive the helper actually
+    renames with since the unique-temp-name/fsync hardening (it used to be
+    ``Path.replace``)."""
+    import os
 
     target = tmp_path / "state.json"
     original = json.dumps({"schema_version": 2, "champion": "keep me"})
     target.write_text(original, encoding="utf-8")
 
-    def _die(self, *args, **kwargs):
+    def _die(*args, **kwargs):
         raise _Killed()
 
-    monkeypatch.setattr(Path, "replace", _die)
+    monkeypatch.setattr(os, "replace", _die)
     with pytest.raises(_Killed):
         atomic_write_text(target, json.dumps({"schema_version": 2,
                                               "champion": "new"}))
 
+    monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == original
     assert json.loads(target.read_text(encoding="utf-8"))["champion"] == "keep me"
 
@@ -60,20 +65,39 @@ def test_a_kill_partway_through_the_temp_file_leaves_the_target_untouched(tmp_pa
                                                                           monkeypatch):
     """The other side of the same window. A truncated temp file is rubbish, and
     it is rubbish that nothing reads — the target still holds the last complete
-    state."""
-    from pathlib import Path
+    state.
+
+    The helper writes through the handle ``os.fdopen`` wraps around the unique
+    temp fd (no longer ``Path.write_text``), so the mid-write kill is simulated
+    by a handle that dies halfway through its first write."""
+    import os
 
     target = tmp_path / "state.json"
     original = json.dumps({"schema_version": 2, "generation": 41})
     target.write_text(original, encoding="utf-8")
 
-    real_write = Path.write_text
+    real_fdopen = os.fdopen
 
-    def _die_halfway(self, text, *args, **kwargs):
-        real_write(self, text[:len(text) // 2], encoding="utf-8")
-        raise _Killed()
+    class _DyingHandle:
+        def __init__(self, inner):
+            self._inner = inner
 
-    monkeypatch.setattr(Path, "write_text", _die_halfway)
+        def write(self, text):
+            self._inner.write(text[:len(text) // 2])
+            raise _Killed()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+    monkeypatch.setattr(
+        os, "fdopen",
+        lambda fd, *args, **kwargs: _DyingHandle(real_fdopen(fd, *args, **kwargs)))
     with pytest.raises(_Killed):
         atomic_write_text(target, json.dumps({"schema_version": 2,
                                               "generation": 42}))
@@ -181,8 +205,6 @@ def test_every_persistent_store_survives_an_interrupted_write(tmp_path, monkeypa
     then read back. Whatever the second write was going to say, the file on
     disk still says what the first one did.
     """
-    from pathlib import Path
-
     stores = {
         "world_model": {"links": {"a": {"n": 3}}},
         "policy": {"rules": [{"id": "r1", "status": "active"}]},
@@ -194,10 +216,11 @@ def test_every_persistent_store_survives_an_interrupted_write(tmp_path, monkeypa
     for name, payload in stores.items():
         assert write_store(tmp_path / f"{name}.json", payload) is True
 
-    def _die(self, *args, **kwargs):
+    def _die(*args, **kwargs):
         raise _Killed()
 
-    monkeypatch.setattr(Path, "replace", _die)
+    import os
+    monkeypatch.setattr(os, "replace", _die)
     for name in stores:
         with pytest.raises(_Killed):
             atomic_write_text(tmp_path / f"{name}.json", '{"schema_version": 2}')
@@ -213,12 +236,12 @@ def test_a_write_that_fails_is_reported_rather_than_raised(tmp_path, monkeypatch
     """A store that cannot be written must not take the tick with it. The
     caller finds out through the return value and carries on — losing a
     checkpoint is survivable, losing the process is not."""
-    from pathlib import Path
+    import os
 
-    def _die(self, *args, **kwargs):
+    def _die(*args, **kwargs):
         raise OSError("the disk is full")
 
-    monkeypatch.setattr(Path, "write_text", _die)
+    monkeypatch.setattr(os, "replace", _die)
     assert write_store(tmp_path / "state.json", {"a": 1}) is False
 
 

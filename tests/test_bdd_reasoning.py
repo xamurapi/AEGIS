@@ -263,3 +263,35 @@ def _refused_for_regression(ctx):
     verdict = ctx["verdict"]
     assert not verdict.accepted
     assert any("general benchmark" in reason for reason in verdict.reasons)
+
+
+# ── the external anchor ──────────────────────────────────────────────
+
+def _golden_tasks():
+    from aegis.eval import reasoning_bench as bench
+    from tests.test_reasoning_bench import GOLDEN_REASONING
+    for task_id, prompt, answer in GOLDEN_REASONING:
+        family = ("arithmetic_chain" if "arith" in task_id
+                  else "constraint_puzzle")
+        index = int(task_id.rsplit("_", 1)[1])
+        task = bench.build_family(family, index + 1, start=index)[0]
+        assert task.id == task_id and task.prompt == prompt
+        yield task, answer
+
+
+@then("every hand-solved golden task should match its generated answer")
+def _golden_matches(ctx):
+    count = 0
+    for task, answer in _golden_tasks():
+        assert task.expected == answer, task.id
+        count += 1
+    assert count >= 5
+
+
+@then("every hand-solved golden task should reject a wrong answer")
+def _golden_rejects(ctx):
+    from aegis.eval.reasoning_bench import ABSTAIN
+    for task, answer in _golden_tasks():
+        wrong = 48 if answer == ABSTAIN else \
+            answer - 1 if isinstance(answer, int) else "crate"
+        assert not task.verify(wrong), task.id

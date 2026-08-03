@@ -70,9 +70,11 @@ ETHICAL_THRESHOLD_REVIEW = 0.85
 # be network-exposed unless the operator explicitly opts in via AEGIS_API_HOST.
 API_HOST = os.environ.get("AEGIS_API_HOST", "127.0.0.1")
 API_PORT = _env_int("AEGIS_API_PORT", "8888")
-# Shared-secret token for mutating (POST) endpoints. When set, clients must send
-# it in the `X-API-Token` header. Empty string = no token required (only safe
-# together with the loopback bind above).
+# Shared-secret token for ALL /api endpoints — reads included, because GET
+# /api/status serves memory contents, goals and ethics state. When set, clients
+# must send it in the `X-API-Token` header (the WebSocket takes ?token=...).
+# Empty string = no token required (only safe together with the loopback bind
+# above).
 API_TOKEN = os.environ.get("AEGIS_API_TOKEN", "")
 # Allowed CORS origins (comma-separated). Empty = no cross-origin access.
 API_CORS_ORIGINS = [o.strip() for o in os.environ.get("AEGIS_API_CORS_ORIGINS", "").split(",") if o.strip()]
@@ -86,6 +88,11 @@ def network_exposure_warning(host: str = API_HOST, token: str = API_TOKEN) -> st
     auth token — that exposes the kill switch, permission grants and code
     self-modification triggers to the network unauthenticated (audit M8).
     Returns None when the configuration is safe.
+
+    "Safe" here is a real claim now: with a token configured the API layer
+    requires it on EVERY /api request, reads included. It used to gate only
+    mutating methods, so this function said None ("safe") for a bind that
+    still served full_status(), events and memory to anyone on the network.
     """
     if host not in _LOOPBACK_HOSTS and not token:
         return (f"AEGIS API is bound to a non-loopback host ({host!r}) with an EMPTY "

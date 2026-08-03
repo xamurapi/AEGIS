@@ -81,6 +81,13 @@ def evolve_generation(substrate, ctx):
     stops the cognitive cycle for the duration: no ticks, no dashboard, no
     health checks. So the action's job is to *schedule* it, exactly as the
     benchmark and the training cycle are scheduled.
+
+    The return value is deliberately NOT the task. ACT's generic executor
+    plumbing awaits any awaitable an executor returns, so handing the task
+    back re-attached the very work this function exists to detach — the tick
+    then sat inside the generation for minutes. The task lives on
+    ``substrate._evolution_task`` (the action registry's precondition reads it
+    there); the caller gets a plain descriptor it cannot accidentally await.
     """
     if substrate.evolution.generation_running:
         return None
@@ -98,7 +105,7 @@ def evolve_generation(substrate, ctx):
             return None
 
     substrate._evolution_task = asyncio.create_task(_run())
-    return substrate._evolution_task
+    return {"scheduled": True, "tick": substrate.tick_count}
 
 
 #: action name -> adapter. Only actions whose declared executor needs arguments

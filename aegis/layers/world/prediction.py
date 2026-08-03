@@ -258,10 +258,34 @@ class PredictionScorer:
         Held in memory as well as on disk because the panel wants the last
         fifty and the log holds twenty thousand: reading the tail of a JSONL
         file on every dashboard poll would put file IO on the request path for
-        data the process already had.
+        data the process already had. The log is only consulted when the
+        in-memory buffer is empty — a fresh process whose closures all
+        happened in a previous run. (The deque is materialised before slicing;
+        deques do not support slices.)
         """
         limit = max(0, int(limit))
-        return [dict(row) for row in self._recent[-limit:]] if limit else []
+        if not limit:
+            return []
+        if self._recent:
+            return [dict(row) for row in list(self._recent)[-limit:]]
+        if self._store_path is None or not self._store_path.exists():
+            return []
+        rows: list[dict] = []
+        try:
+            with self._store_path.open("r", encoding="utf-8") as handle:
+                for line in handle.readlines()[-limit:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue    # one torn line must not hide the rest
+                    if isinstance(row, dict):
+                        rows.append(row)
+        except Exception:
+            logger.warning("Failed to read the prediction log", exc_info=True)
+        return rows
 
     def surprise(self) -> float:
         """Mean information content of recent outcomes.
@@ -339,27 +363,6 @@ class PredictionScorer:
             self.rows_written = len(keep)
         except Exception:
             logger.warning("Failed to truncate the prediction log", exc_info=True)
-
-    def recent(self, limit: int = 20) -> list[dict]:
-        """The most recently closed predictions, newest last."""
-        if self._store_path is None or not self._store_path.exists():
-            return []
-        rows: list[dict] = []
-        try:
-            with self._store_path.open("r", encoding="utf-8") as handle:
-                for line in handle.readlines()[-max(1, limit):]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue    # one torn line must not hide the rest
-                    if isinstance(row, dict):
-                        rows.append(row)
-        except Exception:
-            logger.warning("Failed to read the prediction log", exc_info=True)
-        return rows
 
     def state_dict(self) -> dict:
         """The smoothed metrics, so calibration survives a restart."""

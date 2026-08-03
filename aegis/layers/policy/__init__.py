@@ -112,8 +112,6 @@ class BehaviourPolicy:
 
         before = plans[0].action if plans else None
         acting, inert = self._rules_for(state, tick)
-        for rule in inert:
-            self._eligible_this_tick.setdefault(rule.id, False)
 
         surviving = []
         for plan in plans:
@@ -139,9 +137,16 @@ class BehaviourPolicy:
             if not suppressed:
                 surviving.append(plan)
 
-        # An eligible-but-inert rule still counts as eligible for the trial.
+        # A withheld rule joins the trial only on ticks where its action was
+        # actually among the candidates — the same condition under which an
+        # acting rule is recorded above. Registering every state-matching
+        # withheld rule regardless (the previous behaviour) filled the withheld
+        # arm with ticks on which the rule could not possibly have acted, so
+        # the trial compared arms drawn from different tick populations and
+        # measured that selection bias instead of the rule's effect.
         for rule in inert:
-            if any(rule.matches(state, plan.action) for plan in plans):
+            if any(plan.action is not None and rule.matches(state, plan.action)
+                   for plan in plans):
                 self._eligible_this_tick[rule.id] = False
 
         surviving.sort(key=lambda plan: (-plan.score, plan.objective))

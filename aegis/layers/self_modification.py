@@ -19,6 +19,13 @@ class SelfModification:
         self.modifications: list[dict] = []
         self.sandbox_results: list[dict] = []
         self.rollbacks: list[dict] = []
+        # Monotonic proposal counter (CodeModifier does the same with
+        # total_mods). Deriving the id from len(self.modifications) collided
+        # permanently once _cap trimmed the list to _MAX_RECORDS: every later
+        # proposal was "mod_0200", so rollbacks and sandbox results could no
+        # longer be matched to the proposal they belong to. In-memory only,
+        # like the rest of this class's state.
+        self.total_proposed = 0
         self.current_version = "1.0.0"
         self.parameters: dict[str, float] = {
             "learning_rate": 0.001,
@@ -65,7 +72,7 @@ class SelfModification:
 
     def propose_modification(self, mod_type: str, target: str, new_value: float) -> dict:
         proposal = {
-            "id": f"mod_{len(self.modifications):04d}",
+            "id": f"mod_{self.total_proposed:04d}",
             "timestamp": CLOCK.now(),
             "type": mod_type,  # parametric, architectural, meta
             "target": target,
@@ -73,6 +80,7 @@ class SelfModification:
             "new_value": new_value,
             "status": "proposed",
         }
+        self.total_proposed += 1
         return proposal
 
     def sandbox_test(self, proposal: dict, current_metric: float = 0.5) -> dict:
@@ -327,7 +335,12 @@ class SelfModification:
         else:
             record["status"] = "failed"
             record["error"] = train_result.get("error", "Training failed")
-            if "rolled_back" in train_result.get("error", ""):
+            # Prefer the structured flag the trainer now sets; keep the text
+            # match as a fallback for older-shaped results. The old check
+            # looked for "rolled_back" while the trainer said "rolled back",
+            # so this branch never fired and rollbacks always counted 0.
+            if (train_result.get("rolled_back")
+                    or "rolled back" in str(train_result.get("error", ""))):
                 record["status"] = "rolled_back"
                 self.weight_mod_rollbacks += 1
 

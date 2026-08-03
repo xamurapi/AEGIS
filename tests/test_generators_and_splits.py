@@ -12,6 +12,7 @@ every reference here is checked against brute force or against the stdlib, and
 the seeded skills — written long before the generators — are required to solve
 generated cases of the kinds they claim.
 """
+import functools
 import math
 
 import pytest
@@ -85,23 +86,46 @@ def test_every_declared_kind_has_a_generator():
     assert set(KINDS) == set(BUILDERS)
 
 
+def _roman_by_table(n):
+    # Independent of aegis.eval.generators.to_roman on purpose — see below.
+    pairs = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"),
+             (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"),
+             (5, "V"), (4, "IV"), (1, "I"))
+    out = []
+    for value, symbol in pairs:
+        while n >= value:
+            out.append(symbol)
+            n -= value
+    return "".join(out)
+
+
 def test_every_generated_task_is_self_consistent():
-    """The expected answer is recomputed from the payload by a second route."""
+    """The expected answer is recomputed from the payload by a second route.
+
+    "Second route" has to mean second: an earlier version of this table called
+    the same `fib`/`to_roman`/`sort_csv` the generator itself calls, which made
+    those rows `f(x) == f(x)` — a shared bug in the reference function and the
+    generator cancels out. Every check below is stdlib or written inline here,
+    so the only thing it shares with production is the task payload.
+    """
     checks = {
         "calc": lambda p: {"add": p["a"] + p["b"], "mul": p["a"] * p["b"],
                            "sub": p["a"] - p["b"]}[p["op"]],
         "reverse": lambda p: p["s"][::-1],
-        "count_vowels": lambda p: count_vowels(p["s"]),
-        "fib": lambda p: fib(p["n"]),
+        "count_vowels": lambda p: sum(c in "aeiou" for c in p["s"].lower()),
+        "fib": lambda p: functools.reduce(
+            lambda ab, _: (ab[1], ab[0] + ab[1]), range(p["n"]), (0, 1))[0],
         "palindrome": lambda p: p["s"] == p["s"][::-1],
         "gcd": lambda p: math.gcd(p["a"], p["b"]),
         "factorial": lambda p: math.factorial(p["n"]),
         "word_count": lambda p: len(p["s"].split()),
-        "sum_digits": lambda p: sum_digits(p["n"]),
+        "sum_digits": lambda p: sum(int(d) for d in str(abs(p["n"]))),
         "upper": lambda p: p["s"].upper(),
-        "is_prime": lambda p: is_prime(p["n"]),
-        "sort_csv": lambda p: sort_csv(p["s"]),
-        "roman": lambda p: to_roman(p["n"]),
+        "is_prime": lambda p: p["n"] > 1 and all(
+            p["n"] % d for d in range(2, p["n"])),
+        "sort_csv": lambda p: ",".join(
+            str(v) for v in sorted(int(x) for x in p["s"].split(","))),
+        "roman": lambda p: _roman_by_table(p["n"]),
         "to_binary": lambda p: format(p["n"], "b"),
     }
     for kind in KINDS:
@@ -144,9 +168,16 @@ def test_every_arithmetic_operation_is_generated():
 
 
 def test_a_generated_task_verifies_its_own_answer():
+    """Reflexivity alone (`verify(x, x)`) cannot catch a normalization bug the
+    generator and verifier share, so each kind is also checked against a wrong
+    answer — the verifier has to be able to say no."""
     for kind in KINDS:
         task = build(kind, 3)
         assert task.verify(task.expected)
+        wrong = (not task.expected if isinstance(task.expected, bool)
+                 else task.expected + 1 if isinstance(task.expected, int)
+                 else str(task.expected) + "x")
+        assert not task.verify(wrong), kind
 
 
 def test_an_unknown_kind_is_refused():
@@ -238,6 +269,28 @@ def test_a_large_kind_lands_near_fifty_twentyfive_twentyfive():
     assert len(split["train"]) == 200
     assert len(split["valid"]) == 100
     assert len(split["test"]) == 100
+
+
+def test_no_problem_appears_in_more_than_one_split():
+    """A held-out split has to be UNSEEN, and the generators draw from finite
+    pools (24 words, factorial's 0..12), so different indices regularly build
+    the very same problem. The hash deal used to put ``gen_factorial_1``
+    ``{'n': 0}`` in `test` while an identical payload+answer sat in `train` —
+    which made the held-out score partly a memorisation score. Identical
+    problems must land in one split, whatever their ids."""
+    import json as _json
+
+    for per_kind in (4, 8):
+        tasks = list(DEFAULT_BENCHMARK) + generated_benchmark(per_kind=per_kind)
+        split = three_way_split(tasks)
+        seen: dict = {}
+        for name, group in split.items():
+            for task in group:
+                key = (task.kind,
+                       _json.dumps(task.payload, sort_keys=True),
+                       repr(task.expected))
+                assert seen.setdefault(key, name) == name, (
+                    f"{key} appears in both {seen[key]!r} and {name!r}")
 
 
 def test_split_of_names_the_group_a_task_is_in():

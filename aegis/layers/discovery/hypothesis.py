@@ -343,8 +343,19 @@ def from_world_model(world_model, known, *, tick: int = 0,
     """
     known = {str(name) for name in known}
     found: list[Hypothesis] = []
+    # Resolve the API *before* the guarded call. The production model is
+    # `PredictiveWorldModel`, a facade whose causal table lives one level down
+    # on `.causal` — for years this function called a `strongest_links` that
+    # existed nowhere, and the blanket `except` around the call swallowed the
+    # AttributeError, so the theory source was dead in production while the
+    # tests passed against a fake that did define the method. An absent API is
+    # a wiring bug and must raise here, loudly; only a *runtime* failure of a
+    # method that does exist is a world-model problem this path may shrug off.
+    source = getattr(world_model, "strongest_links", None)
+    if source is None:
+        source = world_model.causal.strongest_links
     try:
-        links = world_model.strongest_links(limit * 4)
+        links = source(limit * 4)
     except Exception:
         return []
     for link in links or []:

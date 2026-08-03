@@ -6,36 +6,45 @@
 <title>AEGIS Control Center</title>
 <style>
 :root {
-  --bg: #0e1117;
-  --card: #262730;
-  --card-border: #3a3b45;
-  --primary: #7da4f7;
-  --primary-dim: #4a6eb5;
-  --text: #fafafa;
-  --text-dim: #a0a0b0;
-  --success: #4ade80;
-  --warning: #facc15;
-  --danger: #f87171;
-  --info: #38bdf8;
-  --purple: #c084fc;
-  --orange: #fb923c;
+  --bg: #0a0d16;
+  --bg-raise: #0f1420;
+  --card: #121828;
+  --card-border: #26304a;
+  --primary: #f0a93b;
+  --primary-dim: #b07a24;
+  --accent: #f0a93b;
+  --text: #edeaf4;
+  --text-dim: #8f96ad;
+  --success: #46d19a;
+  --warning: #efc75e;
+  --danger: #f0716a;
+  --info: #58b7e8;
+  --purple: #a78bfa;
+  --orange: #f09a56;
   --pink: #f472b6;
-  --cyan: #22d3ee;
+  --cyan: #4fd1db;
   --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --display: Georgia, 'Times New Roman', serif;
   --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+::selection { background: rgba(240, 169, 59, 0.35); }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
 body {
-  background: var(--bg);
+  background:
+    radial-gradient(1100px 500px at 8% -10%, rgba(240, 169, 59, 0.07), transparent 60%),
+    radial-gradient(900px 600px at 100% 110%, rgba(88, 183, 232, 0.06), transparent 55%),
+    var(--bg);
   color: var(--text);
   font-family: var(--font);
   font-size: 14px;
   min-height: 100vh;
 }
 
-/* Header */
+/* Header — the instrument's faceplate */
 .header {
-  background: linear-gradient(135deg, #1a1b26 0%, #262730 100%);
+  background: rgba(10, 13, 22, 0.88);
+  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--card-border);
   padding: 12px 24px;
   display: flex;
@@ -45,40 +54,52 @@ body {
   top: 0;
   z-index: 100;
 }
+.header::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--primary) 0%, rgba(240,169,59,0.25) 30%, transparent 70%);
+  pointer-events: none;
+}
 .header-left {
   display: flex;
   align-items: center;
   gap: 16px;
 }
 .logo {
-  font-size: 22px;
-  font-weight: 700;
+  font-family: var(--display);
+  font-size: 21px;
+  font-weight: 600;
   color: var(--primary);
-  letter-spacing: 2px;
+  letter-spacing: 0.35em;
+  margin-right: -0.35em; /* trailing tracking compensation */
 }
 .logo-sub {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
-  letter-spacing: 0.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .status-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 12px;
-  border-radius: 20px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
+  font-family: var(--mono);
 }
 .status-online {
-  background: rgba(74, 222, 128, 0.15);
+  background: rgba(70, 209, 154, 0.12);
   color: var(--success);
-  border: 1px solid rgba(74, 222, 128, 0.3);
+  border: 1px solid rgba(70, 209, 154, 0.35);
 }
 .status-killed {
-  background: rgba(248, 113, 113, 0.15);
+  background: rgba(240, 113, 106, 0.12);
   color: var(--danger);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  border: 1px solid rgba(240, 113, 106, 0.4);
   animation: pulse-danger 1.5s infinite;
 }
 @keyframes pulse-danger {
@@ -86,8 +107,8 @@ body {
   50% { opacity: 0.6; }
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; }
-.dot-green { background: var(--success); box-shadow: 0 0 6px var(--success); }
-.dot-red { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.dot-green { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.dot-red { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
 
 .header-right {
   display: flex;
@@ -97,6 +118,7 @@ body {
 .header-info {
   text-align: right;
   font-size: 12px;
+  font-family: var(--mono);
   color: var(--text-dim);
 }
 .header-info span { color: var(--primary); font-weight: 600; }
@@ -104,46 +126,48 @@ body {
 .kill-btn {
   padding: 6px 16px;
   border: 1px solid var(--danger);
-  background: rgba(248, 113, 113, 0.1);
+  background: rgba(240, 113, 106, 0.1);
   color: var(--danger);
   border-radius: 6px;
   cursor: pointer;
   font-weight: 600;
   font-size: 12px;
-  transition: all 0.2s;
+  transition: background-color 0.2s;
 }
-.kill-btn:hover { background: rgba(248, 113, 113, 0.25); }
-.kill-btn.active {
-  background: var(--danger);
-  color: #fff;
-}
+.kill-btn:hover { background: rgba(240, 113, 106, 0.25); }
+.kill-btn.active { background: var(--danger); color: #fff; }
 
-/* Tabs */
+/* Tabs — one continuous rail */
 .tabs {
   display: flex;
-  gap: 0;
-  padding: 0 24px;
-  background: #1a1b26;
+  gap: 2px;
+  padding: 0 20px;
+  background: var(--bg-raise);
   border-bottom: 1px solid var(--card-border);
   overflow-x: auto;
+  /* Fourteen tabs overflow a laptop viewport. They stay scrollable, but the
+     bar itself is chrome the operator never needs to see. */
+  scrollbar-width: none;
 }
+.tabs::-webkit-scrollbar { height: 0; }
 .tab {
-  padding: 10px 18px;
-  font-size: 13px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
   color: var(--text-dim);
   cursor: pointer;
   border-bottom: 2px solid transparent;
   white-space: nowrap;
-  transition: all 0.2s;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
 }
-.tab:hover { color: var(--text); }
+.tab:hover { color: var(--text); background: rgba(240, 169, 59, 0.05); }
 .tab.active {
   color: var(--primary);
   border-bottom-color: var(--primary);
 }
 
 /* Main grid */
-.page { display: none; padding: 16px 24px; }
+.page { display: none; padding: 18px 24px 28px; }
 .page.active { display: block; }
 
 .grid {
@@ -159,7 +183,7 @@ body {
 @media (max-width: 768px) {
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .header { padding: 8px 12px; }
-  .logo { font-size: 18px; }
+  .logo { font-size: 17px; }
   .logo-sub { display: none; }
   .header-right { display: none; }
   .header-left { gap: 8px; }
@@ -171,7 +195,7 @@ body {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
     z-index: 200;
-    background: rgba(14,17,23,0.97);
+    background: var(--bg);
     padding: 60px 20px 20px;
     gap: 4px;
     overflow-y: auto;
@@ -184,13 +208,13 @@ body {
   }
   .tabs.mobile-open .tab.active {
     border-bottom-color: var(--primary);
-    background: rgba(125,164,247,0.1);
+    background: rgba(240, 169, 59, 0.08);
     border-radius: 6px;
   }
   .mobile-menu-btn { display: flex !important; }
   .mobile-close-btn { display: block !important; }
   .card { padding: 12px; }
-  .card-title { font-size: 12px; }
+  .card-title { font-size: 11px; }
   .big-metric { font-size: 28px; }
   .metric { padding: 4px 0; }
   .metric-label { font-size: 12px; }
@@ -199,7 +223,7 @@ body {
 }
 @media (max-width: 480px) {
   .header { padding: 6px 8px; }
-  .logo { font-size: 16px; }
+  .logo { font-size: 15px; }
   .status-badge { padding: 3px 8px; font-size: 10px; }
   .page { padding: 6px 8px; }
   .big-metric { font-size: 24px; }
@@ -230,15 +254,18 @@ body {
   cursor: pointer;
 }
 
-/* Cards */
+/* Cards — glass instrument panels */
 .card {
-  background: var(--card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, rgba(255, 255, 255, 0) 45%), var(--card);
   border: 1px solid var(--card-border);
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 16px;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
 }
-.card:hover { border-color: var(--primary-dim); }
+.card:hover {
+  border-color: rgba(240, 169, 59, 0.45);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
 .card-header {
   display: flex;
   align-items: center;
@@ -246,22 +273,35 @@ body {
   margin-bottom: 12px;
 }
 .card-title {
-  font-size: 13px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--text-dim);
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.14em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-title::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--primary);
+  opacity: 0.85;
+  flex: none;
 }
 .card-badge {
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 2px 9px;
+  border-radius: 999px;
   font-weight: 600;
+  font-family: var(--mono);
 }
-.badge-primary { background: rgba(125,164,247,0.2); color: var(--primary); }
-.badge-success { background: rgba(74,222,128,0.2); color: var(--success); }
-.badge-warning { background: rgba(250,204,21,0.2); color: var(--warning); }
-.badge-danger { background: rgba(248,113,113,0.2); color: var(--danger); }
+.badge-primary { background: rgba(240, 169, 59, 0.16); color: var(--primary); }
+.badge-success { background: rgba(70, 209, 154, 0.16); color: var(--success); }
+.badge-warning { background: rgba(239, 199, 94, 0.16); color: var(--warning); }
+.badge-danger { background: rgba(240, 113, 106, 0.16); color: var(--danger); }
 
 /* Metrics */
 .metric {
@@ -269,16 +309,16 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 .metric:last-child { border-bottom: none; }
 .metric-label { color: var(--text-dim); font-size: 12px; }
-.metric-value { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.metric-value { font-family: var(--mono); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* Progress bars */
 .progress-bar {
-  height: 6px;
-  background: rgba(255,255,255,0.08);
+  height: 5px;
+  background: rgba(255, 255, 255, 0.07);
   border-radius: 3px;
   overflow: hidden;
   margin-top: 4px;
@@ -301,12 +341,62 @@ body {
   height: 40px;
   border-radius: 50%;
   border: 2px solid var(--card-border);
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.4);
   transition: background-color 0.5s;
   display: inline-block;
   vertical-align: middle;
 }
 
-/* Phase indicator */
+/* The cognitive cycle rail in the header — the page's signature element.
+   PERCEIVE → EVALUATE → DECIDE → ACT → REFLECT is the one sequence in this
+   system where order genuinely carries meaning, so it is the one place that
+   gets sequential treatment. */
+.cycle-rail {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.cycle-step {
+  position: relative;
+  padding: 3px 12px 3px 0;
+  margin-right: 12px;
+  color: #5c6479;
+  transition: color 0.3s, text-shadow 0.3s;
+}
+.cycle-step::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 50%;
+  width: 10px;
+  height: 1px;
+  background: var(--card-border);
+}
+.cycle-step:last-child { margin-right: 0; padding-right: 0; }
+.cycle-step:last-child::after { display: none; }
+.cycle-step.active {
+  color: var(--primary);
+  text-shadow: 0 0 12px rgba(240, 169, 59, 0.55);
+}
+/* The rail already names the phase, so the plain text is a duplicate whenever
+   the rail is on screen. It stays in the DOM for the narrow layout, where the
+   rail does not fit. */
+.cycle-current {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  display: none;
+}
+@media (max-width: 1100px) {
+  .cycle-rail { display: none; }
+  .cycle-current { display: block; }
+}
+
+/* Phase indicator — the cognitive cycle */
 .phase-indicator {
   display: flex;
   gap: 4px;
@@ -316,10 +406,13 @@ body {
   flex: 1;
   height: 4px;
   border-radius: 2px;
-  background: rgba(255,255,255,0.08);
-  transition: background-color 0.3s;
+  background: rgba(255, 255, 255, 0.08);
+  transition: background-color 0.3s, box-shadow 0.3s;
 }
-.phase-step.active { background: var(--primary); }
+.phase-step.active {
+  background: var(--primary);
+  box-shadow: 0 0 8px rgba(240, 169, 59, 0.7);
+}
 
 /* Event log */
 .event-log {
@@ -347,8 +440,9 @@ body {
   min-height: 300px;
   overflow-y: auto;
   padding: 8px;
-  background: rgba(0,0,0,0.2);
-  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
   margin-bottom: 8px;
   font-size: 13px;
 }
@@ -357,18 +451,18 @@ body {
 .chat-msg {
   padding: 6px 10px;
   margin-bottom: 6px;
-  border-radius: 6px;
+  border-radius: 8px;
   max-width: 85%;
   line-height: 1.4;
 }
 .chat-msg.user {
-  background: rgba(125,164,247,0.15);
-  border: 1px solid rgba(125,164,247,0.3);
+  background: rgba(240, 169, 59, 0.12);
+  border: 1px solid rgba(240, 169, 59, 0.3);
   margin-left: auto;
 }
 .chat-msg.aegis {
-  background: rgba(74,222,128,0.1);
-  border: 1px solid rgba(74,222,128,0.2);
+  background: rgba(70, 209, 154, 0.08);
+  border: 1px solid rgba(70, 209, 154, 0.2);
 }
 .chat-msg .provider-tag {
   font-size: 10px;
@@ -382,7 +476,7 @@ body {
 .chat-input {
   flex: 1;
   padding: 8px 12px;
-  background: rgba(0,0,0,0.3);
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid var(--card-border);
   border-radius: 6px;
   color: var(--text);
@@ -398,17 +492,17 @@ body {
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
-  transition: all 0.2s;
+  transition: border-color 0.2s, background-color 0.2s;
 }
-.btn:hover { border-color: var(--primary); background: rgba(125,164,247,0.1); }
-.btn-primary { background: var(--primary); color: #0e1117; border-color: var(--primary); font-weight: 600; }
-.btn-primary:hover { background: #5b8cee; }
+.btn:hover { border-color: var(--primary); background: rgba(240, 169, 59, 0.1); }
+.btn-primary { background: var(--primary); color: #0a0d16; border-color: var(--primary); font-weight: 600; }
+.btn-primary:hover { background: #ffc35e; }
 
 /* LLM config */
 .llm-input {
   width: 100%;
   padding: 6px 10px;
-  background: rgba(0,0,0,0.3);
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid var(--card-border);
   border-radius: 4px;
   color: var(--text);
@@ -431,12 +525,12 @@ body {
   cursor: pointer;
   font-size: 11px;
 }
-.provider-btn.active { background: var(--primary); color: #0e1117; border-color: var(--primary); font-weight: 600; }
+.provider-btn.active { background: var(--primary); color: #0a0d16; border-color: var(--primary); font-weight: 600; }
 
 /* Archetype cards */
 .arch-card {
-  background: rgba(0,0,0,0.2);
-  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 8px;
   padding: 10px;
   margin-bottom: 8px;
 }
@@ -467,7 +561,7 @@ body {
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  transition: all 0.2s;
+  transition: border-color 0.2s, background-color 0.2s;
 }
 .mic-btn.recording {
   background: var(--danger);
@@ -478,15 +572,15 @@ body {
 .mic-btn:hover { border-color: var(--primary); }
 
 /* Scrollbar global */
-::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
 
 /* Dream card */
 .dream-item {
-  background: rgba(192, 132, 252, 0.08);
-  border: 1px solid rgba(192, 132, 252, 0.2);
-  border-radius: 6px;
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid rgba(167, 139, 250, 0.2);
+  border-radius: 8px;
   padding: 8px 10px;
   margin-bottom: 6px;
   font-size: 12px;
@@ -496,9 +590,11 @@ body {
 /* Big metric */
 .big-metric {
   font-family: var(--mono);
-  font-size: 28px;
+  font-size: 30px;
   font-weight: 700;
   color: var(--primary);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 18px rgba(240, 169, 59, 0.25);
 }
 .big-metric-label {
   font-size: 11px;
@@ -516,13 +612,17 @@ body {
 .emotion-pill {
   font-size: 10px;
   padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(125,164,247,0.15);
+  border-radius: 999px;
+  background: rgba(240, 169, 59, 0.12);
   color: var(--primary);
-  border: 1px solid rgba(125,164,247,0.3);
+  border: 1px solid rgba(240, 169, 59, 0.3);
 }
 
 .full-width { grid-column: 1 / -1; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
 </style>
 </head>
 <body>
@@ -538,7 +638,19 @@ body {
       <div class="dot dot-green" id="statusDot"></div>
       <span id="statusText">ONLINE</span>
     </div>
-    <div id="phaseText" style="font-size:12px;color:var(--text-dim)">idle</div>
+    <!-- The cognitive cycle, always visible. Every panel in this dashboard is a
+         reading taken somewhere along this loop, so the loop itself is the one
+         thing that belongs in the frame at all times rather than inside a card
+         on one tab. The steps carry the same data-phase attributes as the
+         Overview indicator, so the existing tick handler lights them too. -->
+    <div class="cycle-rail" aria-label="cognitive cycle phase">
+      <span class="cycle-step" data-phase="perceive">perceive</span>
+      <span class="cycle-step" data-phase="evaluate">evaluate</span>
+      <span class="cycle-step" data-phase="decide">decide</span>
+      <span class="cycle-step" data-phase="act">act</span>
+      <span class="cycle-step" data-phase="reflect">reflect</span>
+    </div>
+    <div id="phaseText" class="cycle-current">idle</div>
   </div>
   <div class="header-right">
     <div class="header-info">
@@ -1704,7 +1816,7 @@ function updateDashboard(d) {
     setText('statusText', 'ONLINE');
   }
 
-  document.querySelectorAll('.phase-step').forEach(el => {
+  document.querySelectorAll('.phase-step, .cycle-step').forEach(el => {
     el.classList.toggle('active', el.dataset.phase === s.cycle_phase);
   });
 

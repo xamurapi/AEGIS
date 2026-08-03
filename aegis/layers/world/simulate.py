@@ -110,7 +110,7 @@ class Simulator:
         """Best action sequence from ``state``, and what it is worth."""
         started = CLOCK.monotonic()
         depth = int(cfg.WM_DEPTH if depth is None else depth)
-        beam = int(cfg.WM_BEAM if beam is None else beam)
+        beam = max(1, int(cfg.WM_BEAM if beam is None else beam))
         gamma = float(self.discount if discount is None else discount)
         options = sorted({str(a) for a in (actions or [])})
 
@@ -136,14 +136,24 @@ class Simulator:
                 return 0.0
             stats["nodes"] += 1
 
+            # The beam, applied where it means something: below the first
+            # level, only the `beam` most promising actions at this node are
+            # expanded. This is what makes the docstring's "beam, not
+            # exhaustive" true — and what gives `plan_beam` the behavioural
+            # effect the genome contract requires. The harness charges fitness
+            # for a wide beam (harness.cost_of), and a parameter that costs
+            # fitness while changing nothing would simply be selected to its
+            # minimum, a decorative gene bought and never used.
             best = max(self._action_value(node, action, remaining, gamma, value_of)
-                       for action in options)
+                       for action in self._beam_actions(node, options, beam))
             memo[(node, remaining)] = best
             return best
 
-        # The first level is expanded explicitly so the chosen action, and the
-        # per-step breakdown a human reads, come out of the same computation
-        # that produced the number — not from a second, possibly different, pass.
+        # The first level is expanded explicitly — and in full, not through the
+        # beam — so the chosen action, and the per-step breakdown a human
+        # reads, come out of the same computation that produced the number, and
+        # so every offered action gets priced before one is picked. The beam
+        # prunes the lookahead beneath a choice, never the choice itself.
         scored = [(self._action_value(state_key, action, depth, gamma, value_of), action)
                   for action in options]
         scored.sort(key=lambda row: (-row[0], row[1]))
@@ -163,6 +173,24 @@ class Simulator:
         result.elapsed_ms = (CLOCK.monotonic() - started) * 1000
         self.last_elapsed_ms = result.elapsed_ms
         return result
+
+    def _beam_actions(self, node: str, options: list[str], beam: int) -> list[str]:
+        """The ``beam`` most promising actions at this node.
+
+        Ranked by immediate value: the search cannot know an action's future
+        worth without expanding it, and expanding everything to decide what
+        not to expand would be the exhaustive search the beam exists to avoid.
+        The price of that heuristic is real — an action that pays nothing now
+        and everything later can fall off a narrow beam — which is exactly why
+        the width is a gene worth evolving rather than a constant. Ties break
+        on the action name, so the pruning is deterministic (§3.1).
+        """
+        if beam >= len(options):
+            return options
+        ranked = sorted(options,
+                        key=lambda action: (-self.immediate_value(node, action),
+                                            action))
+        return ranked[:beam]
 
     def _action_value(self, node: str, action: str, remaining: int,
                       gamma: float, value_of) -> float:

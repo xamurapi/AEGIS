@@ -114,12 +114,36 @@ def test_only_active_non_axiom_goals_become_objectives():
                       _Goal("axiom_one", "active", "axiom")],
             "get_current_focus": staticmethod(lambda: None)})()
         cognitive_graph = type("C", (), {"related": staticmethod(lambda n: [])})()
-        meta_goals = type("M", (), {"goals": []})()
+        meta_goals = type("M", (), {"active_meta_goals": [], "generated_goals": []})()
 
     found = planner.collect_objectives(_Substrate())
     assert "live_one" in found
     assert "done_one" not in found          # completed goals are not pursued
     assert "axiom_one" not in found         # axioms are constraints, not tasks
+
+
+def test_planner_reads_meta_goals_from_a_real_generator():
+    """collect_objectives read ``meta_goals.goals`` — an attribute the real
+    MetaGoalGenerator never had (it exposes ``active_meta_goals`` and
+    ``generated_goals``). The AttributeError was swallowed by the defensive
+    try, so meta-goals never reached the shortlist. The fakes above cannot
+    catch that class of defect; only the real class can."""
+    from aegis.layers.meta_goal_generator import MetaGoalGenerator
+
+    planner = _planner(_Model())
+    meta = MetaGoalGenerator()
+    # learning_sessions < 5 triggers the knowledge_expansion domain.
+    generated = meta.generate_goals({"learning_sessions": 0})
+    assert generated, "the trigger context must actually produce a meta-goal"
+
+    class _Substrate:
+        goals = type("G", (), {"goals": [],
+                               "get_current_focus": staticmethod(lambda: None)})()
+        cognitive_graph = type("C", (), {"related": staticmethod(lambda n: [])})()
+        meta_goals = meta
+
+    found = planner.collect_objectives(_Substrate())
+    assert any(g["description"][:60] in found for g in meta.active_meta_goals)
 
 
 # ── risk: two sources, each with a fixed scale ───────────────────────
@@ -246,7 +270,7 @@ def test_planning_latency_is_elapsed_seconds_in_milliseconds(monkeypatch):
         goals = type("G", (), {"goals": [],
                                "get_current_focus": staticmethod(lambda: None)})()
         cognitive_graph = type("C", (), {"related": staticmethod(lambda n: [])})()
-        meta_goals = type("M", (), {"goals": []})()
+        meta_goals = type("M", (), {"active_meta_goals": [], "generated_goals": []})()
 
     planner.build(_Substrate(), _Ctx(), [_spec("rest")])
     assert planner.last_latency_ms == pytest.approx(500.0)

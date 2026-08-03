@@ -89,3 +89,16 @@ Feature: Thinking is a strategy, and a strategy is data
     Scenario: A strategy that wins its class by losing elsewhere is refused
       When a strategy that always abstains is judged for "missing_data"
       Then it should be refused for regressing the general benchmark
+
+  Rule: The benchmark is anchored outside the system it grades
+
+    The generator writes the prompt and the expected answer in one function, so
+    "the reasoner agrees with the bench" alone proves only that two pieces of
+    the same code share a convention. A table of tasks solved by hand from the
+    prompt text is the external fact the loop is graded against.
+
+    Scenario: Hand-solved answers agree with the generated benchmark
+      Then every hand-solved golden task should match its generated answer
+
+    Scenario: The verifier can say no on a golden task
+      Then every hand-solved golden task should reject a wrong answer

@@ -228,8 +228,13 @@ class AgentSystem:
 
     async def _execute_agent(self, agent: SpiderAgent) -> list[dict]:
         """Execute an agent's data collection task."""
+        # Match the blueprint by source_type, exactly as evolve() does when it
+        # creates replacements. Matching by name broke topic rotation for
+        # evolved agents: they are named "{blueprint}_vN", so the exact-name
+        # comparison never hit and the agent re-fetched its initial topic
+        # forever.
         for bp in AGENT_BLUEPRINTS:
-            if bp["name"] == agent.name and bp["topics"]:
+            if bp["source_type"] == agent.source_type and bp["topics"]:
                 agent.topic = self._rotate(bp["topics"])
                 break
 

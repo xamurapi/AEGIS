@@ -47,3 +47,73 @@ def test_version_bumps_on_apply():
     sandbox = sm.sandbox_test(proposal, current_metric=0.7)
     sm.apply_modification(proposal, sandbox)
     assert sm.current_version != before
+
+
+def test_proposal_ids_stay_unique_once_the_record_cap_is_reached():
+    """The id was derived from ``len(self.modifications)``, which _cap pins at
+    _MAX_RECORDS — so every proposal after the 200th was "mod_0200" and
+    rollbacks/sandbox results could no longer be matched to their proposal.
+    The id now comes from a monotonic counter, as CodeModifier's does."""
+    from aegis.layers.self_modification import _MAX_RECORDS
+
+    sm = SelfModification()
+    sm.modifications = [{"status": "applied"}] * _MAX_RECORDS  # list at the cap
+
+    first = sm.propose_modification("parametric", "temperature", 99.0)
+    sm.apply_modification(first, {"passed": False})   # recorded via _cap
+    second = sm.propose_modification("parametric", "temperature", 99.0)
+    assert first["id"] != second["id"]
+
+
+def test_weight_training_degradation_rollback_is_counted():
+    """WeightModifier reports degradation as "Training caused degradation —
+    rolled back" (with a SPACE) plus a structured ``rolled_back`` flag; the old
+    check looked for the substring "rolled_back", never matched, and
+    weight_mod_rollbacks stayed 0 forever."""
+    import asyncio
+    import types
+
+    sm = SelfModification()
+
+    async def _train(dataset_dir, ethics_approved=False):
+        # The exact shape WeightModifier._train_sync returns on degradation.
+        return {"success": False, "rolled_back": True,
+                "error": "Training caused degradation — rolled back",
+                "train_loss": 0.5, "val_loss": 5.0, "baseline_val_loss": 0.2}
+
+    sm.weight_modifier = types.SimpleNamespace(
+        can_train=lambda: (True, "Ready"), train=_train)
+    sm.dataset_builder = types.SimpleNamespace(
+        build_from_memory=lambda memory, agent_system, feedback_loop=None: {
+            "success": True, "total_size": 60, "dataset_dir": "datasets/d1"})
+    ethics = types.SimpleNamespace(
+        evaluate_action=lambda info: {"status": "approved", "score": 1.0})
+
+    record = asyncio.run(sm.propose_weight_modification(None, ethics_core=ethics))
+    assert record["status"] == "rolled_back"
+    assert sm.weight_mod_rollbacks == 1
+
+
+def test_weight_training_rollback_recognised_from_text_alone():
+    """Older-shaped results carry only the error text; the fallback must match
+    the words the trainer actually says, space and all."""
+    import asyncio
+    import types
+
+    sm = SelfModification()
+
+    async def _train(dataset_dir, ethics_approved=False):
+        return {"success": False,
+                "error": "Training caused degradation — rolled back"}
+
+    sm.weight_modifier = types.SimpleNamespace(
+        can_train=lambda: (True, "Ready"), train=_train)
+    sm.dataset_builder = types.SimpleNamespace(
+        build_from_memory=lambda memory, agent_system, feedback_loop=None: {
+            "success": True, "total_size": 60, "dataset_dir": "datasets/d1"})
+    ethics = types.SimpleNamespace(
+        evaluate_action=lambda info: {"status": "approved", "score": 1.0})
+
+    record = asyncio.run(sm.propose_weight_modification(None, ethics_core=ethics))
+    assert record["status"] == "rolled_back"
+    assert sm.weight_mod_rollbacks == 1

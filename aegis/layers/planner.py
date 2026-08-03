@@ -172,12 +172,23 @@ class Planner:
             logger.exception("Reading graph-related objectives failed")
 
         try:
-            for proposal in substrate.meta_goals.goals[-5:]:
+            # MetaGoalGenerator keeps its proposals on two attributes: the ones
+            # currently pursued (active_meta_goals) and the rolling history
+            # (generated_goals). This block used to read a `.goals` attribute
+            # that never existed, so the AttributeError was swallowed below and
+            # meta-goals silently never reached the shortlist. Prefer the
+            # active set; fall back to the history when it is empty.
+            meta = substrate.meta_goals
+            proposals = (list(getattr(meta, "active_meta_goals", None) or ())
+                         or list(getattr(meta, "generated_goals", None) or ()))
+            for proposal in proposals[-5:]:
                 name = proposal.get("name") or proposal.get("description", "")
                 if name:
                     found.add(str(name)[:60])
         except Exception:
-            logger.debug("No meta-goal proposals available", exc_info=True)
+            # logger.exception, not debug: a debug-level message is how the
+            # missing attribute above went unnoticed in the first place.
+            logger.exception("Reading meta-goal proposals failed")
 
         # Always keep the fallback: a system with no goals still has to decide
         # something, and "idle" is an honest answer rather than an empty one.

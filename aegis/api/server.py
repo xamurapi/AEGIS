@@ -3,6 +3,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -48,6 +49,18 @@ _SELF_AUTH_PATHS = (
     "/api/code-modifier/sources",
     "/api/code-modifier/analyze",
     "/api/code-modifier/read",
+)
+
+# The only mutating paths that stay reachable while the kill switch is active.
+# The kill switch itself must be operable (otherwise "deactivate" would be
+# refused by the very state it clears), and lockdown is a safety control that
+# only ever REDUCES what the system may do. Everything else that changes state
+# — parameter self-modification, LoRA training, benchmark/synthesis runs,
+# permission grants, backups — is refused: a stopped system that still rewrites
+# its own parameters is not stopped (audit: kill-switch bypass).
+_KILL_SWITCH_EXEMPT = (
+    "/api/kill-switch/",
+    "/api/self-preservation/lockdown/",
 )
 
 _LOOPBACK_WS_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -111,8 +124,19 @@ def _token_ok(provided: str | None) -> bool:
 
 @app.middleware("http")
 async def auth_middleware(request, call_next):
-    """Require X-API-Token on every state-changing request when a token is set."""
-    if cfg.API_TOKEN and request.method in _MUTATING_METHODS:
+    """Require X-API-Token on every /api request when a token is set.
+
+    Reads too, not only mutations: GET /api/status carries memory contents,
+    goals, ethics state and discovery data, and /api/events, /api/memory/* and
+    the CSV exports are just as sensitive. Gating only POSTs meant an operator
+    who followed network_exposure_warning's advice (bind 0.0.0.0 + set a token)
+    still served the system's full internal state to any network client
+    (audit: unauthenticated read exposure). The dashboard keeps working: its
+    fetch wrapper sends X-API-Token on every /api call and the WebSocket takes
+    ?token=... — see aegis/dashboard/index.html.
+    """
+    path = request.url.path
+    if cfg.API_TOKEN and path.startswith("/api"):
         if not _token_ok(request.headers.get("x-api-token")):
             return JSONResponse({"detail": "Invalid or missing X-API-Token"}, status_code=401)
     # Every /api handler dereferences the module-level `substrate`, which only
@@ -120,14 +144,28 @@ async def auth_middleware(request, call_next):
     # answers an opaque 500 (AttributeError on None) instead of saying the
     # runtime is not up yet (audit R3-10).
     #
-    # Routes in _SELF_AUTH_PATHS are GETs/POSTs that run their OWN token check
-    # (the middleware only gates mutating methods), so they must be allowed to
-    # answer 401 first — an unauthenticated caller must never be able to tell
-    # runtime state apart from a rejected request.
-    path = request.url.path
+    # Routes in _SELF_AUTH_PATHS run their OWN token check too, and they must
+    # answer 401 before the 503 below — an unauthenticated caller must never be
+    # able to tell runtime state apart from a rejected request. The token gate
+    # above already fires first, so that ordering holds.
     if (substrate is None and path.startswith("/api")
             and not path.startswith(_SELF_AUTH_PATHS)):
         return JSONResponse({"detail": "AEGIS runtime is not started"}, status_code=503)
+    # The kill switch halts EVERY state-changing action, not just the three
+    # endpoints that used to call _kill_switch_guard(). Before this gate,
+    # POST /api/self-mod/propose and /api/weight-training/train ran normally
+    # after /api/kill-switch/activate — the ethics evaluate_action path never
+    # consults kill_switch_active (only veto_check does, and parameter mutation
+    # never crosses the event bus), so an "emergency-stopped" system would
+    # still rewrite its parameters and start LoRA runs. Enforced centrally here
+    # because a per-endpoint guard is exactly the pattern that already missed
+    # six endpoints once.
+    if (request.method in _MUTATING_METHODS and substrate is not None
+            and getattr(getattr(substrate, "ethics", None),
+                        "kill_switch_active", False)
+            and path.startswith("/api")
+            and not path.startswith(_KILL_SWITCH_EXEMPT)):
+        return JSONResponse({"error": "kill switch is active"}, status_code=423)
     return await call_next(request)
 
 
@@ -182,14 +220,59 @@ async def evaluate_action(action: dict):
     return result
 
 
+# Levels the goal engine actually knows. Anything else would sort as 99 in
+# resolve_conflict and silently lose every priority contest.
+_GOAL_LEVELS = ("axiom", "strategy", "tactic", "curiosity")
+
+
 @app.post("/api/goals/add")
 async def add_goal(goal: dict):
+    """Add an operator goal — after validating EVERY field.
+
+    The goal lands in LIVE state that the tick loop reads on every cycle:
+    a non-numeric ``priority`` used to pass straight into ``Goal(...)``, and
+    the first ``get_current_focus()`` after that raised TypeError — which
+    aborted perceive on every subsequent tick AND broke /api/status, the WS
+    broadcast and checkpointing until restart. One malformed request was a
+    permanent denial of cognition, so nothing unvalidated may touch the
+    engine (audit: goals/add poisoning).
+    """
     from aegis.layers.goal_engine import Goal
+
+    def _reject(reason: str):
+        return JSONResponse({"error": reason}, status_code=400)
+
+    name = goal.get("name", "custom_goal")
+    description = goal.get("description", "Custom goal")
+    if not isinstance(name, str) or not name.strip():
+        return _reject("'name' must be a non-empty string")
+    if not isinstance(description, str):
+        return _reject("'description' must be a string")
+
+    level = goal.get("level", "tactic")
+    if level not in _GOAL_LEVELS:
+        return _reject(f"'level' must be one of {list(_GOAL_LEVELS)}")
+
+    # Coerce, then bound: the engine multiplies priority into every focus
+    # ranking, so it must be a finite number in [0, 1] — "high" or NaN would
+    # poison max() comparisons for the life of the process.
+    try:
+        priority = float(goal.get("priority", 0.5))
+    except (TypeError, ValueError):
+        return _reject("'priority' must be a number between 0 and 1")
+    if not math.isfinite(priority) or not 0.0 <= priority <= 1.0:
+        return _reject("'priority' must be a finite number between 0 and 1")
+
+    parent = goal.get("parent")
+    if parent is not None and not isinstance(parent, str):
+        return _reject("'parent' must be a goal id string or omitted")
+
     g = Goal(
-        name=goal.get("name", "custom_goal"),
-        level=goal.get("level", "tactic"),
-        description=goal.get("description", "Custom goal"),
-        priority=goal.get("priority", 0.5),
+        name=name.strip(),
+        level=level,
+        description=description,
+        priority=priority,
+        parent=parent,
     )
     g.reasoning = "Manually added by operator"
     substrate.goals.goals.append(g)

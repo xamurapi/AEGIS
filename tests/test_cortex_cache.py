@@ -217,6 +217,55 @@ def test_a_failed_call_is_not_cached(frozen):
     assert len(cache) == 0
 
 
+def test_an_empty_ok_completion_is_not_cached(frozen):
+    """A server that answers ok/null-content (length truncation, a content
+    filter) used to poison the cache for the whole TTL — persisted across
+    restarts: the role was silently dead for an hour, failover never ran and
+    the breaker recorded nothing. Empty text must never be stored."""
+    provider = ScriptedProvider("a", responses=["", "real answer"])
+    cache = ResponseCache(None, ttl=0)
+    cortex = Cortex(providers={"a": provider}, routes={"fast": ["a"]}, cache=cache)
+    messages = [{"role": "user", "content": "q"}]
+
+    first = _run(cortex.call(Role.FAST, messages))
+    assert first.ok and first.text == ""            # the reply itself passes through
+    assert len(cache) == 0                          # but is not remembered
+
+    second = _run(cortex.call(Role.FAST, messages))
+    assert second.text == "real answer"             # the chain really re-ran
+    assert second.cached is False
+    assert len(provider.invocations) == 2
+
+
+def test_a_whitespace_only_completion_is_not_cached(frozen):
+    provider = ScriptedProvider("a", responses=["  \n ", "real"])
+    cache = ResponseCache(None, ttl=0)
+    cortex = Cortex(providers={"a": provider}, routes={"fast": ["a"]}, cache=cache)
+    messages = [{"role": "user", "content": "q"}]
+    _run(cortex.call(Role.FAST, messages))
+    assert len(cache) == 0
+    assert _run(cortex.call(Role.FAST, messages)).text == "real"
+
+
+def test_a_poisoned_persisted_empty_entry_is_not_served(frozen):
+    """Caches written by the buggy build survive on disk. An empty entry that
+    is already there must be skipped, not replayed for the rest of its TTL."""
+    from aegis.cortex.cache import cache_key
+
+    provider = ScriptedProvider("a", responses=["real"])
+    cache = ResponseCache(None, ttl=0)
+    cortex = Cortex(providers={"a": provider}, routes={"fast": ["a"]}, cache=cache)
+    messages = [{"role": "user", "content": "q"}]
+    params = cortex.params_for(Role.FAST)
+    key = cache_key("a", provider.model, messages, params.cache_key_part())
+    cache.put(key, _entry(text="", stored_at=frozen.now()))
+
+    completion = _run(cortex.call(Role.FAST, messages))
+    assert completion.text == "real"
+    assert completion.cached is False
+    assert len(provider.invocations) == 1
+
+
 def test_a_cached_call_costs_no_provider_call_charge(frozen):
     from tests.cortex_fakes import FakeLease, FakeResources
     resources = FakeResources()

@@ -60,16 +60,81 @@ def test_every_task_carries_a_programmatic_verifier():
         assert task.verify(task.expected)
 
 
+# Hand-solved from the prompt TEXT, not from the generator's arithmetic. This
+# is the external anchor the whole family lacked: `reference_answer` returns
+# `task.expected` by construction, so any test comparing the two is a
+# tautology, and the self-improvement loops are graded on these answers. A
+# generator that misread its own prompt ("subtract 7" applied as +7, a clue
+# attributed to the wrong person) passes every reflexive check and only this
+# table catches it. Prompts are pinned verbatim so a wording drift that
+# changes the meaning fails here rather than silently rescoring the bench.
+GOLDEN_REASONING = [
+    ("reason_arith_0",
+     "start with 4, then multiply by 7, then multiply by 12, then add 3, "
+     "then subtract 7. What is the result?",
+     332),   # 4·7=28, ·12=336, +3=339, −7=332
+    ("reason_arith_2",
+     "start with 15, then add 4, then multiply by 3, then add 12, then add 4. "
+     "What is the result?",
+     73),    # 15+4=19, ·3=57, +12=69, +4=73
+    ("reason_arith_4",
+     "start with 36, then add 12, then subtract some amount. "
+     "What is the result?",
+     ABSTAIN),  # an operand is unstated — the only honest answer
+    ("reason_constraint_0",
+     "Ada, Bo and Cy each carry one of a crate, a barrel and a sack. "
+     "Ada does not carry the barrel or the sack. Bo does not carry the sack. "
+     "What does Cy carry?",
+     "sack"),   # Ada→crate (only option left), Bo→barrel, so Cy→sack
+    ("reason_constraint_3",
+     "Di, Eli and Fay each carry one of a barrel, a sack and a tin. "
+     "Di does not carry the sack or the tin. Eli does not carry the tin. "
+     "What does Fay carry?",
+     "tin"),    # Di→barrel, Eli→sack, so Fay→tin
+]
+
+
+@pytest.mark.parametrize("task_id,prompt,answer", GOLDEN_REASONING)
+def test_golden_hand_solved_answers_pin_the_bench(task_id, prompt, answer):
+    family, index = ("arithmetic_chain", int(task_id.rsplit("_", 1)[1])) \
+        if "arith" in task_id else \
+        ("constraint_puzzle", int(task_id.rsplit("_", 1)[1]))
+    task = bench.build_family(family, index + 1, start=index)[0]
+    assert task.id == task_id
+    assert task.prompt == prompt
+    assert task.expected == answer
+    # The verifier judged against the HAND answer, not its own: it must accept
+    # the hand answer with realistic formatting noise and reject a near miss.
+    assert task.verify(answer)
+    if answer == ABSTAIN:
+        assert task.verify("not enough information")
+        assert not task.verify(48)          # 36+12, the trap of ignoring the gap
+    elif isinstance(answer, int):
+        assert task.verify(f"  {answer} ")
+        assert not task.verify(answer - 1)
+    else:
+        assert task.verify(answer.upper() + " ")
+        assert not task.verify("crate")
+
+
 def test_every_task_carries_the_features_a_weakness_is_described_along():
     for index in range(64):
         features = bench.build(index).features
         assert "steps" in features and "numeric" in features
 
 
-def test_the_reference_answer_is_the_expected_answer():
-    for index in range(32):
-        task = bench.build(index)
-        assert bench.reference_answer(task) == task.expected
+def test_the_reference_answer_is_graded_by_the_golden_table():
+    """`reference_answer` returns `task.expected` by construction, so comparing
+    the two would assert nothing. Grading it against the hand-solved table is
+    the version of this test that can actually fail."""
+    answers = {task_id: answer for task_id, _, answer in GOLDEN_REASONING}
+    checked = 0
+    for family in ("arithmetic_chain", "constraint_puzzle"):
+        for task in bench.build_family(family, 8):
+            if task.id in answers:
+                assert bench.reference_answer(task) == answers[task.id]
+                checked += 1
+    assert checked == len(GOLDEN_REASONING)
 
 
 def test_the_splits_are_disjoint():
@@ -159,6 +224,18 @@ def test_a_broken_rule_chain_expects_an_abstention():
     assert broken and all(task.expected == ABSTAIN for task in broken)
 
 
+def test_a_rule_chain_is_broken_one_time_in_three_not_two():
+    """The docstring promises one case in three; the draw used to deliver two
+    in three (both non-zero values of a three-way hash removed a link). At 2/3
+    broken plus 100% on missing_data, an always-abstain strategy outscored
+    actual reasoning and skewed strategy selection toward abstention. Same
+    bounds as the arithmetic_chain mix test — the family this one is meant
+    to mirror."""
+    tasks = bench.build_family("rule_chain", 300)
+    fraction = sum(1 for task in tasks if task.features["incomplete"]) / len(tasks)
+    assert 0.15 < fraction < 0.55, fraction
+
+
 def test_missing_data_expects_an_abstention():
     for index in range(16):
         assert bench.build_family("missing_data", 1, start=index)[0].expected == ABSTAIN
@@ -204,6 +281,37 @@ def test_one_is_not_yes():
 def test_a_number_that_is_merely_close_is_not_the_answer():
     task = bench.build_family("grid_planning", 1)[0]
     assert not task.verify(task.expected + 1)
+
+
+def test_a_tiny_expected_value_is_not_verified_by_absolute_slack():
+    """mm->km conversions produce expected values down to 2e-6. The old flat
+    ``abs(diff) < 1e-6`` accepted answers wrong by up to 50% there — the
+    tolerance has to be RELATIVE to the answer it judges."""
+    task = bench.ReasoningTask(id="t", family="unit_conversion",
+                               prompt="A rope is 2 mm long. How many km is that?",
+                               expected=2e-06)
+    assert task.verify(2e-06)
+    assert not task.verify(2.9e-06)                  # wrong by 45% — used to pass
+    assert not task.verify(1.1e-06)                  # wrong by 45% — used to pass
+    assert task.verify(2e-06 * (1 + 1e-9))           # float noise still fine
+
+
+def test_a_real_generated_conversion_rejects_absolute_slack_answers():
+    """The same property on a task the generator actually built: an answer off
+    by 9e-7 — inside the old flat slack — is a >0.9% error on any expected
+    value below 1e-4 and must not verify."""
+    task = next(item for item in bench.build_family("unit_conversion", 400)
+                if isinstance(item.expected, float) and item.expected < 1e-4)
+    assert task.verify(task.expected)
+    assert not task.verify(task.expected + 9e-07)    # used to pass
+    assert not task.verify(task.expected - 9e-07)    # used to pass
+
+
+def test_the_relative_tolerance_keeps_ordinary_float_noise_acceptable():
+    task = bench.build_family("grid_planning", 1)[0]
+    expected = float(task.expected)
+    assert task.verify(expected * (1 + 1e-9))
+    assert not task.verify(expected * 1.01)
 
 
 def test_an_answer_that_cannot_even_be_compared_is_wrong_not_an_error():

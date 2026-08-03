@@ -91,6 +91,72 @@ def test_without_a_bonus_the_known_option_wins():
         == "known"
 
 
+# ── the beam ─────────────────────────────────────────────────────────
+
+def test_the_beam_width_actually_changes_the_search():
+    """`plan_beam` flows Planner.beam → rollout(beam=...) and the fitness
+    harness *charges* for a wide beam (harness.cost_of), so a beam parameter
+    with no behavioural effect would be evolved straight to its minimum — a
+    decorative gene, which genome.py's own contract forbids. The regression:
+    below the first level, only the `beam` most immediately promising actions
+    may be expanded, so a narrow beam must miss a payoff that hides behind an
+    action that pays nothing now.
+
+    Hand-built models rather than the taught ones: the real transition and
+    outcome models back off to aggregate statistics for unseen states, which
+    quietly gives a "barren" node a future and makes the trap unbuildable.
+    """
+    from types import SimpleNamespace
+
+    rewards = {("s", "lure"): 0.6, ("s", "gold"): 0.5,
+               ("m", "lure"): 0.6, ("m", "gold"): 0.0,
+               ("jack", "lure"): 1.0, ("jack", "gold"): 1.0}
+    table = {("s", "lure"): [("m", 1.0)], ("s", "gold"): [("d", 1.0)],
+             ("m", "lure"): [("dead", 1.0)], ("m", "gold"): [("jack", 1.0)]}
+
+    class _Outcomes:
+        def predict(self, node, action):
+            return SimpleNamespace(
+                p_success=1.0, p_success_pessimistic=1.0,
+                expected_reward=rewards.get((node, action), 0.0),
+                reward_sd=0.0, expected_cost=0.0, known=1.0)
+
+    class _Transitions:
+        def top_next(self, node, action, k):
+            return table.get((node, action), [])[:k]
+
+    simulator = Simulator(_Transitions(), _Outcomes(), explore_bonus=0.0,
+                          discount=0.9, branch=3)
+    # The trap sits at m: "lure" pays now and leads nowhere, "gold" pays
+    # nothing now and unlocks the rich state — invisible to a beam of one,
+    # because the beam ranks by immediate value.
+    narrow = simulator.rollout("s", ["gold", "lure"], depth=3, beam=1)
+    wide = simulator.rollout("s", ["gold", "lure"], depth=3, beam=2)
+
+    # The wide beam sees the payoff behind the barren step; the narrow one
+    # pruned it away. (Node counts are not compared: the trace pass prices
+    # every option at each step for the human-readable breakdown, so both
+    # searches end up touching the same nodes — the *values* are where the
+    # beam shows.)
+    assert narrow.value == pytest.approx(0.6 + 0.9 * 0.6)          # 1.14
+    assert wide.value == pytest.approx(0.6 + 0.9 * (0.9 * 1.0))    # 1.41
+    assert wide.value > narrow.value
+
+
+def test_the_beam_prunes_below_the_first_level_not_at_it():
+    """Every offered action is priced at the root even under a beam of one:
+    the beam bounds the lookahead beneath a choice, not the choice itself. A
+    root pruned by immediate value would drop "invest" — the barren step to
+    the rich state — before ever pricing its future."""
+    transitions, outcomes, simulator = build()
+    teach(transitions, outcomes, state("s"), "invest", state("rich"), reward=0.0)
+    teach(transitions, outcomes, state("s"), "nibble", state("s"), reward=0.2)
+    teach(transitions, outcomes, state("rich"), "invest", state("rich"), reward=1.0)
+    teach(transitions, outcomes, state("rich"), "nibble", state("rich"), reward=1.0)
+    result = simulator.rollout(state("s"), ["invest", "nibble"], depth=3, beam=1)
+    assert result.sequence[0] == "invest"
+
+
 # ── determinism (§3.1) ───────────────────────────────────────────────
 
 def test_the_same_question_gives_the_same_answer():

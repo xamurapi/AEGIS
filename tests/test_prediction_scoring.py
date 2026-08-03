@@ -326,6 +326,35 @@ def test_reading_a_missing_log_is_empty(tmp_path, frozen):
     assert PredictionScorer(store_path=tmp_path / "absent.jsonl").recent() == []
 
 
+def test_recent_serves_from_memory_not_from_the_log(tmp_path, frozen):
+    """The in-memory buffer is the source; the log is only the fallback.
+
+    `recent` was defined twice, and the later (disk-only) definition shadowed
+    the in-memory one — so every dashboard poll re-read the JSONL tail, the
+    exact IO the buffer exists to avoid. Deleting the log after a closure
+    proves which copy answers: the process already has the data.
+    """
+    path = tmp_path / "predictions.jsonl"
+    logged = PredictionScorer(store_path=path)
+    prediction = forecast(logged)
+    logged.score(prediction.id, True, 0.5, "next")
+    path.unlink()                       # the disk copy is gone
+    rows = logged.recent(5)
+    assert len(rows) == 1
+    assert rows[0]["id"] == prediction.id
+
+
+def test_recent_works_without_a_store_path(frozen):
+    """With store_path=None the closures still happened; the shadowed disk-only
+    `recent` returned [] for them, which made the panel of a diskless scorer
+    permanently empty."""
+    scorer = PredictionScorer(store_path=None)
+    prediction = forecast(scorer)
+    scorer.score(prediction.id, True, 0.5, "next")
+    rows = scorer.recent()
+    assert len(rows) == 1 and rows[0]["score"]["success"] is True
+
+
 def test_a_forecast_round_trips_through_its_dict_form():
     original = Prediction(id="p", tick=3, state="s", action="a", p_success=0.6,
                           expected_reward=0.4, reward_sd=0.1,

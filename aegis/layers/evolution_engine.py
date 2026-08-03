@@ -77,6 +77,12 @@ class EvolutionEngine:
         self.previous_champion: dict | None = None
         self.promoted_at_tick: int | None = None
         self.metric_at_promotion: float | None = None
+        #: The most recent live reading, whether or not a watch is running.
+        #: This is what makes a promotion's baseline the metric *before* the
+        #: promotion: a baseline taken from the first reading after it lets a
+        #: genome that degrades the metric immediately set its own damage as
+        #: the reference and never trip the rollback.
+        self._last_live_metric: float | None = None
         self._load()
 
     # ── persistence ──────────────────────────────────────────────────
@@ -93,8 +99,14 @@ class EvolutionEngine:
         self.champion = self._migrate_champion(data.get("champion"))
         # A v1 candidate cannot be finished under v2 rules — its genome is the
         # old schema and the benchmark that would have judged it is gone — so it
-        # is dropped rather than half-played (Appendix I).
-        self.candidate = None
+        # is dropped rather than half-played (Appendix I). A *v2* candidate is a
+        # different matter: its genome is the current schema and its benchmark
+        # is still coming, and dropping it here made the restart guard in
+        # `Substrate._restore_checkpoint` unreachable — the checkpointed genome
+        # (the unjudged mutation) was silently adopted as the running baseline
+        # on every restart while the champion record still held the old one.
+        self.candidate = self._migrate_candidate(data.get("candidate"),
+                                                 data.get("schema_version"))
         self.generation = data.get("generation", 0)
         self.accepted = data.get("accepted", 0)
         self.rejected = data.get("rejected", 0)
@@ -104,6 +116,23 @@ class EvolutionEngine:
         self._param_idx = data.get("param_idx", 0)
         self._direction_up = data.get("direction_up", True)
         self.previous_champion = self._migrate_champion(data.get("previous_champion"))
+        # The watch fields travel with previous_champion. Restoring the one
+        # without the others meant any restart inside the watch window disabled
+        # the rollback for good: `watch` saw promoted_at_tick=None and returned
+        # None forever, while the badly behaved champion stayed in place.
+        if self.previous_champion is not None:
+            try:
+                stored_tick = data.get("promoted_at_tick")
+                self.promoted_at_tick = (int(stored_tick)
+                                         if stored_tick is not None else None)
+            except (TypeError, ValueError):
+                self.promoted_at_tick = None
+            try:
+                stored_metric = data.get("metric_at_promotion")
+                self.metric_at_promotion = (float(stored_metric)
+                                            if stored_metric is not None else None)
+            except (TypeError, ValueError):
+                self.metric_at_promotion = None
         self.archive = NoveltyArchive.from_dict(data.get("archive"))
         self.population = Population(self.archive)
 
@@ -127,11 +156,47 @@ class EvolutionEngine:
                 "generation": int(stored.get("generation", 0) or 0),
                 "created": float(stored.get("created", 0.0) or 0.0)}
 
+    @staticmethod
+    def _migrate_candidate(stored: dict | None, schema_version) -> dict | None:
+        """Bring a stored pending candidate back, if it can still be judged.
+
+        Only a v2 candidate qualifies: it was written in the current genome
+        schema and its verdict — the next benchmark — is still meaningful. A v1
+        candidate stays dropped, for the reason `_load` gives. Anything
+        malformed is dropped too, because a candidate that cannot be read
+        cannot be reverted either.
+        """
+        if not isinstance(stored, dict):
+            return None
+        try:
+            version = int(schema_version or 1)
+        except (TypeError, ValueError):
+            version = 1
+        if version < 2:
+            return None
+        param = stored.get("mutated_param")
+        if param not in GENE_NAMES:
+            return None
+        return {
+            "genome": Genome(stored.get("genome")).to_dict(),
+            "mutated_param": str(param),
+            "old_value": stored.get("old_value"),
+            "new_value": stored.get("new_value"),
+            "proposed_at_tick": int(stored.get("proposed_at_tick", 0) or 0),
+            "created": float(stored.get("created", 0.0) or 0.0),
+        }
+
     def save(self):
         data = {
             "schema_version": 2,
             "champion": self.champion,
             "previous_champion": self.previous_champion,
+            # The watch fields are persisted with the champion they describe:
+            # without them a restart inside the watch window kept the previous
+            # champion but lost when and against what it was being compared,
+            # and the rollback was permanently disarmed.
+            "promoted_at_tick": self.promoted_at_tick,
+            "metric_at_promotion": self.metric_at_promotion,
             "candidate": self.candidate,
             "generation": self.generation,
             "accepted": self.accepted,
@@ -370,25 +435,35 @@ class EvolutionEngine:
         self.champion = champion
         self.promotions += 1
         self.promoted_at_tick = int(tick or 0)
-        self.metric_at_promotion = None
+        # The baseline is the live metric BEFORE the promotion. Waiting for the
+        # first reading after it would let a champion that degrades the metric
+        # immediately measure the drop against its own degraded value — the
+        # most common failure mode is exactly the one such a watch misses.
+        # When no reading has been seen yet (a fresh engine, the unit tests),
+        # the first post-promotion reading still serves as the fallback.
+        self.metric_at_promotion = self._last_live_metric
 
     def watch(self, tick: int, live_metric: float | None) -> dict | None:
         """Check a freshly promoted champion against the live world (§M5.6).
 
         A genome that scores well on a benchmark can still behave badly in the
-        system it was promoted into. The first live reading after promotion is
-        the baseline; a fall of more than ``EVO_ROLLBACK_DELTA`` within
-        ``EVO_WATCH_TICKS`` puts the previous champion back.
+        system it was promoted into. The baseline is the last live reading
+        *before* the promotion (kept by this method across calls); a fall of
+        more than ``EVO_ROLLBACK_DELTA`` within ``EVO_WATCH_TICKS`` puts the
+        previous champion back.
 
         Returns the rollback record, or None if nothing happened.
         """
-        if self.previous_champion is None or self.promoted_at_tick is None:
-            return None
         if live_metric is None:
             return None
         try:
             live_metric = float(live_metric)
         except (TypeError, ValueError):
+            return None
+        # Remembered even while no watch is running — this reading is the
+        # baseline of whatever promotion happens next.
+        self._last_live_metric = live_metric
+        if self.previous_champion is None or self.promoted_at_tick is None:
             return None
 
         elapsed = int(tick) - int(self.promoted_at_tick)
@@ -414,6 +489,7 @@ class EvolutionEngine:
             "generation": self.generation,
             "decision": "rolled_back",
             "drop": round(drop, 6),
+            "baseline": round(self.metric_at_promotion, 6),
             "at_tick": int(tick),
             "restored_fitness": restored.get("fitness"),
             "time": CLOCK.now(),
@@ -426,6 +502,35 @@ class EvolutionEngine:
         self._append_lineage(record)
         self.save()
         logger.info("Rolled back a champion after a live drop of %.4f", drop)
+        return record
+
+    def refuse_promotion(self, reason: str) -> dict | None:
+        """Withdraw a promotion the caller's safety pipeline refused to apply.
+
+        §M5.6 routes the application of a champion through
+        ``is_modification_safe`` and ``evaluate_action`` like any other change.
+        When those gates say no, the previous champion has to come back —
+        leaving a genome that safety refused as the champion would let it seed
+        every future generation while never actually running.
+        """
+        if self.previous_champion is None:
+            return None
+        restored = self.previous_champion
+        record = {
+            "generation": self.generation,
+            "decision": "promotion_refused",
+            "reason": str(reason),
+            "restored_fitness": restored.get("fitness"),
+            "time": CLOCK.now(),
+        }
+        self.champion = restored
+        self.previous_champion = None
+        self.promoted_at_tick = None
+        self.metric_at_promotion = None
+        self._append_lineage(record)
+        self.save()
+        logger.warning("A promoted champion was refused by the safety "
+                       "pipeline: %s", reason)
         return record
 
     def _append_lineage(self, record: dict) -> None:

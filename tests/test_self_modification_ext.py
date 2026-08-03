@@ -242,9 +242,14 @@ def test_weight_mod_train_failure():
 
 
 def test_weight_mod_train_rolled_back():
+    # The fake mirrors what WeightModifier actually returns on degradation:
+    # a structured rolled_back flag plus text that says "rolled back" with a
+    # space. The previous fake said "rolled_back", which matched the buggy
+    # substring check but no string the real trainer ever produced.
     sm = SelfModification()
     sm.weight_modifier = FakeWeightModifier(
-        train_result={"success": False, "error": "degraded — rolled_back to base"})
+        train_result={"success": False, "rolled_back": True,
+                      "error": "Training caused degradation — rolled back"})
     sm.dataset_builder = FakeDatasetBuilder()
     res = asyncio.run(sm.propose_weight_modification(
         memory={}, ethics_core=FakeEthics()))

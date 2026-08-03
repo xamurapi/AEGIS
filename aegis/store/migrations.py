@@ -107,8 +107,23 @@ def _v1_to_v2_evolution(data: dict) -> dict:
 
 
 # (store name, from_version) -> migration
+#
+# The names here MUST be the names the loaders actually pass to `read_store` —
+# a migration registered under a name nothing reads with is dead code that
+# looks like coverage. The world model's predictive tables read under
+# "wm_transitions"/"wm_outcomes"/"wm_calibration", so the old single
+# ("world_model", 1) entry could never fire for them; they are registered under
+# their real names below (those stores were born at v2, so their v1 step is a
+# passthrough for pre-spec files that carried no version stamp).
+# ("world_model", 1) itself describes the causal links file
+# (data/world_model/model.json); its loader (aegis/layers/world/causal.py)
+# still reads raw JSON tolerantly and does not route through read_store yet —
+# the entry is kept so the migration is in place the day it does.
 MIGRATIONS: dict[tuple[str, int], Callable[[dict], dict]] = {
     ("world_model", 1): _v1_to_v2_world_model,
+    ("wm_transitions", 1): _v1_to_v2_passthrough,
+    ("wm_outcomes", 1): _v1_to_v2_passthrough,
+    ("wm_calibration", 1): _v1_to_v2_passthrough,
     ("evolution", 1): _v1_to_v2_evolution,
     ("checkpoint", 1): _v1_to_v2_passthrough,
     ("goal_intelligence", 1): _v1_to_v2_passthrough,

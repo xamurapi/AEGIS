@@ -121,8 +121,12 @@ def test_graph_neighbours_and_meta_goals_become_objectives(world):
                     {"type": "concept", "node": ""}]
 
     class _Meta:
-        goals = [{"name": "reduce_error"}, {"description": "raise coverage"},
-                 {"nothing": "usable"}]
+        # The real MetaGoalGenerator attribute names — a fake with a `.goals`
+        # attribute is how the planner's meta-goal defect stayed hidden.
+        active_meta_goals = [{"name": "reduce_error"},
+                             {"description": "raise coverage"},
+                             {"nothing": "usable"}]
+        generated_goals = []
 
     class _Substrate:
         goals = _Goals()
@@ -973,17 +977,23 @@ class _EvoSubstrate:
 
 
 def test_a_generation_is_scheduled_and_not_awaited_in_the_tick():
+    import inspect
+
     from aegis.layers.executors import adapter_for
 
     substrate = _EvoSubstrate()
 
     async def _scenario():
-        task = adapter_for("evolve_generation")(substrate, None)
-        assert task is not None
+        handle = adapter_for("evolve_generation")(substrate, None)
+        assert handle is not None
+        # The handle must NOT be awaitable: ACT awaits any awaitable an
+        # executor returns, so returning the task itself would re-attach the
+        # generation to the tick — the defect this adapter exists to prevent.
+        assert not inspect.isawaitable(handle)
         # Nothing has run yet: the adapter returned before the generation
         # started, which is the whole point of the action.
         assert substrate.evolution.calls == []
-        return await task
+        return await substrate._evolution_task
 
     assert _run(_scenario()) == {"generation": 1}
     assert substrate.evolution.calls == [250]
@@ -1011,8 +1021,9 @@ def test_a_second_generation_waits_for_the_first_task_to_finish():
 
     async def _scenario():
         first = adapter_for("evolve_generation")(substrate, None)
+        assert first is not None
         second = adapter_for("evolve_generation")(substrate, None)
-        await first
+        await substrate._evolution_task
         return second
 
     assert _run(_scenario()) is None
@@ -1033,9 +1044,68 @@ def test_a_generation_that_raises_is_contained():
     substrate.evolution = _Boom()
 
     async def _scenario():
-        return await adapter_for("evolve_generation")(substrate, None)
+        assert adapter_for("evolve_generation")(substrate, None) is not None
+        return await substrate._evolution_task
 
     assert _run(_scenario()) is None
+
+
+def test_act_does_not_block_on_an_evolve_generation_action():
+    """The integration this defect actually harmed. ``evolve_generation``
+    returned its task, ``evolve_generation`` is not in ``_SCHEDULED_ACTIONS``,
+    and ACT's generic ``if inspect.isawaitable(result): await result`` therefore
+    awaited the whole generation inline — minutes of work against a ~20 ms
+    budget, the exact opposite of the adapter's own docstring."""
+    import threading
+
+    from aegis.layers.motivation import ResourceCost
+    from aegis.layers.phases import act as act_phase
+
+    release = threading.Event()
+
+    class _SlowEvolution(_Evolution):
+        def run_generation(self, tick):
+            release.wait(timeout=5)
+            return super().run_generation(tick)
+
+    substrate = _EvoSubstrate()
+    substrate.evolution = _SlowEvolution()
+    settled = []
+    substrate.settle = lambda lease, cost=None, value=None: settled.append(value)
+    substrate.release = lambda lease, keep_rate_limit=False: None
+
+    from aegis.layers.executors import adapter_for
+    substrate.actions = type("A", (), {
+        "executor_for": staticmethod(
+            lambda action, s, c: (lambda: adapter_for(action)(s, c))),
+        "by_name": {},
+    })()
+
+    class _Lease:
+        committed = ResourceCost()
+
+    class _Ctx:
+        action = "evolve_generation"
+        lease = _Lease()
+        executed_actions = set()
+
+        @staticmethod
+        def mark_external(phase):
+            pass
+
+    async def _scenario():
+        ctx = _Ctx()
+        await act_phase._run_planned_action(substrate, ctx)
+        # ACT returned while the generation is still running in its thread —
+        # before the fix this line was only reached after run_generation
+        # finished, i.e. after the 5 s gate timed out.
+        assert not substrate._evolution_task.done()
+        release.set()
+        await substrate._evolution_task
+
+    _run(_scenario())
+    assert substrate.evolution.calls == [250]
+    assert settled == [1.0]                    # the lease was settled, once
 
 
 # ── the planner's own empty cases ────────────────────────────────────
@@ -1102,6 +1172,6 @@ def test_no_focus_means_no_graph_neighbours(world):
         goals = type("G", (), {"goals": [],
                                "get_current_focus": staticmethod(lambda: None)})()
         cognitive_graph = _Boom()      # must not be consulted without a focus
-        meta_goals = type("M", (), {"goals": []})()
+        meta_goals = type("M", (), {"active_meta_goals": [], "generated_goals": []})()
 
     assert planner.collect_objectives(_Substrate()) == ["idle_exploration"]

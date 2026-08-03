@@ -33,6 +33,16 @@ FORBIDDEN_CALLS = {
     "globals", "locals", "vars", "getattr", "setattr", "delattr", "exit", "quit",
     "breakpoint",
 }
+# Functions that perform attribute access from a STRING rather than from
+# syntax. The AST gate reads names and attributes; it cannot read a string, so
+# `operator.attrgetter("__globals__")(json.dumps)` reached module globals,
+# `__builtins__`, `__import__` and from there `os` — a verified escape with
+# full RCE in the child process (audit R5-1). These have no legitimate use in a
+# pure `solve(payload)` function, so the call itself is refused.
+FORBIDDEN_ATTR_CALLS = {
+    ("operator", "attrgetter"), ("operator", "methodcaller"),
+    ("functools", "partialmethod"),
+}
 
 
 def _write_temp_script(script: str) -> Path:
@@ -149,6 +159,30 @@ class _SafetyVisitor(ast.NodeVisitor):
     def visit_Attribute(self, node):
         if node.attr.startswith("__") and node.attr.endswith("__"):
             self.reasons.append(f"forbidden dunder attribute '{node.attr}'")
+        self.generic_visit(node)
+
+    def visit_Constant(self, node):
+        """A dunder spelled as a string is the same dunder.
+
+        Blocking `x.__globals__` while allowing `"__globals__"` to be handed to
+        something that performs the lookup leaves the gate open to anything
+        that takes an attribute or key by name — `attrgetter`, a dict
+        subscript on `__builtins__`, `functools.reduce`. The name is what is
+        dangerous, not the syntax that spells it.
+        """
+        value = node.value
+        if (isinstance(value, str) and len(value) > 4
+                and value.startswith("__") and value.endswith("__")):
+            self.reasons.append(f"forbidden dunder string '{value}'")
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        func = node.func
+        if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                and (func.value.id, func.attr) in FORBIDDEN_ATTR_CALLS):
+            self.reasons.append(
+                f"forbidden call '{func.value.id}.{func.attr}(...)' "
+                f"(attribute access from a string)")
         self.generic_visit(node)
 
 

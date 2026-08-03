@@ -183,6 +183,18 @@ class DatasetBuilder:
 
         # Split train/val
         val_size = max(1, int(len(samples) * TRAIN_VAL_SPLIT))
+        # The validation split takes at least one sample, so a 1-sample build
+        # would write an EMPTY train.jsonl — and still report success, and
+        # still be picked up by get_latest_dataset(). Refuse instead: a
+        # dataset the trainer cannot train on is a failed build, not a small
+        # success.
+        if len(samples) - val_size < 1:
+            return {
+                "success": False,
+                "error": f"Too few samples ({len(samples)}): the validation "
+                         f"split would leave the training set empty",
+                "size": len(samples),
+            }
         val_samples = samples[:val_size]
         train_samples = samples[val_size:]
 

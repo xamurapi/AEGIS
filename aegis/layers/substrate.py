@@ -218,6 +218,12 @@ class Substrate:
         self._genome_before_candidate = None
         #: A generation running detached, so the tick that started it can go on.
         self._evolution_task = None
+        #: Which promotion `_watch_champion` has already applied, as
+        #: (promotions counter, promoted_at_tick). An identity marker rather
+        #: than a genome comparison, because simplex normalisation is not
+        #: bit-stable — comparing float dicts would re-adopt the same champion
+        #: every tick forever.
+        self._adopted_promotion: tuple | None = None
         #: The genome the system is running under. Set from the contours at
         #: boot and thereafter only by `apply_genome`.
         self._genome = Genome()
@@ -845,6 +851,65 @@ class Substrate:
             logger.exception("Evolution step failed")
             self.evolution.abandon_candidate()
 
+    def _watch_champion(self):
+        """The other half of §M5.6: apply a promoted champion, then watch it.
+
+        ``run_generation`` deliberately mutates nothing outside the engine, and
+        both of its callers discard the result — the executor runs it detached
+        and the API returns it to HTTP. The reflect phase would be the natural
+        call site, but the phases are owned elsewhere, so the substrate closes
+        the loop itself, once per tick:
+
+        * a champion the engine promoted but nobody applied is put live here,
+          through the same two hard gates every self-modification passes
+          (``is_modification_safe`` + ethics) — and withdrawn if they refuse;
+        * the live metric is fed to :meth:`EvolutionEngine.watch`, which is
+          what makes the rollback promise of the module docstring real rather
+          than dead code;
+        * a rollback the watch decides on is applied back to the contours,
+          because "it is put back" has to mean the running system, not a field
+          on the engine.
+
+        Skipped entirely while a v1 candidate is pending: the live genome is
+        then the unjudged mutation, and both adopting a champion over it and
+        rolling back "through" it would clobber the experiment in flight.
+        """
+        evo = self.evolution
+        try:
+            if evo.candidate is not None:
+                return
+            promotion = (evo.promotions, evo.promoted_at_tick)
+            if evo.previous_champion is not None and evo.champion \
+                    and self._adopted_promotion != promotion:
+                wanted = Genome(evo.champion["genome"]).to_dict()
+                safe, _ = self.self_preservation.is_modification_safe(
+                    "evolution/champion", str(sorted(wanted.items())))
+                eth = self.ethics.evaluate_action({
+                    "type": "self_modification", "modifies_self": True,
+                    "confidence": self._compute_confidence(),
+                })
+                if safe and eth["status"] != "blocked":
+                    self.apply_genome(wanted)
+                    self._adopted_promotion = promotion
+                    self.autobiography.log_event(
+                        "evolution", "Promoted champion applied to the "
+                        "running system (watch begins)", 0.7)
+                else:
+                    evo.refuse_promotion("blocked by the safety pipeline")
+                    self.autobiography.log_event(
+                        "evolution", "Promoted champion refused by the "
+                        "safety pipeline — previous champion kept", 0.7)
+                    return
+            record = evo.watch(self.tick_count, self._compute_reward())
+            if record is not None and evo.champion:
+                self.apply_genome(evo.champion["genome"])
+                self.autobiography.log_event(
+                    "evolution",
+                    f"Champion rolled back after a live drop of "
+                    f"{record.get('drop', 0.0):.4f}", 0.85)
+        except Exception:
+            logger.exception("The champion watch failed")
+
     async def _skill_synthesis(self):
         """Propose a skill for a failing kind from TRAIN examples and keep it only
         if it raises the HELD-OUT pass-rate (real, generalizing self-improvement).
@@ -1366,6 +1431,9 @@ class Substrate:
             await self._run_phase("decide", self._decide)
             await self._run_phase("act", self._act)
             await self._run_phase("reflect", self._reflect)
+            # After the cycle, not inside a phase: the watch needs the tick's
+            # final reward reading, and the phase files are owned elsewhere.
+            self._watch_champion()
             if self.tick_count % max(1, CAPACITY_EVERY_N_TICKS) == 0:
                 self.regulate_capacity()
             self.health.record_tick((CLOCK.now() - tick_start) * 1000, success=True)

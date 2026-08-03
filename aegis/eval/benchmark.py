@@ -195,19 +195,45 @@ def _split_rank(task: Task) -> tuple[float, str]:
     return (hash_unit("eval_split", task.id), task.id)
 
 
+def _dedup_key(task: Task) -> tuple[str, str]:
+    """What makes two tasks *the same problem* for split purposes.
+
+    Canonical JSON of the payload plus ``repr`` of the expected answer —
+    ``repr`` rather than the value itself so ``True`` and ``1`` stay distinct,
+    the same way ``values_match`` keeps them distinct when verifying.
+    """
+    import json
+
+    return (json.dumps(task.payload, sort_keys=True, ensure_ascii=False),
+            repr(task.expected))
+
+
 def assign_splits(tasks: list[Task] | None = None) -> dict[str, str]:
-    """``task id -> split``, computed from the ids alone.
+    """``task id -> split``, computed from the ids and payloads.
 
     Per kind, so every kind is represented in every split it can support. A
     global deal would leave whole kinds out of `valid`, and a score on a valid
     set missing half the kinds is not a measurement of the same thing.
+
+    Tasks with an IDENTICAL payload and answer are dealt to the SAME split.
+    The generators draw from finite pools (24 words, factorial's 0..12), so
+    two different indices regularly produce the very same problem — and the
+    hash deal used to put ``gen_factorial_1 {'n': 0}`` in `test` while an
+    identical case sat in `train`, which made the held-out score partly a
+    memorisation score (audit: split leakage). Coercing duplicates to the
+    split of their first occurrence in the hash order keeps the assignment a
+    pure, stable function of the task set while guaranteeing a held-out
+    problem was never seen during training.
     """
     tasks = list(tasks if tasks is not None else DEFAULT_BENCHMARK)
     assignment: dict[str, str] = {}
     for kind in all_kinds(tasks):
         ordered = sorted(tasks_for_kind(kind, tasks), key=_split_rank)
+        first_split: dict[tuple[str, str], str] = {}
         for position, task in enumerate(ordered):
-            assignment[task.id] = SPLIT_CYCLE[position % len(SPLIT_CYCLE)]
+            dealt = SPLIT_CYCLE[position % len(SPLIT_CYCLE)]
+            key = _dedup_key(task)
+            assignment[task.id] = first_split.setdefault(key, dealt)
     return assignment
 
 
