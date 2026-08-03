@@ -908,3 +908,45 @@ def test_synth_attempts_decides_how_many_proposals_are_made(isolated_state,
     high = proposals_at(4)
     assert low == 1, f"one attempt means one proposal, got {low}"
     assert high == 4, f"four attempts means four proposals, got {high}"
+
+
+# ── the metacognition genes (M11.7.4) ────────────────────────────────
+# Four genes, each with two obligations from the fifth audit round: the value
+# reads back from the object that CONSUMES it, and moving it moves behaviour.
+# The behavioural halves live in tests/test_metacognition.py (quota size,
+# order change, confirmation count, sample size); here is the schema and the
+# substrate wiring.
+
+
+def test_the_metacognition_genes_are_declared_with_their_readers():
+    from aegis.layers.evolution.genome import GENES_BY_NAME
+
+    for name, low, high, default in (
+            ("meta_far_share", 0.0, 0.5, 0.25),
+            ("meta_min_effect", 0.01, 0.10, 0.03),
+            ("meta_mechanism_c", 0.0, 2.0, 0.7)):
+        gene = GENES_BY_NAME[name]
+        assert (gene.low, gene.high, gene.default) == (low, high, default)
+        assert gene.reader, name
+    ablation = GENES_BY_NAME["meta_ablation_n"]
+    assert ablation.kind == "int"
+    assert (ablation.low, ablation.high, ablation.default) == (20, 200, 60)
+
+
+def test_the_metacognition_genes_read_back_from_their_consumers():
+    """`_genome_from_contours` must report what the contour actually holds —
+    the read-back path the sensitivity gate is built on."""
+    from aegis.layers.substrate import Substrate
+
+    substrate = Substrate()
+    substrate.apply_genome(Genome({
+        "meta_far_share": 0.4, "meta_min_effect": 0.06,
+        "meta_ablation_n": 90, "meta_mechanism_c": 1.2}))
+    read_back = substrate._genome_from_contours()
+    assert read_back["meta_far_share"] == pytest.approx(0.4)
+    assert read_back["meta_min_effect"] == pytest.approx(0.06)
+    assert read_back["meta_ablation_n"] == 90
+    assert read_back["meta_mechanism_c"] == pytest.approx(1.2)
+    # And the consumers, not a cached copy, are what changed.
+    assert substrate.metacognition.credit.mechanism_c == pytest.approx(1.2)
+    assert substrate.metacognition.ablation_n == 90

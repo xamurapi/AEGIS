@@ -164,6 +164,15 @@ GENES: tuple[GeneSpec, ...] = (
              reader="DECOMPOSE max_parts", stage=8),
     GeneSpec("reason_ucb_c", "float", 1.4, 0.2, 3.0,
              reader="strategy selection", stage=9),
+    # ── metacognition (M11, stage 10) ────────────────────────────────
+    GeneSpec("meta_far_share", "float", 0.25, 0.0, 0.5,
+             reader="MetaCognition.invent quota", stage=10),
+    GeneSpec("meta_min_effect", "float", 0.03, 0.01, 0.10,
+             reader="attribution.confirm", stage=10),
+    GeneSpec("meta_ablation_n", "int", 60, 20, 200,
+             reader="attribution.ablate", stage=10),
+    GeneSpec("meta_mechanism_c", "float", 0.7, 0.0, 2.0,
+             reader="mechanism.order", stage=10),
     # ── memory ───────────────────────────────────────────────────────
     GeneSpec("mem_retention_bias", "float", 1.5, 0.5, 3.0,
              reader="WorldModel._retention_score", stage=4),

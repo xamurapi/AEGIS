@@ -1043,6 +1043,56 @@ async def reasoning_trace(trace_id: str):
     return trace
 
 
+# ── M11 metacognition (§M11.7.7) ─────────────────────────────────────
+# Behind the same token as everything else (the middleware) and behind the
+# kill-switch guard, as the spec spells out for this contour.
+
+@app.get("/api/meta/explanations")
+async def meta_explanations():
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    return {"explanations": substrate.metacognition.explanations_report(),
+            "engine": substrate.metacognition.status()}
+
+
+@app.get("/api/meta/explanation/{strategy}")
+async def meta_explanation(strategy: str):
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    explanation = substrate.metacognition.explanation_for(strategy)
+    if explanation is None:
+        return {"error": "no explanation for that strategy"}
+    return explanation
+
+
+@app.get("/api/meta/mechanisms")
+async def meta_mechanisms():
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    return {"mechanisms": substrate.metacognition.credit.win_rates(),
+            "order_delta": substrate.metacognition.order_delta()}
+
+
+@app.get("/api/meta/skeletons")
+async def meta_skeletons():
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    return substrate.metacognition.skeletons.status()
+
+
+@app.get("/api/meta/order/{weakness}")
+async def meta_order(weakness: str):
+    refusal = _kill_switch_guard()
+    if refusal:
+        return refusal
+    return {"weakness": weakness,
+            "order": list(substrate.metacognition.order_for(weakness))}
+
+
 @app.get("/api/discoveries")
 async def discoveries():
     """The register: what is known, what was refuted, and the formulas."""

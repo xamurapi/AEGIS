@@ -74,6 +74,17 @@ REASON_WIN_RATE = "aegis.reason.win_rate"          # tag: strategy
 REASON_ABSTAIN_RATE = "aegis.reason.abstain_rate"
 REASON_CONFIDENT_ERROR = "aegis.reason.confident_error"
 
+# ── M11 metacognition ────────────────────────────────────────────────
+META_EXPLANATIONS = "aegis.meta.explanations"        # tag: status
+META_CONFIRMED_EDITS = "aegis.meta.confirmed_edits"
+META_CONTESTED = "aegis.meta.contested"
+META_ORDER_DELTA = "aegis.meta.order_delta"
+META_FAR_SHARE = "aegis.meta.far_share"
+META_FAR_ACCEPTED = "aegis.meta.far_accepted"
+META_CANDIDATES_TO_ACCEPT = "aegis.meta.candidates_to_accept"
+META_RETIRED_SKELETONS = "aegis.meta.retired_skeletons"
+META_MECHANISM_WIN_RATE = "aegis.meta.mechanism_win_rate"  # tag: mechanism
+
 # ── M7 discovery ─────────────────────────────────────────────────────
 DISC_HYPOTHESES_TESTED = "aegis.disc.hypotheses_tested"
 DISC_SUPPORTED = "aegis.disc.supported"
@@ -125,6 +136,9 @@ REQUIRED_METRICS: tuple[str, ...] = (
     EVO_ROLLBACKS, EVO_NOVELTY_SKIPS,
     REASON_PASS_HOLDOUT, REASON_ACCURACY, REASON_STRATEGIES_ACTIVE, REASON_WIN_RATE,
     REASON_ABSTAIN_RATE, REASON_CONFIDENT_ERROR,
+    META_EXPLANATIONS, META_CONFIRMED_EDITS, META_CONTESTED, META_ORDER_DELTA,
+    META_FAR_SHARE, META_FAR_ACCEPTED, META_CANDIDATES_TO_ACCEPT,
+    META_RETIRED_SKELETONS, META_MECHANISM_WIN_RATE,
     DISC_HYPOTHESES_TESTED, DISC_SUPPORTED, DISC_REPLICATED,
     DISC_FDR_REJECTIONS, DISC_EXPERIMENTS,
     CORTEX_CALLS, CORTEX_TOKENS, CORTEX_SCHEMA_FAILURES, CORTEX_REPAIRS,

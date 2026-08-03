@@ -224,6 +224,23 @@ TARGETS = [
      "tests/test_ledger.py tests/test_bdd_discovery.py"),
     ("aegis/layers/discovery/__init__.py",
      "tests/test_discovery_engine.py tests/test_bdd_discovery.py"),
+    # Stage 11 — metacognition (M11.12). The attribution decides which causes
+    # are believed, the credit table decides what gets synthesised next, and
+    # the distance decides what counts as "different". A surviving mutant in
+    # any of them would let the meta-level learn from evidence that is not
+    # there — the same failure class as the discovery contour, one level up.
+    ("aegis/layers/metacognition/distance.py",
+     "tests/test_strategy_distance.py tests/test_skeletons.py"),
+    ("aegis/layers/metacognition/attribution.py",
+     "tests/test_attribution.py tests/test_bdd_metacognition.py"),
+    ("aegis/layers/metacognition/mechanism.py",
+     "tests/test_mechanism_credit.py tests/test_metacognition.py"),
+    ("aegis/layers/metacognition/skeletons.py",
+     "tests/test_skeletons.py tests/test_bdd_metacognition.py"),
+    ("aegis/layers/metacognition/store.py",
+     "tests/test_metacognition.py"),
+    ("aegis/layers/metacognition/__init__.py",
+     "tests/test_metacognition.py tests/test_bdd_metacognition.py"),
     # Safety-critical / core deterministic modules (highest audit risk).
     ("aegis/event_bus.py", "tests/test_event_bus.py tests/test_mutation_gaps.py"),
     ("aegis/layers/ethics_core.py",

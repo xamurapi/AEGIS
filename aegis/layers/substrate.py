@@ -39,6 +39,7 @@ from aegis.layers.motivation import (
 from aegis.layers.planner import Planner
 from aegis.layers.policy import BehaviourPolicy
 from aegis.layers.discovery import DiscoveryEngine
+from aegis.layers.metacognition import MetaCognition
 from aegis.layers.reasoning import ReasoningEngine
 from aegis.layers.memory import MemorySystem
 from aegis.layers.introspection import IntrospectionEngine
@@ -254,6 +255,14 @@ class Substrate:
         self.discovery = DiscoveryEngine(
             telemetry=self.telemetry, world_model=self.world_model,
             cortex=self.llm.cortex)
+        # The metacognition contour (M11): the meta-loop over reasoning. Built
+        # AFTER reasoning because it reads the library, the arena's verdicts
+        # and the weakness detector; its heavy step (ablation) goes through the
+        # evaluation pool, never a tick. Always constructed — the dashboard and
+        # the snapshot need its shape — but inert unless META_ENABLED.
+        self.metacognition = MetaCognition(
+            reasoning=self.reasoning, pool=self.eval_pool,
+            telemetry=self.telemetry, cortex=self.llm.cortex)
 
         # The genome the contours booted with, recorded once so every later
         # apply/revert has something exact to go back to.
@@ -412,7 +421,7 @@ class Substrate:
         for system in (self.world_model, self.cognitive_graph, self.evolution,
                        self.goal_intelligence, self.feedback_loop,
                        self.resources, self.roi, self.policy,
-                       self.reasoning, self.discovery):
+                       self.reasoning, self.discovery, self.metacognition):
             try:
                 system.save()
             except Exception:
@@ -567,6 +576,13 @@ class Substrate:
                 "reason_decompose_parts", 6),
             "reason_vote_n": self.reasoning.interpreter.genome.get(
                 "reason_vote_n", 1),
+            # The metacognition genes, read back from the objects that consume
+            # them (M11.7.4): the quota and thresholds from the contour, the
+            # UCB constant from the credit table it steers.
+            "meta_far_share": self.metacognition.far_share,
+            "meta_min_effect": self.metacognition.min_effect,
+            "meta_ablation_n": self.metacognition.ablation_n,
+            "meta_mechanism_c": self.metacognition.mechanism_c,
             **{f"priority_w_{name}": value
                for name, value in self.priority.weights.items()},
             **{f"res_share_{drive}": share
@@ -592,6 +608,7 @@ class Substrate:
                                (self.priority, "set_weights"),
                                (self.policy, "set_genome"),
                                (self.reasoning, "set_genome"),
+                               (self.metacognition, "set_genome"),
                                (self.solver, "set_genome"),
                                (self.world_model, "apply_genome"),
                                (self.roi, "set_genome")):
@@ -683,6 +700,7 @@ class Substrate:
             self.policy.publish_metrics(tick)
             self.reasoning.publish_metrics(tick)
             self.discovery.publish_metrics(tick)
+            self.metacognition.publish_metrics(tick)
         except Exception:
             logger.exception("Telemetry publication failed")
 
@@ -1596,6 +1614,7 @@ class Substrate:
             "policy": self.policy.status(),
             "reasoning": self.reasoning.status(),
             "discovery": self.discovery.status(),
+            "metacognition": self.metacognition.status(),
             "reward_signal": round(self._compute_reward(), 4),
             "event_bus": self.event_bus.stats(),
             "event_history": self.event_bus.get_history(30),
@@ -1677,6 +1696,11 @@ class Substrate:
                 "world_model_max_links": self.world_model.max_links,
                 "cognitive_graph_max_nodes": self.cognitive_graph.max_nodes,
             },
+            # M11.7.1: the explanation registry and the credit table determine
+            # which candidates are generated next and in what order — state
+            # left out of the snapshot would be a blind spot in the
+            # determinism test (§M9.4).
+            "metacognition": self.metacognition.snapshot(),
             # The safety contract is part of the state: quietly widening the
             # untouchable set and claiming nothing changed is exactly the
             # failure this digest exists to catch.

@@ -481,3 +481,31 @@ LOCAL_OPENAI_API_KEY = _env_str("LOCAL_OPENAI_API_KEY", "ollama")
 # --- M9: infrastructure ---------------------------------------------
 EVAL_POOL_WORKERS = _env_int("EVAL_POOL_WORKERS", "4")
 EVAL_POOL_TASK_TIMEOUT = _env_float("EVAL_POOL_TASK_TIMEOUT", "120")
+
+# --- M11: metacognition ----------------------------------------------
+META_DIR = DATA_DIR / "metacognition"
+META_DIR.mkdir(parents=True, exist_ok=True)
+# Off by default, like EVO_ENABLED and for the same reason: an ablation run is
+# META_MAX_EDITS x META_ABLATION_N interpreter passes, and a long test that
+# ticks past the scan interval must not start one by accident (§M11.7.5).
+META_ENABLED = os.environ.get("AEGIS_META_ENABLED", "0") == "1"
+# Beyond this many simultaneous edits, attribution refuses rather than guesses:
+# ablating one edit out of many would need subset enumeration to mean anything.
+META_MAX_EDITS = _env_int("META_MAX_EDITS", "4")
+# Held-out problems per ablation. The sample every effect is measured on.
+META_ABLATION_N = _env_int("META_ABLATION_N", "60")
+# An edit is confirmed only when its effect clears this floor AND survives BH.
+META_MIN_EFFECT = _env_float("META_MIN_EFFECT", "0.03")
+META_FDR_Q = _env_float("META_FDR_Q", "0.10")
+# "Principally different" and "near duplicate", on the strategy distance.
+META_FAR = _env_float("META_FAR", "0.5")
+META_NEAR = _env_float("META_NEAR", "0.05")
+# Share of one round's candidates that must come from the far generator.
+META_FAR_SHARE = _env_float("META_FAR_SHARE", "0.25")
+# Exploration constant of the mechanism-credit UCB (§M11.6.3).
+META_MECHANISM_C = _env_float("META_MECHANISM_C", "0.7")
+# A skeleton that failed this many times on one feature set is retired for that
+# feature set forever (§M11.6.5).
+META_RETIRE_AFTER = _env_int("META_RETIRE_AFTER", "3")
+META_SCAN_EVERY_N_TICKS = _env_int("META_SCAN_EVERY_N_TICKS", "300")
+META_MAX_EXPLANATIONS = _env_int("META_MAX_EXPLANATIONS", "200")

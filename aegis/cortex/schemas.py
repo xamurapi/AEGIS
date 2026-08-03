@@ -338,6 +338,17 @@ SCHEMAS: dict[str, dict] = {
             "explanation": {"type": "string"},
         },
     },
+    # M11.5.2 step 6: the cortex narrates an already-computed attribution and
+    # names the mechanism it *believes* — a guess the code compares against the
+    # computed one, never adopts. The narrative is stored for the human.
+    "meta_explanation": {
+        "type": "object",
+        "required": ["narrative"],
+        "properties": {
+            "narrative": {"type": "string"},
+            "mechanism": {"type": "string"},
+        },
+    },
     "code_change": {
         "type": "object",
         "required": ["should_modify"],

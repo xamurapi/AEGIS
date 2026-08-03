@@ -476,6 +476,11 @@ class ReasoningEngine:
         record = {"candidate": candidate.name, "family": family,
                   "incumbent": getattr(incumbent, "name", ""),
                   "weakness": candidate.weakness, "tick": int(tick),
+                  # Which generator wrote the candidate. Metacognition (M11)
+                  # keys its mechanism credit on this; before M11 the fact was
+                  # only recoverable by parsing the candidate's name.
+                  "transform": candidate.transform,
+                  "origin": candidate.origin,
                   **verdict.as_dict()}
         self.verdicts.append(record)
         if len(self.verdicts) > 200:

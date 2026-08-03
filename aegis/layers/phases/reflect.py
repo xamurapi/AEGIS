@@ -203,6 +203,12 @@ async def run(substrate, ctx: TickContext) -> None:
         # System 2: ingest recent memory into the typed cognitive graph.
         if substrate.tick_count % max(1, COGNITIVE_GRAPH_EVERY_N_TICKS) == 0:
             substrate.cognitive_graph.ingest_memory(substrate.memory)
+
+        # M11: bookkeeping only — fold new arena verdicts into the mechanism
+        # credit table and queue accepted-but-unexplained strategies. The
+        # ablation itself is an ACT action through the evaluation pool; this
+        # hook is counter arithmetic and stays inside REFLECT's budget (§3.4).
+        substrate.metacognition.on_reflect(substrate.tick_count)
     except Exception:
         logger.exception("Higher-systems REFLECT hook failed")
 

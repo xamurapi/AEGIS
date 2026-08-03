@@ -91,6 +91,9 @@ BOUNDED_PARAMS: dict[str, tuple[float, float]] = {
     "DISC_INTERVENTION_MAX_DELTA": (0.0, 0.5),
     "CHECKPOINT_EVERY_N_TICKS": (1, 200),
     "TRAIN_MIN_DATASET_SIZE": (10, 100_000),
+    # M11.7.5: a boolean toggle in bounded clothing. The behaviour policy may
+    # not flip it, evolution may not name it (no gene may), and an operator may.
+    "META_ENABLED": (0, 1),
 }
 
 # ── Level 3: one-way ratchets ────────────────────────────────────────

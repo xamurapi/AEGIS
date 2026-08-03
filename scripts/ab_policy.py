@@ -161,6 +161,7 @@ def build(policy_enabled: bool, root: Path, noise: bool = False):
                             ("POLICY_DIR", "policy"),
                             ("REASONING_DIR", "reasoning"),
                             ("DISCOVERY_DIR", "discovery"),
+                            ("META_DIR", "metacognition"),
                             ("CORTEX_DIR", "cortex")):
         (root / name).mkdir(parents=True, exist_ok=True)
         setattr(cfg, attribute, root / name)

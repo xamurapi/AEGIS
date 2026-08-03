@@ -1,6 +1,6 @@
 # AEGIS — Autonomous Evolving General Intelligence System
 
-[![tests](https://img.shields.io/badge/tests-4611%20passing-2ea44f)](#testing--quality)
+[![tests](https://img.shields.io/badge/tests-4735%20passing-2ea44f)](#testing--quality)
 [![coverage](https://img.shields.io/badge/branch%20coverage-95%25-2ea44f)](#testing--quality)
 [![mutation score](https://img.shields.io/badge/mutation-100%25%20on%20round--5%20modules-2ea44f)](#testing--quality)
 [![audit](https://img.shields.io/badge/audit-5%20rounds-blue)](docs/%D0%90%D0%A3%D0%94%D0%98%D0%A2.md)
@@ -9,7 +9,7 @@
 
 > A self-developing AI that predicts before it acts, changes its behaviour from measured experience, evolves a genome that provably moves its own benchmark, improves its own reasoning strategies, and derives laws about itself that it then has to defend against an experiment.
 > **7-layer architecture + 5 higher-order systems + 7 contours of the development spec · provider-agnostic cortex · deterministic core cycle.**
-> **4611 tests · 95% branch coverage · 5 audit rounds, 34 findings closed in the fifth.**
+> **4735 tests · 95% branch coverage · 5 audit rounds, 34 findings closed in the fifth.**
 > **Safe defaults:** source self-rewriting is opt-in (`AEGIS_CODE_SELF_MOD_ENABLED=1`), the control plane binds to `127.0.0.1`, and self-written skills run only in a child-process sandbox.
 
 🌐 **[aegis-asi.com](https://aegis-asi.com)** · 📊 [Control Center](https://aegis-asi.com/panel.pdf)
@@ -80,6 +80,7 @@ time-dependent goes through an injectable `clock.py`, which is what makes a
 | `layers/evolution/` | Genome, deterministic operators, population, isolated variant evaluation |
 | `layers/reasoning/` | Strategy DSL, interpreter, library, weakness detector, synthesiser, arena |
 | `layers/discovery/` | Data pool, hypothesis scan with FDR control, symbolic regression, preregistered experiments, discovery ledger |
+| `layers/metacognition/` | Ablation attribution, mechanism-credit table, strategy distance and archive, skeleton catalogue with permanent retirements |
 | `telemetry/`, `store/`, `safety/` | Metric time series, versioned stores with migrations, the immutable-parameter contract |
 
 ---
@@ -155,11 +156,13 @@ the wiring is removed:
 
 ---
 
-## The Seven Contours of the Development Spec
+## The Contours of the Development Spec
 
-The five systems above make the cycle *effective*. These seven make each of its
-claims *checkable* — every one of them has a metric for "this changed behaviour"
-and a metric for "the change helped", and both are asserted by a test.
+The five systems above make the cycle *effective*. These contours make each of
+its claims *checkable* — every one of them has a metric for "this changed
+behaviour" and a metric for "the change helped", and both are asserted by a
+test. M11 is the meta-level over M6: its inputs are the reasoning contour's
+outcomes, its output is a change to how strategies are generated.
 
 | # | Contour | The link it adds | Acceptance |
 |---|---|---|---|
@@ -170,6 +173,7 @@ and a metric for "the change helped", and both are asserted by a test.
 | M5 | **Population evolution** | Ten variants a generation, isolated evaluation, selection on a validation split confirmed on a test split. | +15% champion fitness over 20 generations, `valid_test_gap ≤ 0.05` |
 | M6 | **Thinking as data** | A reasoning strategy is a declarative pipeline the system writes, judges on held-out problems, and retires. | held-out **0.685 → 0.965** (+28.0 pp), confident errors 0.305 → **0.000** |
 | M7 | **Discovery engine** | `data → hypothesis → formula → experiment → law`, with false-discovery control and a plan frozen before the data. | Planted law recovered at **R²_valid 0.9999**, 3 replicated discoveries, **0** from 1296 comparisons of noise |
+| M11 | **Metacognition** | *Why* a strategy won, proven by ablation, and invention of structurally different strategies under a novelty quota — the meta-loop that changes the generator, not the strategies. | Planted cause found at precision/recall **1.0**, **0** confirmations from 200 noise comparisons, order_delta **1.0**, 2 far candidates accepted through unsoftened gates, byte-identical registries across runs |
 
 Bold figures are measured by the acceptance scripts below; the rest are the
 gates those runs had to clear.
@@ -198,6 +202,8 @@ python scripts/ab_policy.py        # M3 — behaviour with and without the polic
 python scripts/evo_bench.py        # M5 — 20 generations
 python scripts/reason_bench.py     # M6 — 30 synthesis cycles
 python scripts/discovery_soak.py   # M7 — a planted law, and pure noise
+python scripts/meta_bench.py       # M11 — attribution, ordering, the far track
+
 python scripts/soak.py             # VII.5 — the 24-hour run
 ```
 
@@ -316,7 +322,8 @@ AEGIS/
 │   ├── РЕСУРСЫ.md             # M3–M4 — behaviour policy and resources
 │   ├── ЭВОЛЮЦИЯ.md            # M5 — the genome and why it was replaced
 │   ├── МЫШЛЕНИЕ.md            # M6 — reasoning as data
-│   └── ОТКРЫТИЯ.md            # M7 — the discovery engine
+│   ├── ОТКРЫТИЯ.md            # M7 — the discovery engine
+│   └── МЕТАКОГНИЦИЯ.md        # M11 — attribution and invention
 ├── scripts/
 │   ├── mutation_test.py       # dependency-free mutation-testing harness
 │   ├── ab_planner.py          # M2 acceptance — planner vs greedy
@@ -324,11 +331,12 @@ AEGIS/
 │   ├── evo_bench.py           # M5 acceptance — 20 generations
 │   ├── reason_bench.py        # M6 acceptance — 30 synthesis cycles
 │   ├── discovery_soak.py      # M7 acceptance — planted law, and noise
+│   ├── meta_bench.py          # M11 acceptance — attribution and the far track
 │   ├── soak.py                # VII.5 — the 24-hour run
 │   ├── check_no_stubs.py      # no `pass`-bodied production code
 │   └── check_undefined_names.py
-├── tests/                      # 4611 tests
-│   └── features/              # 9 executable Gherkin specifications
+├── tests/                      # 4735 tests
+│   └── features/              # 10 executable Gherkin specifications
 ├── aegis/
 │   ├── config.py              # IMMUTABLE
 │   ├── clock.py               # injectable clock — what makes determinism testable
@@ -582,7 +590,7 @@ API keys can also be set at runtime via the dashboard (LLM Brain tab).
 ```bash
 pip install -r requirements-dev.txt
 
-python -m pytest -q                                    # 4611 tests, ~5.5 min
+python -m pytest -q                                    # 4735 tests, ~5.5 min
 python -m coverage run -m pytest -q && python -m coverage report   # gate: 90%
 python scripts/mutation_test.py                        # gate: no survivors
 python scripts/check_no_stubs.py                       # no `pass`-bodied production code
@@ -592,11 +600,11 @@ No ML dependencies are required — the whole suite runs offline (no network, no
 
 | Metric | Value | Gate |
 |---|---:|---:|
-| Tests | **4611** passing (+2 skipped) | all green |
+| Tests | **4735** passing (+2 skipped) | all green |
 | Branch coverage (whole package) | **95%** | **90%** |
 | Mutation score, modules verified at 100% | sandbox · policy (all four) · world/simulate · world/prediction · quasirandom · store/migrations · discovery · telemetry/store · safety/immutable · reasoning DSL, interpreter, library, weakness, synthesis, arena | no survivors |
 | Mutation score over the modules round 5 changed | **100%** (286 mutants, 10 modules) | no survivors |
-| Executable Gherkin specifications | **9 feature files · 92 scenarios** | — |
+| Executable Gherkin specifications | **10 feature files · 98 scenarios** | — |
 
 **Levels.** Unit tests per module · integration tests running the five systems
 and the seven contours inside a real `Substrate` tick · executable **Gherkin**
@@ -688,6 +696,7 @@ The engineering docs are written in Russian; this README is the English entry po
 | [`docs/ТЗ-РАЗВИТИЕ.md`](docs/ТЗ-РАЗВИТИЕ.md) | The development specification the seven new contours are built to |
 | [`docs/ПЛАН-ЭТАПОВ.md`](docs/ПЛАН-ЭТАПОВ.md) | Its twelve stages — what each one delivered, and the acceptance number it had to clear |
 | [`docs/ТЗ-МЕТАКОГНИЦИЯ.md`](docs/%D0%A2%D0%97-%D0%9C%D0%95%D0%A2%D0%90%D0%9A%D0%9E%D0%93%D0%9D%D0%98%D0%A6%D0%98%D0%AF.md) | Specification for M11 — attribution of *why* a strategy won, verified by ablation, and deliberate invention of structurally different ones |
+| [`docs/МЕТАКОГНИЦИЯ.md`](docs/%D0%9C%D0%95%D0%A2%D0%90%D0%9A%D0%9E%D0%93%D0%9D%D0%98%D0%A6%D0%98%D0%AF.md) | The M11 implementation — ablation attribution, the mechanism-credit table that reorders synthesis, the skeleton catalogue with permanent retirements, and the honest deviations from the letter of the spec |
 
 ---
 

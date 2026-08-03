@@ -89,6 +89,7 @@ _STATE_DIRS = (
     ("aegis.config", "POLICY_DIR", "policy"),
     ("aegis.config", "REASONING_DIR", "reasoning"),
     ("aegis.config", "DISCOVERY_DIR", "discovery"),
+    ("aegis.config", "META_DIR", "metacognition"),
     ("aegis.config", "CORTEX_DIR", "cortex"),
     ("aegis.config", "WORLD_MODEL_DIR", "world_model"),
     ("aegis.config", "EVOLUTION_DIR", "evolution"),

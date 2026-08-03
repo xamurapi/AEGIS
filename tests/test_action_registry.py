@@ -27,6 +27,8 @@ APPENDIX_A = {
     "learn_external", "run_agents", "evolve_agents", "curiosity_explore",
     "evaluate_state_llm", "reflect_llm", "self_inspect", "consolidate_memory",
     "parametric_self_mod", "train_weights", "code_self_mod", "dream", "rest",
+    # M11.7.2: the metacognition pair.
+    "attribute_strategy", "invent_strategy",
 }
 
 SAFETY_CRITICAL = {"perceive_world", "health_check", "checkpoint",
@@ -69,6 +71,9 @@ APPENDIX_A_COSTS = {
     "code_self_mod":       ("competence", 4000,  6000, 0, 0, 0,  500),
     "dream":               ("stability",     0,   100, 0, 0, 0,   50),
     "rest":                ("stability",     0,    10, 0, 0, 0,    1),
+    # M11.7.2.
+    "attribute_strategy":  ("coherence",   900,   300, 1, 0, 0,  300),
+    "invent_strategy":     ("competence", 2000,  5000, 0, 0, 0,  300),
 }
 
 
@@ -329,6 +334,9 @@ EXTERNAL = {
     "fit_model", "learn_external", "run_agents", "curiosity_explore",
     "evaluate_state_llm", "reflect_llm", "parametric_self_mod",
     "train_weights", "code_self_mod", "synthesize_strategy",
+    # M11.7.3: the ablation runs in the evaluation pool and invention may ask
+    # the cortex; both spend their wall time outside the cognitive cycle.
+    "attribute_strategy", "invent_strategy",
 }
 
 

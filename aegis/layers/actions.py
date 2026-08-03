@@ -183,6 +183,17 @@ ACTIONS: tuple[ActionSpec, ...] = (
                preconditions=("low_energy_or_reflective",), min_interval=50, stage=2),
     ActionSpec("rest", "stability", _cost(ms=10), "emotions.recharge",
                min_interval=1, stage=2),
+    # M11: metacognition. Neither is safety_critical — the policy may suppress
+    # them, the resource floor owes them nothing, and the system is required to
+    # work with the whole contour switched off (M11.7.2).
+    ActionSpec("attribute_strategy", "coherence", _cost(tok=900, ms=300, proc=1),
+               "metacognition.attribute",
+               preconditions=("has_unexplained_strategy",),
+               min_interval=300, external=True, stage=11),
+    ActionSpec("invent_strategy", "competence", _cost(tok=2000, ms=5000),
+               "metacognition.invent",
+               preconditions=("has_weakness", "far_quota_open"),
+               min_interval=300, external=True, stage=11),
 )
 
 ACTIONS_BY_NAME: dict[str, ActionSpec] = {spec.name: spec for spec in ACTIONS}
@@ -191,7 +202,7 @@ ACTIONS_BY_NAME: dict[str, ActionSpec] = {spec.name: spec for spec in ACTIONS}
 #: later stage resolve to nothing and are simply unavailable — which is how a
 #: contour under construction is kept out of the schedule instead of crashing
 #: when it is selected. Bumped by the stage that delivers the executors.
-DELIVERED_STAGE = 10
+DELIVERED_STAGE = 11
 
 
 # ── preconditions ────────────────────────────────────────────────────
@@ -300,6 +311,17 @@ PREDICATES: dict[str, Callable[[object, object], bool]] = {
     "low_energy_or_reflective":
         lambda s, ctx: (s.emotions.energy < 0.4
                         or s.consciousness.mode == "reflective"),
+    # M11: an accepted strategy nobody has explained yet, and room left in the
+    # far-candidate quota. Both read the enabled flag through the contour, so
+    # META_ENABLED=False makes both actions simply unavailable.
+    "has_unexplained_strategy":
+        lambda s, ctx: bool(getattr(s, "metacognition", None)
+                            and s.metacognition.enabled
+                            and s.metacognition.pending_attributions()),
+    "far_quota_open":
+        lambda s, ctx: bool(getattr(s, "metacognition", None)
+                            and s.metacognition.enabled
+                            and s.metacognition.quota_open()),
 }
 
 _COMPARATORS = {">=": operator.ge, "<=": operator.le, "==": operator.eq,

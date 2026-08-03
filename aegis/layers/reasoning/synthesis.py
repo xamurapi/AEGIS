@@ -184,6 +184,11 @@ class Synthesiser:
         self.duplicates = 0
         self.refused = 0
         self.from_cortex = 0
+        #: M11.6.3: when metacognition is enabled it installs a callable
+        #: ``weakness -> tuple[str, ...]`` here, and the transformations run in
+        #: that order instead of the fixed one. Absent (the default), the
+        #: fixed order applies and behaviour is exactly pre-M11.
+        self.order_hook = None
 
     def parent_for(self, weakness, library):
         """The strategy a transformation starts from.
@@ -211,7 +216,7 @@ class Synthesiser:
         label = getattr(weakness, "label", str(weakness))
         seen = {strategy.digest for strategy in library.strategies.values()}
         candidates: list[Candidate] = []
-        for transform_name, transform in TRANSFORMS:
+        for transform_name, transform in self._ordered_transforms(weakness):
             if len(candidates) >= self.max_candidates:
                 break
             try:
@@ -252,6 +257,25 @@ class Synthesiser:
         return [candidate]
 
     # ── internals ────────────────────────────────────────────────────
+
+    def _ordered_transforms(self, weakness):
+        """The transformations, in credit order when a hook is installed.
+
+        Names the hook does not mention keep their fixed relative order at the
+        tail, so a partial ordering cannot silently drop a transformation.
+        """
+        if self.order_hook is None:
+            return TRANSFORMS
+        try:
+            ranked = list(self.order_hook(weakness) or ())
+        except Exception:
+            logger.exception("The synthesis order hook failed")
+            return TRANSFORMS
+        by_name = dict(TRANSFORMS)
+        ordered = [(name, by_name[name]) for name in ranked if name in by_name]
+        ordered += [(name, fn) for name, fn in TRANSFORMS
+                    if name not in set(ranked)]
+        return tuple(ordered)
 
     def _admit(self, steps, parent: str, label: str, transform: str,
                origin: str, seen: set, tick: int) -> Candidate | None:

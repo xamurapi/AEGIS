@@ -148,8 +148,8 @@ def _build(root: Path):
                       "COGNITIVE_GRAPH_DIR", "EVOLUTION_DIR", "GOAL_INTEL_DIR",
                       "FEEDBACK_DIR", "CHECKPOINTS_DIR", "EVAL_DIR",
                       "POLICY_DIR", "MOTIVATION_DIR", "REASONING_DIR",
-                      "DISCOVERY_DIR", "CORTEX_DIR", "CODE_BACKUPS_DIR",
-                      "WEIGHT_DATASETS_DIR"):
+                      "DISCOVERY_DIR", "META_DIR", "CORTEX_DIR",
+                      "CODE_BACKUPS_DIR", "WEIGHT_DATASETS_DIR"):
         if hasattr(cfg, attribute):
             target = root / attribute.lower().replace("_dir", "")
             target.mkdir(parents=True, exist_ok=True)

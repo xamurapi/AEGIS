@@ -1392,6 +1392,10 @@ body {
       <div id="rsn_strategies" class="event-log" style="max-height:150px"></div>
       <div class="card-header" style="margin-top:10px"><span class="card-title">Weaknesses</span></div>
       <div id="rsn_weaknesses" class="event-log" style="max-height:130px"></div>
+      <div class="card-header" style="margin-top:10px"><span class="card-title">Metacognition</span></div>
+      <div id="meta_summary" class="event-log" style="max-height:110px"></div>
+      <div id="meta_mechanisms" class="event-log" style="max-height:130px"></div>
+      <div id="meta_explanations" class="event-log" style="max-height:130px"></div>
     </div>
   </div>
   <div class="grid grid-2" style="margin-top:16px">
@@ -1735,6 +1739,56 @@ function updateReasoningPanel(d) {
        fmt(weakness.fail_rate, 3) + ' against ' + fmt(weakness.base_rate, 3) +
        ' over ' + (weakness.support || 0) + ' attempts']
     : []);
+  updateMetacognitionPanel(d);
+}
+
+// ── panel 6b: metacognition (M11.7.7) ───────────────────────────────
+
+const META_STATUS_COLOR = {supported: 'var(--success)',
+                           contested: 'var(--warning, orange)',
+                           unsupported: 'var(--danger, tomato)'};
+
+function updateMetacognitionPanel(d) {
+  const mc = d.metacognition || {};
+  logLines('meta_summary', [
+    (mc.enabled ? 'enabled' : 'disabled') +
+      ' &mdash; explanations <b>' + (mc.explanations || 0) + '</b>' +
+      ' (' + (mc.supported || 0) + ' supported, ' +
+      (mc.contested || 0) + ' contested, ' +
+      (mc.unsupported || 0) + ' unsupported)',
+    'awaiting attribution <b>' + (mc.pending || 0) + '</b>' +
+      ', order delta <b>' + fmt(mc.order_delta, 3) + '</b>',
+    'far candidates issued <b>' + (mc.far_issued || 0) + '</b>, accepted ' +
+      (mc.far_accepted || 0) + ' (quota ' + (mc.far_quota || 0) + ')',
+  ]);
+  const mechanisms = mc.top_mechanisms || {};
+  logLines('meta_mechanisms', Object.keys(mechanisms).sort().map(name => {
+    const row = mechanisms[name] || {};
+    return esc(name) + ' &mdash; win rate <b>' + fmt(row.win_rate, 3) +
+           '</b> (' + (row.accepted || 0) + ' of ' + (row.attempts || 0) + ')';
+  }));
+  const retired = mc.retired_skeletons || [];
+  logLines('meta_explanations', retired.map(row =>
+    'retired <b>' + esc(row.skeleton) + '</b> for ' + esc(row.features) +
+    ' after ' + (row.fails || 0) + ' failures'));
+  loadMetaExplanations();
+}
+
+let _metaExplanationsAt = 0;
+function loadMetaExplanations() {
+  // The explanation list is long and slow-moving: fetched on its own cadence
+  // rather than carried in every status broadcast.
+  const now = Date.now();
+  if (now - _metaExplanationsAt < 10000) return;
+  _metaExplanationsAt = now;
+  fetch('/api/meta/explanations').then(r => r.json()).then(data => {
+    const rows = (data.explanations || []).slice(-20).reverse().map(e =>
+      '<span style="color:' + (META_STATUS_COLOR[e.status] || 'inherit') +
+      '"><b>' + esc(e.status) + '</b></span> ' + esc(e.strategy) +
+      (e.mechanism ? ' &mdash; <code>' + esc(e.mechanism) + '</code>' : '') +
+      ' (gain ' + fmt(e.gain, 3) + ')');
+    if (rows.length) logLines('meta_explanations', rows);
+  }).catch(() => {});
 }
 
 // ── panel 7: discoveries ────────────────────────────────────────────
